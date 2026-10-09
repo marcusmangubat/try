@@ -372,7 +372,7 @@ $current_step_num = $steps[$step] ?? 1;
     <div class="page-wrapper">
         <div class="layout-card">
 
-            <!-- ══════════ LEFT BRAND PANEL (desktop only) ══════════ -->
+            <!--  LEFT BRAND PANEL (desktop only)  -->
             <div class="brand-panel">
                 <div class="brand-dots"></div>
 
@@ -425,7 +425,7 @@ $current_step_num = $steps[$step] ?? 1;
                 </div>
             </div>
 
-            <!-- ══════════ RIGHT FORM PANEL ══════════ -->
+            <!--  RIGHT FORM PANEL  -->
             <div class="form-panel">
 
                 <!-- Mobile top bar -->
@@ -486,7 +486,7 @@ $current_step_num = $steps[$step] ?? 1;
                     </div>
                 <?php endif; ?>
 
-                <!-- ── STEP 1: Email ── -->
+                <!--  STEP 1: Email  -->
                 <?php if ($step === 'email'): ?>
                     <form method="POST" class="space-y-5">
                         <div>
@@ -507,7 +507,7 @@ $current_step_num = $steps[$step] ?? 1;
                     </form>
                 <?php endif; ?>
 
-                <!-- ── STEP 2: Code ── -->
+                <!--  STEP 2: Code  -->
                 <?php if ($step === 'code'): ?>
                     <form method="POST" class="space-y-5">
                         <div>
@@ -526,7 +526,7 @@ $current_step_num = $steps[$step] ?? 1;
                     </form>
                 <?php endif; ?>
 
-                <!-- ── STEP 3: New Password ── -->
+                <!--  STEP 3: New Password  -->
                 <?php if ($step === 'password'): ?>
                     <form method="POST" class="space-y-5">
                         <div>
@@ -577,7 +577,7 @@ $current_step_num = $steps[$step] ?? 1;
                     </form>
                 <?php endif; ?>
 
-                <!-- ── DONE ── -->
+                <!--  DONE  -->
                 <?php if ($step === 'done'): ?>
                     <div class="text-center py-4">
                         <div class="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
