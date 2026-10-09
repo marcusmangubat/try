@@ -1,23 +1,5 @@
 <?php
-
-/**
- * analytics-api.php
- * DMW RO IV-A – Admin Analytics Backend
- * Drop inside your admin/ folder alongside analytics.php
- *
- * Actions:
- *   summary       – 4 KPI cards (total apps, unassigned, active evaluators, registered clients)
- *   stages        – application count per status (stage list + % bars)
- *   avg_time      – avg days per workflow stage from status_history
- *   overdue       – pending/under_evaluation apps older than 7 days
- *   weekly        – last 8 weeks: submitted / approved / disapproved per week
- *   services      – top job positions by application volume
- *   svc_monthly   – monthly app volume (current year, gov vs private)
- *   destinations  – top worksite_country doughnut
- *   evaluators    – per-evaluator handled count + workload distribution
- *   job_orders    – active RSF orders with fill rate
- */
-
+// Admin Analytics API
 session_start();
 require_once '../db.php'; // provides $database (mysqli)
 
@@ -26,42 +8,54 @@ if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'admin
     echo json_encode(['error' => 'Unauthorized']);
     exit;
 }
-
+session_write_close();
 header('Content-Type: application/json');
 
-$action = $_GET['action'] ?? '';
+$action      = $_GET['action'] ?? '';
+$monthParam  = $_GET['month'] ?? 'all';
+
+// Validate: must be 'all' or strictly YYYY-MM
+if ($monthParam !== 'all' && !preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $monthParam)) {
+    $monthParam = 'all';
+}
+
+[$rangeStart, $rangeEnd] = getDateRange($monthParam);
+$filters = buildFilters();
 
 try {
     switch ($action) {
         case 'summary':
-            echo json_encode(getSummary($database));
+            echo json_encode(getSummary($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'stages':
-            echo json_encode(getStages($database));
+            echo json_encode(getStages($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'avg_time':
-            echo json_encode(getAvgTime($database));
+            echo json_encode(getAvgTime($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'overdue':
-            echo json_encode(getOverdue($database));
+            echo json_encode(getOverdue($database, $filters));
             break;
         case 'weekly':
-            echo json_encode(getWeekly($database));
+            echo json_encode(getWeekly($database, $monthParam, $rangeStart, $rangeEnd, $filters));
             break;
         case 'services':
-            echo json_encode(getServices($database));
+            echo json_encode(getServices($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'svc_monthly':
-            echo json_encode(getSvcMonthly($database));
+            echo json_encode(getSvcMonthly($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'destinations':
-            echo json_encode(getDestinations($database));
+            echo json_encode(getDestinations($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'evaluators':
-            echo json_encode(getEvaluators($database));
+            echo json_encode(getEvaluators($database, $rangeStart, $rangeEnd, $filters));
             break;
         case 'job_orders':
-            echo json_encode(getJobOrders($database));
+            echo json_encode(getJobOrders($database, $rangeStart, $rangeEnd, $filters));
+            break;
+        case 'countries':
+            echo json_encode(getCountries($database));
             break;
         default:
             http_response_code(400);
@@ -72,22 +66,140 @@ try {
     echo json_encode(['error' => $e->getMessage()]);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   1. SUMMARY KPI CARDS
-   total apps / unassigned / active evaluators / registered clients
-═══════════════════════════════════════════════════════════════ */
-function getSummary(mysqli $db): array
+
+/* FILTER HELPER — same rules as dashboard-api.php buildFilters()
+   ─ province empty  → no province filter (CALABARZON label = all provinces)
+   ─ province set    → clients.province = selected province
+   ─ country empty   → no destination filter (all countries)
+   ─ country set     → rsf_job_orders.worksite_country = selected country   */
+function buildFilters(string $appAlias = 'a', string $clientAlias = 'fc', ?string $existingJobAlias = null): array
 {
-    $total = (int) $db->query("SELECT COUNT(*) FROM applications")->fetch_row()[0];
+    $province = trim($_GET['province'] ?? '');
+    $country  = trim($_GET['country'] ?? '');
+    $jobAlias = $existingJobAlias ?? 'fj';
 
-    // Unassigned: roll up both spellings
-    $res = $db->query(
-        "SELECT COUNT(*) FROM applications WHERE status IN ('unassign','unassigned')"
+    $joins  = [];
+    $where  = ["{$appAlias}.status <> 'draft'"]; // drafts are never counted in analytics
+    $types  = '';
+    $params = [];
+
+    if ($province !== '') {
+        $joins[] = "JOIN clients {$clientAlias} ON {$clientAlias}.cid = {$appAlias}.client_id";
+        $where[]  = "{$clientAlias}.province = ?";
+        $types   .= 's';
+        $params[] = $province;
+    }
+
+    if ($country !== '') {
+        if ($existingJobAlias === null) {
+            $joins[] = "JOIN rsf_job_orders {$jobAlias} ON {$jobAlias}.id = {$appAlias}.rsf_id";
+        }
+        $where[]  = "{$jobAlias}.worksite_country = ?";
+        $types   .= 's';
+        $params[] = $country;
+    }
+
+    return [
+        'join'          => $joins ? (' ' . implode(' ', $joins) . ' ') : '',
+        'where'         => ' AND ' . implode(' AND ', $where),
+        'types'         => $types,
+        'params'        => $params,
+        'province'      => $province,
+        'country'       => $country,
+        'client_alias'  => $clientAlias,
+        'job_alias'     => $jobAlias,
+    ];
+}
+
+function bindDynamic(mysqli_stmt $stmt, string $types, array $params): void
+{
+    if ($types === '') {
+        return;
+    }
+    $refs = [];
+    foreach ($params as $k => $v) {
+        $refs[$k] = &$params[$k];
+    }
+    array_unshift($refs, $types);
+    call_user_func_array([$stmt, 'bind_param'], $refs);
+}
+
+function prepareBound(mysqli $db, string $sql, string $types, array $params): mysqli_stmt
+{
+    $stmt = $db->prepare($sql);
+    bindDynamic($stmt, $types, $params);
+    return $stmt;
+}
+
+/*  DATE RANGE HELPER 
+   'all'      -> Jan 1 .. Dec 31 of the current year
+   'YYYY-MM'  -> first day .. last day of that month                 */
+function getDateRange(string $month): array
+{
+    $year = date('Y');
+
+    if ($month === 'all') {
+        return ["$year-01-01 00:00:00", "$year-12-31 23:59:59"];
+    }
+
+    $ts = strtotime($month . '-01');
+    if ($ts === false) {
+        return ["$year-01-01 00:00:00", "$year-12-31 23:59:59"];
+    }
+
+    return [date('Y-m-01 00:00:00', $ts), date('Y-m-t 23:59:59', $ts)];
+}
+
+/* 1. SUMMARY KPI CARDS */
+function getSummary(mysqli $db, string $start, string $end, array $f): array
+{
+    $stmt = prepareBound(
+        $db,
+        "SELECT COUNT(*) FROM applications a {$f['join']}
+         WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
-    $unassigned = (int) $res->fetch_row()[0];
+    $stmt->execute();
+    $total = (int) $stmt->get_result()->fetch_row()[0];
+    $stmt->close();
 
-    $evaluators = (int) $db->query("SELECT COUNT(*) FROM evaluators")->fetch_row()[0];
-    $clients    = (int) $db->query("SELECT COUNT(*) FROM clients")->fetch_row()[0];
+    $stmt = prepareBound(
+        $db,
+        "SELECT COUNT(*) FROM applications a {$f['join']}
+         WHERE a.status IN ('unassign','unassigned')
+           AND a.submitted_at BETWEEN ? AND ? {$f['where']}",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
+    );
+    $stmt->execute();
+    $unassigned = (int) $stmt->get_result()->fetch_row()[0];
+    $stmt->close();
+
+    $stmt = $db->prepare("SELECT COUNT(*) FROM evaluators WHERE created_at BETWEEN ? AND ?");
+    $stmt->bind_param('ss', $start, $end);
+    $stmt->execute();
+    $evaluators = (int) $stmt->get_result()->fetch_row()[0];
+    $stmt->close();
+
+    $clientWhere = '';
+    $clientTypes = 'ss';
+    $clientParams = [$start, $end];
+    if ($f['province'] !== '') {
+        $clientWhere = ' AND province = ?';
+        $clientTypes .= 's';
+        $clientParams[] = $f['province'];
+    }
+
+    $stmt = prepareBound(
+        $db,
+        "SELECT COUNT(*) FROM clients WHERE created_at BETWEEN ? AND ? {$clientWhere}",
+        $clientTypes,
+        $clientParams
+    );
+    $stmt->execute();
+    $clients = (int) $stmt->get_result()->fetch_row()[0];
+    $stmt->close();
 
     return [
         'total'      => $total,
@@ -97,10 +209,8 @@ function getSummary(mysqli $db): array
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   2. APPLICATIONS BY STAGE (STATUS)
-═══════════════════════════════════════════════════════════════ */
-function getStages(mysqli $db): array
+/* 2. APPLICATIONS BY STAGE (STATUS) */
+function getStages(mysqli $db, string $start, string $end, array $f): array
 {
     $order = [
         'pending'          => ['label' => 'Pending',       'color' => '#3b82f6'],
@@ -113,14 +223,25 @@ function getStages(mysqli $db): array
         'disapproved'      => ['label' => 'Disapproved',   'color' => '#dc2626'],
     ];
 
+    $stmt = prepareBound(
+        $db,
+        "SELECT a.status, COUNT(*) AS cnt FROM applications a {$f['join']}
+         WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}
+         GROUP BY a.status",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
+    );
+    $stmt->execute();
+    $res = $stmt->get_result();
+
     $counts = [];
-    $res = $db->query("SELECT status, COUNT(*) AS cnt FROM applications GROUP BY status");
     while ($r = $res->fetch_assoc()) {
         $s = $r['status'];
         if ($s === 'unassigned') $s = 'unassign';
         if ($s === 'assigned')   $s = 'assign';
         $counts[$s] = ($counts[$s] ?? 0) + (int) $r['cnt'];
     }
+    $stmt->close();
 
     $max    = max(array_values($counts) ?: [1]);
     $result = [];
@@ -136,91 +257,127 @@ function getStages(mysqli $db): array
     return $result;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   3. AVERAGE TIME PER STAGE  (from status_history)
-   We measure median/avg hours between consecutive transitions.
-   Stages: submission→first_assign, assign→under_eval, under_eval→decision
-═══════════════════════════════════════════════════════════════ */
-function getAvgTime(mysqli $db): array
+/* 3. AVERAGE TIME PER STAGE (from status_history), scoped to range */
+function getAvgTime(mysqli $db, string $start, string $end, array $f): array
 {
-    // Submission → first status change (pending → anything)
-    $res = $db->query(
+    $stmt = prepareBound(
+        $db,
         "SELECT AVG(TIMESTAMPDIFF(HOUR, a.submitted_at, sh.changed_at)) AS hrs
          FROM status_history sh
          JOIN applications a ON a.id = sh.application_id
-         WHERE sh.from_status = 'pending'"
+         {$f['join']}
+         WHERE sh.from_status = 'pending'
+           AND sh.changed_at BETWEEN ? AND ? {$f['where']}",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
-    $submission = round((float) $res->fetch_row()[0] / 24, 1);
+    $stmt->execute();
+    $submission = round((float) ($stmt->get_result()->fetch_row()[0] ?? 0), 2);
+    $stmt->close();
 
-    // Assign → under_evaluation
-    $res = $db->query(
+    $stmt = prepareBound(
+        $db,
         "SELECT AVG(TIMESTAMPDIFF(HOUR, sh1.changed_at, sh2.changed_at)) AS hrs
          FROM status_history sh1
          JOIN status_history sh2
            ON sh1.application_id = sh2.application_id
           AND sh2.to_status = 'under_evaluation'
           AND sh2.changed_at > sh1.changed_at
+         JOIN applications a ON a.id = sh1.application_id
+         {$f['join']}
          WHERE sh1.to_status IN ('assign','assigned')
-         LIMIT 1"
+           AND sh2.changed_at BETWEEN ? AND ? {$f['where']}",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
-    $assignment = round((float) $res->fetch_row()[0] / 24, 1);
+    $stmt->execute();
+    $assignment = round((float) ($stmt->get_result()->fetch_row()[0] ?? 0), 2);
+    $stmt->close();
 
-    // Under evaluation → terminal (approved / disapproved)
-    $res = $db->query(
+    $stmt = prepareBound(
+        $db,
         "SELECT AVG(TIMESTAMPDIFF(HOUR, sh1.changed_at, sh2.changed_at)) AS hrs
          FROM status_history sh1
          JOIN status_history sh2
            ON sh1.application_id = sh2.application_id
           AND sh2.to_status IN ('approved','disapproved')
           AND sh2.changed_at > sh1.changed_at
-         WHERE sh1.to_status = 'under_evaluation'"
+         JOIN applications a ON a.id = sh1.application_id
+         {$f['join']}
+         WHERE sh1.to_status = 'under_evaluation'
+           AND sh2.changed_at BETWEEN ? AND ? {$f['where']}",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
-    $review = round((float) $res->fetch_row()[0] / 24, 1);
+    $stmt->execute();
+    $review = round((float) ($stmt->get_result()->fetch_row()[0] ?? 0), 2);
+    $stmt->close();
 
-    // Decision → finalized (approved/disapproved) – same as review end for now
-    $decision = 0;
-    $stmt = $db->prepare(
+    $stmt = prepareBound(
+        $db,
         "SELECT AVG(TIMESTAMPDIFF(HOUR, e.evaluated_at, a.updated_at)) AS hrs
          FROM evaluations e
          JOIN applications a ON a.id = e.application_id
-         WHERE e.decision IN ('approved','disapproved')"
+         {$f['join']}
+         WHERE e.decision IN ('approved','disapproved')
+           AND e.evaluated_at BETWEEN ? AND ? {$f['where']}",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
     $stmt->execute();
-    $decision = round((float) $stmt->get_result()->fetch_row()[0] / 24, 1);
+    $decision = round((float) ($stmt->get_result()->fetch_row()[0] ?? 0), 2);
     $stmt->close();
 
     $max = max($submission, $assignment, $review, $decision, 0.1);
 
     return [
-        ['label' => 'Submission', 'days' => $submission, 'color' => '#3b82f6', 'pct' => round($submission / $max * 100)],
-        ['label' => 'Assignment', 'days' => $assignment, 'color' => '#f59e0b', 'pct' => round($assignment / $max * 100)],
-        ['label' => 'Review',     'days' => $review,     'color' => '#ef4444', 'pct' => round($review     / $max * 100)],
-        ['label' => 'Decision',   'days' => $decision,   'color' => '#059669', 'pct' => round($decision   / $max * 100)],
+        ['label' => 'Submission', 'hours' => $submission, 'color' => '#3b82f6', 'pct' => round($submission / $max * 100)],
+        ['label' => 'Assignment', 'hours' => $assignment, 'color' => '#f59e0b', 'pct' => round($assignment / $max * 100)],
+        ['label' => 'Review',     'hours' => $review,     'color' => '#ef4444', 'pct' => round($review     / $max * 100)],
+        ['label' => 'Decision',   'hours' => $decision,   'color' => '#059669', 'pct' => round($decision   / $max * 100)],
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   4. OVERDUE  (pending / under_evaluation  older than 7 days)
-═══════════════════════════════════════════════════════════════ */
-function getOverdue(mysqli $db): array
+/* 4. OVERDUE (pending/under_evaluation older than 7 days), scoped to filters */
+function getOverdue(mysqli $db, array $f, int $days = 7): array
 {
-    $res = $db->query(
+    $fOverdue = buildFilters('a', 'c', 'r');
+
+    $joinParts = [];
+    if ($fOverdue['province'] !== '') {
+        $joinParts[] = trim($fOverdue['join']);
+    } else {
+        $joinParts[] = 'LEFT JOIN clients c ON c.cid = a.client_id';
+    }
+    if ($fOverdue['country'] !== '') {
+        $joinParts[] = 'JOIN rsf_job_orders r ON r.id = a.rsf_id';
+    } else {
+        $joinParts[] = 'LEFT JOIN rsf_job_orders r ON r.id = a.rsf_id';
+    }
+    $join = ' ' . implode(' ', $joinParts) . ' ';
+
+    $stmt = prepareBound(
+        $db,
         "SELECT a.id, a.status, a.submitted_at,
                 CONCAT(c.first_name,' ',c.last_name) AS applicant,
                 r.rsf_number, r.position_title,
                 DATEDIFF(NOW(), a.submitted_at) AS days_waiting
          FROM applications a
-         LEFT JOIN clients c ON c.cid = a.client_id
-         LEFT JOIN rsf_job_orders r ON r.id = a.rsf_id
-         WHERE a.status IN ('pending','under_evaluation','unassign','assign')
-           AND a.submitted_at < DATE_SUB(NOW(), INTERVAL 7 DAY)
-         ORDER BY days_waiting DESC"
+         {$join}
+         WHERE a.status NOT IN ('approved','disapproved')
+           AND a.submitted_at < DATE_SUB(NOW(), INTERVAL ? DAY)
+           {$fOverdue['where']}
+         ORDER BY days_waiting DESC",
+        'i' . $fOverdue['types'],
+        array_merge([$days], $fOverdue['params'])
     );
+    $stmt->execute();
+    $res = $stmt->get_result();
 
     $items = [];
     while ($r = $res->fetch_assoc()) {
         $items[] = [
-            'id'           => $r['id'],
+            'id'           => (int) $r['id'],
             'applicant'    => $r['applicant'],
             'status'       => $r['status'],
             'rsf'          => $r['rsf_number'],
@@ -228,51 +385,110 @@ function getOverdue(mysqli $db): array
             'days_waiting' => (int) $r['days_waiting'],
         ];
     }
+    $stmt->close();
     return ['count' => count($items), 'items' => $items];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   5. WEEKLY SUBMISSION TREND  (last 8 weeks)
-   submitted / approved / disapproved per ISO week
-═══════════════════════════════════════════════════════════════ */
-function getWeekly(mysqli $db): array
+/* 5. SUBMISSION TREND
+   - 'all' (current year)  -> monthly buckets (Jan..Dec)
+   - specific month        -> weekly buckets within that month       */
+function getWeekly(mysqli $db, string $monthParam, string $start, string $end, array $f): array
 {
-    // Build last 8 week keys (YYYY-Www)
-    $weeks = [];
-    for ($i = 7; $i >= 0; $i--) {
-        $ts      = strtotime("-$i weeks");
-        $weeks[] = date('Y', $ts) . '-W' . str_pad((int)date('W', $ts), 2, '0', STR_PAD_LEFT);
+    if ($monthParam === 'all') {
+        $labels      = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        $submitted   = array_fill(1, 12, 0);
+        $approved    = array_fill(1, 12, 0);
+        $disapproved = array_fill(1, 12, 0);
+
+        $stmt = prepareBound(
+            $db,
+            "SELECT MONTH(a.submitted_at) AS mo, COUNT(*) AS cnt
+             FROM applications a {$f['join']}
+             WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}
+             GROUP BY mo",
+            'ss' . $f['types'],
+            array_merge([$start, $end], $f['params'])
+        );
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($r = $res->fetch_assoc()) $submitted[(int) $r['mo']] = (int) $r['cnt'];
+        $stmt->close();
+
+        $stmt = prepareBound(
+            $db,
+            "SELECT MONTH(a.updated_at) AS mo, a.status, COUNT(*) AS cnt
+             FROM applications a {$f['join']}
+             WHERE a.status IN ('approved','disapproved')
+               AND a.updated_at BETWEEN ? AND ? {$f['where']}
+             GROUP BY mo, a.status",
+            'ss' . $f['types'],
+            array_merge([$start, $end], $f['params'])
+        );
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($r = $res->fetch_assoc()) {
+            $mo = (int) $r['mo'];
+            if ($r['status'] === 'approved')    $approved[$mo]    = (int) $r['cnt'];
+            if ($r['status'] === 'disapproved') $disapproved[$mo] = (int) $r['cnt'];
+        }
+        $stmt->close();
+
+        return [
+            'labels'      => $labels,
+            'submitted'   => array_values($submitted),
+            'approved'    => array_values($approved),
+            'disapproved' => array_values($disapproved),
+        ];
     }
+
+    // Specific month -> weekly buckets
+    $weeks  = [];
+    $cursor = strtotime($start);
+    $endTs  = strtotime($end);
+    while ($cursor <= $endTs) {
+        $weeks[] = date('Y', $cursor) . '-W' . str_pad((int) date('W', $cursor), 2, '0', STR_PAD_LEFT);
+        $cursor  = strtotime('+1 week', $cursor);
+    }
+    $lastWeek = date('Y', $endTs) . '-W' . str_pad((int) date('W', $endTs), 2, '0', STR_PAD_LEFT);
+    if (!in_array($lastWeek, $weeks, true)) $weeks[] = $lastWeek;
+    $weeks = array_values(array_unique($weeks));
 
     $submitted   = array_fill_keys($weeks, 0);
     $approved    = array_fill_keys($weeks, 0);
     $disapproved = array_fill_keys($weeks, 0);
 
-    $res = $db->query(
-        "SELECT CONCAT(YEAR(submitted_at),'-W',LPAD(WEEK(submitted_at,3),2,'0')) AS wk,
-                COUNT(*) AS cnt
-         FROM applications
-         WHERE submitted_at >= DATE_SUB(NOW(), INTERVAL 8 WEEK)
-         GROUP BY wk"
+    $stmt = prepareBound(
+        $db,
+        "SELECT CONCAT(YEAR(a.submitted_at),'-W',LPAD(WEEK(a.submitted_at,3),2,'0')) AS wk, COUNT(*) AS cnt
+         FROM applications a {$f['join']}
+         WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}
+         GROUP BY wk",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
-    while ($r = $res->fetch_assoc()) {
-        if (isset($submitted[$r['wk']])) $submitted[$r['wk']] = (int)$r['cnt'];
-    }
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) if (isset($submitted[$r['wk']])) $submitted[$r['wk']] = (int) $r['cnt'];
+    $stmt->close();
 
-    $res = $db->query(
-        "SELECT CONCAT(YEAR(updated_at),'-W',LPAD(WEEK(updated_at,3),2,'0')) AS wk,
-                status, COUNT(*) AS cnt
-         FROM applications
-         WHERE status IN ('approved','disapproved')
-           AND updated_at >= DATE_SUB(NOW(), INTERVAL 8 WEEK)
-         GROUP BY wk, status"
+    $stmt = prepareBound(
+        $db,
+        "SELECT CONCAT(YEAR(a.updated_at),'-W',LPAD(WEEK(a.updated_at,3),2,'0')) AS wk, a.status, COUNT(*) AS cnt
+         FROM applications a {$f['join']}
+         WHERE a.status IN ('approved','disapproved')
+           AND a.updated_at BETWEEN ? AND ? {$f['where']}
+         GROUP BY wk, a.status",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
+    $stmt->execute();
+    $res = $stmt->get_result();
     while ($r = $res->fetch_assoc()) {
-        if ($r['status'] === 'approved'    && isset($approved[$r['wk']]))    $approved[$r['wk']]    = (int)$r['cnt'];
-        if ($r['status'] === 'disapproved' && isset($disapproved[$r['wk']])) $disapproved[$r['wk']] = (int)$r['cnt'];
+        if ($r['status'] === 'approved'    && isset($approved[$r['wk']]))    $approved[$r['wk']]    = (int) $r['cnt'];
+        if ($r['status'] === 'disapproved' && isset($disapproved[$r['wk']])) $disapproved[$r['wk']] = (int) $r['cnt'];
     }
+    $stmt->close();
 
-    // Make human-readable labels (W1, W2…)
     $labels = array_map(fn($w) => 'W' . ltrim(explode('-W', $w)[1], '0'), $weeks);
 
     return [
@@ -283,110 +499,162 @@ function getWeekly(mysqli $db): array
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   6. TOP SERVICES BY APPLICATION VOLUME
-   (grouped by RSF position_title)
-═══════════════════════════════════════════════════════════════ */
-function getServices(mysqli $db): array
+/* 6. TOP SERVICES BY APPLICATION VOLUME, scoped to range */
+function getServices(mysqli $db, string $start, string $end, array $f): array
 {
-    $res = $db->query(
-        "SELECT r.id, r.rsf_number, r.position_title, r.employer_name,
-                r.worksite_country, r.classification, r.slots_available, r.deadline,
-                COUNT(a.id) AS applied
-         FROM rsf_job_orders r
-         LEFT JOIN applications a ON a.rsf_id = r.id
-         GROUP BY r.id
-         ORDER BY applied DESC
-         LIMIT 6"
-    );
+    $countryWhere = $f['country'] !== '' ? ' AND r.worksite_country = ?' : '';
+    $countryTypes = $f['country'] !== '' ? 's' : '';
+    $countryParams = $f['country'] !== '' ? [$f['country']] : [];
 
-    $items = [];
-    $max   = 1;
-    $rows  = [];
-    while ($r = $res->fetch_assoc()) {
-        $rows[] = $r;
-        if ((int)$r['applied'] > $max) $max = (int)$r['applied'];
+    $provinceJoin = '';
+    $provinceTypes = '';
+    $provinceParams = [];
+    $countExpr = 'COUNT(a.id)';
+
+    if ($f['province'] !== '') {
+        $provinceJoin = 'LEFT JOIN clients fc ON fc.cid = a.client_id AND fc.province = ?';
+        $provinceTypes = 's';
+        $provinceParams = [$f['province']];
+        $countExpr = 'COUNT(CASE WHEN fc.cid IS NOT NULL THEN a.id END)';
     }
 
+    $stmt = prepareBound(
+        $db,
+        "SELECT r.id, r.rsf_number, r.position_title, r.employer_name,
+                r.worksite_country, r.classification, r.slots_available, r.deadline,
+                {$countExpr} AS applied
+         FROM rsf_job_orders r
+                  LEFT JOIN applications a ON a.rsf_id = r.id AND a.status <> 'draft' AND a.submitted_at BETWEEN ? AND ?
+         {$provinceJoin}
+         WHERE 1=1 {$countryWhere}
+         GROUP BY r.id
+         ORDER BY applied DESC",
+        'ss' . $provinceTypes . $countryTypes,
+        array_merge([$start, $end], $provinceParams, $countryParams)
+    );
+    $stmt->execute();
+    $res = $stmt->get_result();
+
+    $rows = [];
+    $max  = 1;
+    while ($r = $res->fetch_assoc()) {
+        $rows[] = $r;
+        if ((int) $r['applied'] > $max) $max = (int) $r['applied'];
+    }
+    $stmt->close();
+
+    $items = [];
     foreach ($rows as $r) {
         $items[] = [
-            'rsf'       => $r['rsf_number'],
-            'title'     => $r['position_title'],
-            'employer'  => $r['employer_name'],
-            'country'   => $r['worksite_country'],
-            'type'      => $r['classification'] ?? 'Government',
-            'slots'     => (int)$r['slots_available'],
-            'applied'   => (int)$r['applied'],
-            'pct'       => round((int)$r['applied'] / $max * 100),
-            'deadline'  => $r['deadline'],
+            'rsf'      => $r['rsf_number'],
+            'title'    => $r['position_title'],
+            'employer' => $r['employer_name'],
+            'country'  => $r['worksite_country'],
+            'type'     => $r['classification'] ?? 'Government',
+            'slots'    => (int) $r['slots_available'],
+            'applied'  => (int) $r['applied'],
+            'pct'      => round((int) $r['applied'] / $max * 100),
+            'deadline' => $r['deadline'],
         ];
     }
     return $items;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   7. MONTHLY SERVICE USAGE (current year)
-   Government vs Private stacked bar
-═══════════════════════════════════════════════════════════════ */
-function getSvcMonthly(mysqli $db): array
+/* 7. MONTHLY JOB ORDERS POSTED vs APPLICATIONS RECEIVED, scoped to range */
+function getSvcMonthly(mysqli $db, string $start, string $end, array $f): array
 {
-    $year = (int)date('Y');
-    $gov  = array_fill(1, 12, 0);
-    $priv = array_fill(1, 12, 0);
+    $posted   = array_fill(1, 12, 0);
+    $received = array_fill(1, 12, 0);
 
-    $stmt = $db->prepare(
-        "SELECT MONTH(a.submitted_at) AS mo, r.classification, COUNT(*) AS cnt
-         FROM applications a
-         JOIN rsf_job_orders r ON r.id = a.rsf_id
-         WHERE YEAR(a.submitted_at) = ?
-         GROUP BY mo, r.classification"
-    );
-    $stmt->bind_param('i', $year);
+    $postedSql = "SELECT MONTH(created_at) AS mo, COUNT(*) AS cnt
+                  FROM rsf_job_orders
+                  WHERE created_at BETWEEN ? AND ?";
+    $postedTypes = 'ss';
+    $postedParams = [$start, $end];
+    if ($f['country'] !== '') {
+        $postedSql .= ' AND worksite_country = ?';
+        $postedTypes .= 's';
+        $postedParams[] = $f['country'];
+    }
+    $postedSql .= ' GROUP BY mo';
+
+    $stmt = prepareBound($db, $postedSql, $postedTypes, $postedParams);
     $stmt->execute();
     $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) $posted[(int) $r['mo']] = (int) $r['cnt'];
     $stmt->close();
 
-    while ($r = $res->fetch_assoc()) {
-        $mo = (int)$r['mo'];
-        if (strtolower($r['classification'] ?? '') === 'private') {
-            $priv[$mo] += (int)$r['cnt'];
-        } else {
-            $gov[$mo]  += (int)$r['cnt'];
-        }
-    }
+    $stmt = prepareBound(
+        $db,
+        "SELECT MONTH(a.submitted_at) AS mo, COUNT(*) AS cnt
+         FROM applications a {$f['join']}
+         WHERE a.submitted_at BETWEEN ? AND ? {$f['where']}
+         GROUP BY mo",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
+    );
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) $received[(int) $r['mo']] = (int) $r['cnt'];
+    $stmt->close();
 
     return [
-        'labels' => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-        'gov'    => array_values($gov),
-        'priv'   => array_values($priv),
+        'labels'   => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+        'posted'   => array_values($posted),
+        'received' => array_values($received),
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   8. TOP DESTINATION COUNTRIES (doughnut)
-═══════════════════════════════════════════════════════════════ */
-function getDestinations(mysqli $db): array
+/* 8. TOP DESTINATION COUNTRIES, scoped to range */
+function getDestinations(mysqli $db, string $start, string $end, array $f): array
 {
-    $res = $db->query(
+    $fDest = buildFilters('a', 'fc', 'r');
+
+    $stmt = prepareBound(
+        $db,
         "SELECT r.worksite_country AS country, COUNT(a.id) AS cnt
          FROM applications a
          JOIN rsf_job_orders r ON r.id = a.rsf_id
+         {$fDest['join']}
+         WHERE a.submitted_at BETWEEN ? AND ? {$fDest['where']}
          GROUP BY r.worksite_country
-         ORDER BY cnt DESC"
+         ORDER BY cnt DESC",
+        'ss' . $fDest['types'],
+        array_merge([$start, $end], $fDest['params'])
     );
+    $stmt->execute();
+    $res = $stmt->get_result();
 
-    $labels  = [];
-    $data    = [];
-    $palette = ['#1d4ed8', '#059669', '#d97706', '#6366f1', '#dc2626', '#94a3b8'];
-
+    $rows = [];
     while ($r = $res->fetch_assoc()) {
-        $labels[] = $r['country'];
-        $data[]   = (int)$r['cnt'];
+        $rows[] = ['country' => $r['country'] ?: 'Unspecified', 'cnt' => (int) $r['cnt']];
+    }
+    $stmt->close();
+
+    $palette = ['#1d4ed8', '#059669', '#d97706', '#6366f1', '#dc2626', '#94a3b8', '#0891b2', '#7c3aed'];
+
+    // Keep top 6, fold the remainder into "Other" so totals still match the filtered period
+    $TOP_N = 6;
+    $top   = array_slice($rows, 0, $TOP_N);
+    $rest  = array_slice($rows, $TOP_N);
+
+    if (!empty($rest)) {
+        $otherTotal = array_sum(array_column($rest, 'cnt'));
+        if ($otherTotal > 0) {
+            $top[] = ['country' => 'Other', 'cnt' => $otherTotal];
+        }
+    }
+
+    $labels = [];
+    $data   = [];
+    $colors = [];
+    foreach ($top as $i => $row) {
+        $labels[] = $row['country'];
+        $data[]   = $row['cnt'];
+        $colors[] = $palette[$i % count($palette)]; // cycle, never runs out
     }
 
     $total  = array_sum($data) ?: 1;
-    $colors = array_slice($palette, 0, count($labels));
-
     $legend = [];
     foreach ($labels as $i => $l) {
         $legend[] = ['label' => $l, 'pct' => round($data[$i] / $total * 100), 'color' => $colors[$i]];
@@ -395,31 +663,60 @@ function getDestinations(mysqli $db): array
     return ['labels' => $labels, 'data' => $data, 'colors' => $colors, 'legend' => $legend];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   9. EVALUATOR PERFORMANCE & WORKLOAD
-═══════════════════════════════════════════════════════════════ */
-function getEvaluators(mysqli $db): array
+/* 9. EVALUATOR PERFORMANCE & WORKLOAD, scoped to range */
+function getEvaluators(mysqli $db, string $start, string $end, array $f): array
 {
     $wlColors = ['#059669', '#d97706', '#3b82f6', '#6366f1', '#dc2626', '#94a3b8'];
 
-    // Total evaluated (final decision) per evaluator
-    $res = $db->query(
+    $extraTypes = '';
+    $extraParams = [];
+    $provinceJoin = '';
+    $countryJoin = '';
+    $handledCase = 'CASE WHEN a.id IS NOT NULL THEN asn.application_id END';
+
+    if ($f['province'] !== '') {
+        $provinceJoin = 'LEFT JOIN clients fc ON fc.cid = a.client_id AND fc.province = ?';
+        $extraTypes .= 's';
+        $extraParams[] = $f['province'];
+        $handledCase = 'CASE WHEN fc.cid IS NOT NULL THEN asn.application_id END';
+    }
+
+    if ($f['country'] !== '') {
+        $countryJoin = 'LEFT JOIN rsf_job_orders fj ON fj.id = a.rsf_id AND fj.worksite_country = ?';
+        $extraTypes .= 's';
+        $extraParams[] = $f['country'];
+        if ($f['province'] !== '') {
+            $handledCase = 'CASE WHEN fc.cid IS NOT NULL AND fj.id IS NOT NULL THEN asn.application_id END';
+        } else {
+            $handledCase = 'CASE WHEN fj.id IS NOT NULL THEN asn.application_id END';
+        }
+    }
+
+    $stmt = prepareBound(
+        $db,
         "SELECT e.eid, e.full_name, e.email,
-                COUNT(DISTINCT asn.application_id) AS handled
+                COUNT(DISTINCT {$handledCase}) AS handled
          FROM evaluators e
-         LEFT JOIN assignments asn ON asn.evaluator_id = e.eid
+         LEFT JOIN assignments asn ON asn.evaluator_id = e.eid AND asn.assigned_at BETWEEN ? AND ?
+        LEFT JOIN applications a ON a.id = asn.application_id AND a.status <> 'draft'
+         {$provinceJoin}
+         {$countryJoin}
          GROUP BY e.eid
-         ORDER BY handled DESC"
+         ORDER BY handled DESC",
+        'ss' . $extraTypes,
+        array_merge([$start, $end], $extraParams)
     );
+    $stmt->execute();
+    $res = $stmt->get_result();
 
     $rows    = [];
     $maxH    = 1;
     $wlNames = [];
     $wlData  = [];
+    $idx     = 0;
 
-    $idx = 0;
     while ($r = $res->fetch_assoc()) {
-        $h = (int)$r['handled'];
+        $h = (int) $r['handled'];
         if ($h > $maxH) $maxH = $h;
 
         $initials = implode('', array_map(
@@ -428,52 +725,77 @@ function getEvaluators(mysqli $db): array
         ));
         $initials = substr($initials, 0, 2);
 
-        $color   = $wlColors[$idx % count($wlColors)];
-        $rows[]  = [
+        $color  = $wlColors[$idx % count($wlColors)];
+        $rows[] = [
             'name'     => $r['full_name'],
             'email'    => $r['email'],
             'initials' => $initials,
             'handled'  => $h,
-            'pct'      => 0, // filled below
+            'pct'      => 0,
             'color'    => $color,
         ];
-        $wlNames[] = explode(' ', $r['full_name'])[0] . ' ' . (explode(' ', $r['full_name'])[1][0] ?? '') . '.';
+        $nameParts = explode(' ', $r['full_name']);
+        $wlNames[] = ($nameParts[0] ?? '') . ' ' . (isset($nameParts[1][0]) ? $nameParts[1][0] . '.' : '');
         $wlData[]  = $h;
         $idx++;
     }
+    $stmt->close();
 
     foreach ($rows as &$row) {
         $row['pct'] = $maxH > 0 ? round($row['handled'] / $maxH * 100) : 0;
     }
 
     return [
-        'staff'          => $rows,
-        'workload_names' => $wlNames,
-        'workload_data'  => $wlData,
+        'staff'           => $rows,
+        'workload_names'  => $wlNames,
+        'workload_data'   => $wlData,
         'workload_colors' => array_slice($wlColors, 0, count($wlNames)),
     ];
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   10. ACTIVE JOB ORDERS (deadline not passed)
-═══════════════════════════════════════════════════════════════ */
-function getJobOrders(mysqli $db): array
+/* 10. ACTIVE JOB ORDERS — deadline not yet passed; applied count scoped to range */
+function getJobOrders(mysqli $db, string $start, string $end, array $f): array
 {
-    $res = $db->query(
+    $where = ['r.deadline >= CURDATE()'];
+    $types = 'ss';
+    $params = [$start, $end];
+
+    $provinceJoin = '';
+    $countExpr = 'COUNT(a.id)';
+    if ($f['province'] !== '') {
+        $provinceJoin = 'LEFT JOIN clients fc ON fc.cid = a.client_id AND fc.province = ?';
+        $types .= 's';
+        $params[] = $f['province'];
+        $countExpr = 'COUNT(CASE WHEN fc.cid IS NOT NULL THEN a.id END)';
+    }
+
+    if ($f['country'] !== '') {
+        $where[] = 'r.worksite_country = ?';
+        $types .= 's';
+        $params[] = $f['country'];
+    }
+
+    $stmt = prepareBound(
+        $db,
         "SELECT r.id, r.rsf_number, r.position_title, r.employer_name,
                 r.worksite_country, r.slots_available, r.deadline,
-                COUNT(a.id) AS applied
+                {$countExpr} AS applied
          FROM rsf_job_orders r
-         LEFT JOIN applications a ON a.rsf_id = r.id
-         WHERE r.deadline >= CURDATE()
+                 LEFT JOIN applications a ON a.rsf_id = r.id AND a.status <> 'draft' AND a.submitted_at BETWEEN ? AND ?
+         {$provinceJoin}
+         WHERE " . implode(' AND ', $where) . "
          GROUP BY r.id
-         ORDER BY r.deadline ASC"
+         ORDER BY r.deadline ASC",
+        $types,
+        $params
     );
+    $stmt->execute();
+    $res = $stmt->get_result();
 
     $jobs = [];
     while ($r = $res->fetch_assoc()) {
-        $slots   = (int)$r['slots_available'];
-        $applied = (int)$r['applied'];
+        $slots   = (int) $r['slots_available'];
+        $applied = (int) $r['applied'];
         $pct     = $slots > 0 ? min(100, round($applied / $slots * 100)) : 0;
 
         $jobs[] = [
@@ -485,8 +807,27 @@ function getJobOrders(mysqli $db): array
             'applied'   => $applied,
             'fill_pct'  => $pct,
             'deadline'  => $r['deadline'],
-            'days_left' => (int)ceil((strtotime($r['deadline']) - time()) / 86400),
+            'days_left' => (int) ceil((strtotime($r['deadline']) - time()) / 86400),
         ];
     }
+    $stmt->close();
     return $jobs;
+}
+
+/* 11. DISTINCT DESTINATION COUNTRIES — for the filter pill dropdown */
+function getCountries(mysqli $db): array
+{
+    $res = $db->query(
+        "SELECT DISTINCT worksite_country
+         FROM rsf_job_orders
+         WHERE worksite_country IS NOT NULL AND worksite_country <> ''
+         ORDER BY worksite_country ASC"
+    );
+
+    $countries = [];
+    while ($row = $res->fetch_assoc()) {
+        $countries[] = $row['worksite_country'];
+    }
+
+    return $countries;
 }
