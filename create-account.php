@@ -13,9 +13,7 @@ use PHPMailer\PHPMailer\Exception;
 
 date_default_timezone_set('Asia/Manila');
 
-// ────────────────────────────────────────────────
-//                RECAPTCHA CONFIG
-// ────────────────────────────────────────────────
+//RECAPTCHA CONFIG
 // Get your keys at: https://www.google.com/recaptcha/admin
 // Choose reCAPTCHA v2 -> "I'm not a robot" Checkbox
 define('RECAPTCHA_SITE_KEY', '6LfxiS0tAAAAAEL-IIPF8rLK-tCFEzahwEZHYSIO');
@@ -25,7 +23,7 @@ define('RECAPTCHA_SECRET_KEY', '6LfxiS0tAAAAAPq10jN28tOqcAKIBGIxJmbb5aqS');
  * Verifies a reCAPTCHA response token with Google's siteverify endpoint.
  * Returns true only if Google confirms the token is valid and unused.
  */
-function verify_recaptcha($token)
+function verify_recaptcha(?string $token): bool
 {
     if (empty($token)) {
         return false;
@@ -72,9 +70,7 @@ function generate_code($length = 6)
     return substr(str_shuffle('0123456789'), 0, $length);
 }
 
-// ────────────────────────────────────────────────
 //                FORM SUBMISSIONS
-// ────────────────────────────────────────────────
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
@@ -116,6 +112,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Full address is required.";
         } elseif (empty($barangay) || empty($city_municipality) || empty($province)) {
             $error = "Please select Province, City/Municipality, and Barangay.";
+        } elseif (!isset($_POST['agree_policy'])) {
+            $error = "You must agree to the Privacy Policy before creating an account.";
         } else {
             // Check if email already exists
             $stmt = $database->prepare("SELECT email FROM webuser WHERE email = ? LIMIT 1");
@@ -518,7 +516,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="page-wrapper">
         <div class="layout-card">
 
-            <!-- ══════════════ LEFT BRAND PANEL (desktop only) ══════════════ -->
+            <!--  LEFT BRAND PANEL (desktop only)  -->
             <div class="brand-panel">
                 <div class="brand-dots"></div>
 
@@ -570,7 +568,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             </div>
 
-            <!-- ══════════════ RIGHT FORM PANEL ══════════════ -->
+            <!--  RIGHT FORM PANEL  -->
             <div class="form-panel">
 
                 <!-- Mobile top bar (hidden on desktop) -->
@@ -602,7 +600,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     <form method="POST" class="space-y-7">
 
-                        <!-- ── PERSONAL INFORMATION ── -->
+                        <!--  PERSONAL INFORMATION  -->
                         <div>
                             <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">PERSONAL INFORMATION</h3>
 
@@ -649,15 +647,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                         </div>
 
-                        <!-- ── EMAIL ── -->
+                        <!--  EMAIL  -->
                         <div>
                             <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">ACTIVE EMAIL ADDRESS <span class="text-red-500">*</span></label>
                             <input type="email" name="email" id="email" required
                                 class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
-                                placeholder="yourname@example.com">
+                                placeholder="juandelacruz@example.com">
                         </div>
 
-                        <!-- ── ACCOUNT SECURITY ── -->
+                        <!--  ACCOUNT SECURITY  -->
                         <div class="pt-4 border-t border-slate-200">
                             <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">ACCOUNT SECURITY</h3>
 
@@ -699,7 +697,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                         </div>
 
-                        <!-- ── CONTACT & ADDRESS ── -->
+                        <!--  CONTACT & ADDRESS  -->
                         <div class="pt-4 border-t border-slate-200">
                             <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">CONTACT & ADDRESS</h3>
 
@@ -743,7 +741,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                         </div>
 
-                        <!-- ── ADDITIONAL INFO ── -->
+                        <!--  ADDITIONAL INFO  -->
                         <div class="pt-4 border-t border-slate-200">
                             <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">ADDITIONAL INFORMATION</h3>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -763,8 +761,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
                             </div>
                         </div>
+                        <!--  PRIVACY POLICY AGREEMENT  -->
+                        <div class="pt-2">
+                            <label class="flex items-start gap-3 cursor-pointer">
+                                <input type="checkbox" name="agree_policy" id="agree_policy" required
+                                    class="mt-1 h-4 w-4 rounded border-slate-300 text-[var(--blue)] focus:ring-[var(--blue-lt)]">
+                                <span class="text-sm text-slate-600">
+                                    I have read and agree to the
+                                    <a href="https://dmw.gov.ph/data-privacy-notice" target="_blank" rel="noopener noreferrer"
+                                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] underline">
+                                        DMW Data Privacy Notice
+                                    </a>
+                                    and Terms of Service. <span class="text-red-500">*</span>
+                                </span>
+                            </label>
+                        </div>
 
-                        <!-- ── RECAPTCHA ── -->
+                        <!--  RECAPTCHA  -->
                         <div class="pt-2 flex justify-center">
                             <div class="g-recaptcha" data-sitekey="<?= htmlspecialchars(RECAPTCHA_SITE_KEY) ?>"></div>
                         </div>
@@ -809,7 +822,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div><!-- /page-wrapper -->
 
 
-    <!-- ── Password script ── -->
+    <!--  Password script  -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const pwdInput = document.getElementById('password');
@@ -896,7 +909,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         makeToggle('toggleConfirm', 'eyeConfirm', 'password_confirm');
     </script>
 
-    <!-- ── Philippine address dropdowns ── -->
+    <!--  Philippine address dropdowns  -->
     <script>
         const provinceInput = document.getElementById("province");
         const cityInput = document.getElementById("city_municipality");
