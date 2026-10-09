@@ -1,0 +1,217 @@
+/* ============================
+   DARK MODE — shared across all DMW pages
+   ============================ */
+html[data-theme="dark"] {
+  --navy: #e2e8f0;
+  --blue: #3b82f6;
+  --blue-lt: #60a5fa;
+  --indigo: #818cf8;
+  --amber: #fbbf24;
+  --gold: #fbbf24;
+  --green: #34d399;
+  --ok: #34d399;
+  --red: #f87171;
+
+  --text1: #e2e8f0;
+  --text2: #94a3b8;
+  --text3: #64748b;
+
+  --border: #2a3548;
+  --surface: #1e293b;
+  --card: #1e293b;
+  --hover-row: rgba(255, 255, 255, 0.06);
+  --selected-row: rgba(59, 130, 246, 0.2);
+
+  background: #0f172a;
+  color: var(--text1);
+}
+
+html[data-theme="dark"] body {
+  background: #0f172a;
+  color: var(--text1);
+}
+
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .kpi-card,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .subbar,
+html[data-theme="dark"] .dock {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+html[data-theme="dark"] .skeleton {
+  background: linear-gradient(90deg, #253247 25%, #2f3d54 50%, #253247 75%);
+  background-size: 200% 100%;
+}
+
+html[data-theme="dark"] .mstat {
+  background: #16213a;
+  border-color: var(--border);
+}
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] select,
+html[data-theme="dark"] textarea {
+  background: #1e293b;
+  color: var(--text1);
+  border-color: var(--border);
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  color: var(--text2);
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.theme-toggle:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+html[data-theme="dark"] .theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.theme-toggle .fa-sun {
+  display: none;
+}
+html[data-theme="dark"] .theme-toggle .fa-sun {
+  display: inline-block;
+}
+html[data-theme="dark"] .theme-toggle .fa-moon {
+  display: none;
+}
+
+html[data-theme="dark"] [role="listbox"] {
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+html[data-theme="dark"] [role="option"] {
+  color: var(--text1);
+}
+html[data-theme="dark"] [role="option"]:hover:not(.bg-\[\#eff6ff\]) {
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+html[data-theme="dark"] [role="option"].bg-\[\#eff6ff\] {
+  background: rgba(59, 130, 246, 0.2) !important;
+  color: #93c5fd !important;
+}
+html[data-theme="dark"] [role="option"] .fa-check {
+  color: #60a5fa !important;
+}
+
+/* KPI cards / search inputs / tables that use raw Tailwind bg-white
+   instead of your CSS vars — applies wherever those classes appear */
+html[data-theme="dark"] .bg-white {
+  background: var(--surface) !important;
+  color: var(--text1) !important;
+}
+html[data-theme="dark"] .text-gray-900 {
+  color: var(--text1) !important;
+}
+html[data-theme="dark"] .text-gray-500,
+html[data-theme="dark"] .text-gray-700 {
+  color: var(--text2) !important;
+}
+html[data-theme="dark"] .bg-gray-100 {
+  background: #263349 !important;
+  color: #cbd5e1 !important;
+}
+html[data-theme="dark"] .hover\:bg-gray-200:hover {
+  background: #2f3d54 !important;
+}
+
+/* ================= DARK MODE — SweetAlert2 ================= */
+[data-theme="dark"] .swal2-popup {
+  background: var(--card, #111827) !important;
+  color: var(--text1, #f1f5f9) !important;
+}
+
+[data-theme="dark"] .swal2-title {
+  color: var(--text1, #f1f5f9) !important;
+}
+
+[data-theme="dark"] .swal2-html-container {
+  color: var(--text2, #cbd5e1) !important;
+}
+
+[data-theme="dark"] .swal2-close {
+  color: var(--text3, #94a3b8) !important;
+}
+
+[data-theme="dark"] .swal2-close:hover {
+  color: var(--text1, #f1f5f9) !important;
+}
+
+[data-theme="dark"] .swal2-icon.swal2-warning {
+  border-color: #fbbf24;
+  color: #fbbf24;
+}
+
+[data-theme="dark"] .swal2-icon.swal2-error {
+  border-color: #f87171;
+  color: #f87171;
+}
+
+[data-theme="dark"] .swal2-icon.swal2-info {
+  border-color: #60a5fa;
+  color: #60a5fa;
+}
+
+[data-theme="dark"] .swal2-icon.swal2-success [class^="swal2-success-line"] {
+  background-color: #34d399 !important;
+}
+
+[data-theme="dark"] .swal2-icon.swal2-success .swal2-success-ring {
+  border-color: rgba(52, 211, 153, 0.3) !important;
+}
+
+[data-theme="dark"] .swal2-timer-progress-bar {
+  background: rgba(255, 255, 255, 0.35) !important;
+}
+
+[data-theme="dark"] .swal2-input,
+[data-theme="dark"] .swal2-textarea,
+[data-theme="dark"] .swal2-select {
+  background: var(--surface, #1e293b) !important;
+  color: var(--text1, #f1f5f9) !important;
+  border-color: var(--border, #334155) !important;
+}
+
+/* ===== Global scrollbar theming ===== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+html {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--text3);
+}
+html[data-theme="dark"] {
+  scrollbar-color: var(--border) transparent;
+}
