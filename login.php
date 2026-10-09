@@ -17,80 +17,333 @@ require_once 'db.php';
 
 date_default_timezone_set('Asia/Manila');
 
+// LOGIN ATTEMPTS CONFIG
+const MAX_LOGIN_ATTEMPTS   = 5;   // failed attempts allowed
+const LOCKOUT_WINDOW_MIN   = 15;  // minutes the failed attempts are counted over
+const LOCKOUT_DURATION_MIN = 15;  // minutes the account/IP stays locked once the limit is hit
+
+/**
+ * Get the real client IP, accounting for common proxy headers.
+ */
+function get_client_ip(): string
+{
+    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_CLIENT_IP', 'REMOTE_ADDR'] as $key) {
+        if (!empty($_SERVER[$key])) {
+            $ip = trim(explode(',', $_SERVER[$key])[0]);
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                return $ip;
+            }
+        }
+    }
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
+/**
+ * Record a login attempt (success or failure) in the login_attempts table.
+ */
+function record_login_attempt(mysqli $database, string $email, string $ip, bool $success): void
+{
+    $stmt = $database->prepare(
+        "INSERT INTO login_attempts (email, ip_address, user_agent, success, attempted_at)
+         VALUES (?, ?, ?, ?, NOW())"
+    );
+    $userAgent = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255);
+    $successInt = $success ? 1 : 0;
+    $stmt->bind_param("sssi", $email, $ip, $userAgent, $successInt);
+    $stmt->execute();
+    $stmt->close();
+}
+
+/**
+ * Count failed attempts for this email+IP within the lockout window.
+ * Only counts failures that happened AFTER the most recent success,
+ * so a good login resets the counter naturally.
+ */
+function count_recent_failed_attempts(mysqli $database, string $email, string $ip): int
+{
+    $stmt = $database->prepare(
+        "SELECT COUNT(*) AS cnt FROM login_attempts
+         WHERE email = ? AND ip_address = ? AND success = 0
+           AND attempted_at >= (NOW() - INTERVAL ? MINUTE)
+           AND attempted_at > COALESCE((
+                SELECT MAX(attempted_at) FROM login_attempts
+                WHERE email = ? AND ip_address = ? AND success = 1
+           ), '1970-01-01')"
+    );
+    $windowMin = LOCKOUT_WINDOW_MIN;
+    $stmt->bind_param("sisis", $email, $ip, $windowMin, $email, $ip);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $count = (int) $result->fetch_assoc()['cnt'];
+    $stmt->close();
+    return $count;
+}
+
+/**
+ * Returns minutes remaining on the lockout, or 0 if not locked out.
+ */
+function get_lockout_minutes_remaining(mysqli $database, string $email, string $ip): int
+{
+    $failedCount = count_recent_failed_attempts($database, $email, $ip);
+
+    if ($failedCount < MAX_LOGIN_ATTEMPTS) {
+        return 0;
+    }
+
+    // Find when the (MAX_LOGIN_ATTEMPTS)-th most recent qualifying failure happened,
+    // lockout counts down from that attempt.
+    $stmt = $database->prepare(
+        "SELECT attempted_at FROM login_attempts
+         WHERE email = ? AND ip_address = ? AND success = 0
+           AND attempted_at >= (NOW() - INTERVAL ? MINUTE)
+         ORDER BY attempted_at DESC
+         LIMIT 1"
+    );
+    $windowMin = LOCKOUT_WINDOW_MIN;
+    $stmt->bind_param("sis", $email, $ip, $windowMin);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $row = $result->fetch_assoc();
+    $stmt->close();
+
+    if (!$row) {
+        return 0;
+    }
+
+    $lastFailedAt = strtotime($row['attempted_at']);
+    $lockoutEnds  = $lastFailedAt + (LOCKOUT_DURATION_MIN * 60);
+    $secondsLeft  = $lockoutEnds - time();
+
+    return $secondsLeft > 0 ? (int) ceil($secondsLeft / 60) : 0;
+}
+
+/**
+ * Check if this email already has a pending reactivation request.
+ */
+function has_pending_reactivation_request(mysqli $database, string $email): bool
+{
+    $stmt = $database->prepare("SELECT id FROM reactivation_requests WHERE email = ? AND status = 'pending' LIMIT 1");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $found = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    return $found;
+}
+
 $error = '';
 $email_value = '';
+$show_reactivation_modal = false;
+$deactivated_email = '';
+$reactivation_success = false;
+$reactivation_message = '';
+
+// Flash message set by client/profile.php after self-deactivation
+$info_message = '';
+if (isset($_SESSION['login_message'])) {
+    $info_message = $_SESSION['login_message'];
+    unset($_SESSION['login_message']);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email    = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
 
-    $email_value = $email;
+    // REACTIVATION REQUEST SUBMISSION
+    if (($_POST['form_type'] ?? '') === 'reactivation') {
 
-    if (empty($email) || empty($password)) {
-        $error = "Please enter both email and password.";
-    } else {
-        $stmt = $database->prepare("SELECT email, usertype, password FROM webuser WHERE email = ? LIMIT 1");
-        $stmt->bind_param("s", $email);
-        $stmt->execute();
-        $result = $stmt->get_result();
+        $r_email    = trim($_POST['reactivation_email'] ?? '');
+        $r_password = $_POST['reactivation_password'] ?? '';
+        $r_reason   = trim($_POST['reactivation_reason'] ?? '');
 
-        if ($result->num_rows === 1) {
-            $user = $result->fetch_assoc();
-
-            if (password_verify($password, $user['password'])) {
-
-                $_SESSION['user_email'] = $user['email'];
-                $_SESSION['user_type']  = $user['usertype'];
-                $_SESSION['login_success'] = true;
-
-                $stmt_name = $database->prepare("
-                    SELECT CONCAT(first_name, ' ', last_name) AS full_name 
-                    FROM clients WHERE email = ? LIMIT 1
-                ");
-                $stmt_name->bind_param("s", $email);
-                $stmt_name->execute();
-                $name_result = $stmt_name->get_result();
-                if ($name_result->num_rows === 1) {
-                    $_SESSION['full_name'] = $name_result->fetch_assoc()['full_name'];
-                }
-                $stmt_name->close();
-
-                if (isset($_POST['remember']) && $_POST['remember'] === 'on') {
-                    $token   = bin2hex(random_bytes(32));
-                    $expires = date('Y-m-d H:i:s', time() + (30 * 24 * 60 * 60));
-                    $stmt_token = $database->prepare("UPDATE webuser SET remember_token = ?, remember_expires = ? WHERE email = ?");
-                    $stmt_token->bind_param("sss", $token, $expires, $email);
-                    $stmt_token->execute();
-                    $stmt_token->close();
-                    setcookie('remember_token', $token, [
-                        'expires'  => time() + (30 * 24 * 60 * 60),
-                        'path'     => '/',
-                        'secure'   => false,
-                        'httponly' => true,
-                        'samesite' => 'Strict'
-                    ]);
-                }
-
-                $redirect_map = [
-                    'client'    => 'client/index.php',
-                    'admin'     => 'admin/dashboard.php',
-                    'evaluator' => 'evaluator/index.php',
-                ];
-
-                if (isset($redirect_map[$user['usertype']])) {
-                    header("Location: " . $redirect_map[$user['usertype']]);
-                    exit;
-                } else {
-                    $error = "Account type not supported.";
-                }
-            } else {
-                $error = "Invalid email or password."; // Password is incorrect, but we show the same message as an invalid email to avoid giving hints about which one is wrong
-            }
+        if (empty($r_email) || empty($r_password)) {
+            $error = "Please enter your email and password to verify your identity.";
+            $show_reactivation_modal = true;
+            $deactivated_email = $r_email;
+        } elseif (mb_strlen($r_reason) < 10) {
+            $error = "Please provide a reason for reactivation (at least 10 characters).";
+            $show_reactivation_modal = true;
+            $deactivated_email = $r_email;
         } else {
-            $error = "Invalid email or password."; // Avoid revealing whether email or password was incorrect, the email is invalid
+            $stmt = $database->prepare("SELECT email, usertype, password, is_active FROM webuser WHERE email = ? LIMIT 1");
+            $stmt->bind_param("s", $r_email);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $user = $result->num_rows === 1 ? $result->fetch_assoc() : null;
+            $stmt->close();
+
+            if (!$user || !password_verify($r_password, $user['password'])) {
+                $error = "Invalid email or password.";
+                $show_reactivation_modal = true;
+                $deactivated_email = $r_email;
+            } elseif (!in_array($user['usertype'], ['client', 'evaluator'], true)) {
+                $error = "This account type cannot request reactivation.";
+            } elseif ((int)$user['is_active'] === 1) {
+                $error = "This account is already active. Please log in normally.";
+            } elseif (has_pending_reactivation_request($database, $r_email)) {
+                $error = "You already have a pending reactivation request. Please wait for admin review.";
+            } else {
+                $stmt = $database->prepare("INSERT INTO reactivation_requests (email, usertype, reason) VALUES (?, ?, ?)");
+                $stmt->bind_param("sss", $r_email, $user['usertype'], $r_reason);
+
+                if ($stmt->execute()) {
+                    $stmt->close();
+
+                    // Look up a display name for the admin notification
+                    $display_name = $r_email;
+                    if ($user['usertype'] === 'evaluator') {
+                        $n = $database->prepare("SELECT full_name FROM evaluators WHERE email = ? LIMIT 1");
+                    } else {
+                        $n = $database->prepare("SELECT CONCAT(first_name, ' ', last_name) AS full_name FROM clients WHERE email = ? LIMIT 1");
+                    }
+                    $n->bind_param("s", $r_email);
+                    $n->execute();
+                    $nrow = $n->get_result()->fetch_assoc();
+                    $n->close();
+                    if (!empty($nrow['full_name'])) {
+                        $display_name = trim($nrow['full_name']);
+                    }
+
+                    // Notify all admins
+                    $admin_stmt = $database->prepare("SELECT email FROM admins");
+                    $admin_stmt->execute();
+                    $admins = $admin_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $admin_stmt->close();
+
+                    $notif_title = "New Reactivation Request";
+                    $notif_msg   = htmlspecialchars($display_name) . " (" . $r_email . ") has requested account reactivation.";
+                    foreach ($admins as $adm) {
+                        $nstmt = $database->prepare("INSERT INTO notifications (user_email, usertype, title, message, type) VALUES (?, 'admin', ?, ?, 'account_status')");
+                        $nstmt->bind_param("sss", $adm['email'], $notif_title, $notif_msg);
+                        $nstmt->execute();
+                        $nstmt->close();
+                    }
+
+                    $reactivation_success = true;
+                    $reactivation_message = "Your reactivation request has been submitted. The administrator will review it and notify you by email whether it is approved or declined.";
+                } else {
+                    $stmt->close();
+                    $error = "Something went wrong while submitting your request. Please try again.";
+                    $show_reactivation_modal = true;
+                    $deactivated_email = $r_email;
+                }
+            }
         }
-        $stmt->close();
     }
+
+    // NORMAL LOGIN SUBMISSION
+    elseif (($_POST['form_type'] ?? 'login') === 'login') {
+
+        $email    = trim($_POST['email'] ?? '');
+        $password = $_POST['password'] ?? '';
+        $ip       = get_client_ip();
+
+        $email_value = $email;
+
+        if (empty($email) || empty($password)) {
+            $error = "Please enter both email and password.";
+        } else {
+
+            $lockoutMinutes = get_lockout_minutes_remaining($database, $email, $ip);
+
+            if ($lockoutMinutes > 0) {
+                $error = "Too many failed login attempts. Please try again in "
+                    . $lockoutMinutes . " minute" . ($lockoutMinutes === 1 ? "" : "s") . ".";
+            } else {
+
+                $stmt = $database->prepare("SELECT email, usertype, password, is_active, deactivation_reason FROM webuser WHERE email = ? LIMIT 1");
+                $stmt->bind_param("s", $email);
+                $stmt->execute();
+                $result = $stmt->get_result();
+
+                if ($result->num_rows === 1) {
+                    $user = $result->fetch_assoc();
+
+                    if (password_verify($password, $user['password'])) {
+
+                        record_login_attempt($database, $email, $ip, true);
+
+                        // ── Blocked: account deactivated ──
+                        if ((int)$user['is_active'] === 0) {
+                            if (has_pending_reactivation_request($database, $email)) {
+                                $error = "Your account is deactivated and you already have a reactivation request pending admin review. You will be notified by email once it is approved or declined.";
+                            } else {
+                                $error = "Your account has been deactivated"
+                                    . (!empty($user['deactivation_reason']) ? " (Reason: " . $user['deactivation_reason'] . ")" : "")
+                                    . ". You may submit a reactivation request below. The administrator will review it and notify you by email whether it is approved or declined.";
+                                $show_reactivation_modal = true;
+                                $deactivated_email = $email;
+                            }
+                        } else {
+
+                            $_SESSION['user_email'] = $user['email'];
+                            $_SESSION['user_type']  = $user['usertype'];
+                            $_SESSION['login_success'] = true;
+
+                            $stmt_name = $database->prepare("
+                                SELECT CONCAT(first_name, ' ', last_name) AS full_name 
+                                FROM clients WHERE email = ? LIMIT 1
+                            ");
+                            $stmt_name->bind_param("s", $email);
+                            $stmt_name->execute();
+                            $name_result = $stmt_name->get_result();
+                            if ($name_result->num_rows === 1) {
+                                $_SESSION['full_name'] = $name_result->fetch_assoc()['full_name'];
+                            }
+                            $stmt_name->close();
+
+                            if (isset($_POST['remember']) && $_POST['remember'] === 'on') {
+                                $token   = bin2hex(random_bytes(32));
+                                $expires = date('Y-m-d H:i:s', time() + (30 * 24 * 60 * 60));
+                                $stmt_token = $database->prepare("UPDATE webuser SET remember_token = ?, remember_expires = ? WHERE email = ?");
+                                $stmt_token->bind_param("sss", $token, $expires, $email);
+                                $stmt_token->execute();
+                                $stmt_token->close();
+                                setcookie('remember_token', $token, [
+                                    'expires'  => time() + (30 * 24 * 60 * 60),
+                                    'path'     => '/',
+                                    'secure'   => false,
+                                    'httponly' => true,
+                                    'samesite' => 'Strict'
+                                ]);
+                            }
+
+                            $redirect_map = [
+                                'client'    => 'client/index.php',
+                                'admin'     => 'admin/dashboard.php',
+                                'evaluator' => 'evaluator/index.php',
+                            ];
+
+                            if (isset($redirect_map[$user['usertype']])) {
+                                header("Location: " . $redirect_map[$user['usertype']]);
+                                exit;
+                            } else {
+                                $error = "Account type not supported.";
+                            }
+                        }
+                    } else {
+                        record_login_attempt($database, $email, $ip, false);
+                        $error = "Invalid email or password.";
+
+                        $remaining = MAX_LOGIN_ATTEMPTS - count_recent_failed_attempts($database, $email, $ip);
+                        if ($remaining > 0 && $remaining <= 2) {
+                            $error .= " You have " . $remaining . " attempt" . ($remaining === 1 ? "" : "s") . " left before your account is temporarily locked.";
+                        }
+                    }
+                } else {
+                    record_login_attempt($database, $email, $ip, false);
+                    $error = "Invalid email or password.";
+                }
+                $stmt->close();
+            }
+        }
+    }
+}
+
+// ── Attempts used so far, for display under the password field ──
+$attemptsUsed = 0;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
+    $attemptsUsed = min(
+        MAX_LOGIN_ATTEMPTS,
+        count_recent_failed_attempts($database, $email_value, get_client_ip())
+    );
 }
 ?>
 <!DOCTYPE html>
@@ -166,10 +419,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 16px 30px -8px rgb(11 31 75 / 0.5);
         }
 
-        /* ══════════════════════════════════════════
-           MOBILE / PORTRAIT (default, < lg)
-           Single-column card
-        ══════════════════════════════════════════ */
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /*MOBILE / PORTRAIT (default, < lg)
+           Single-column card */
         .page-wrapper {
             position: relative;
             z-index: 20;
@@ -206,10 +464,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding: 2rem;
         }
 
-        /* ══════════════════════════════════════════
-           DESKTOP / LANDSCAPE (≥ 1024 px)
-           Two-column: brand left, form right
-        ══════════════════════════════════════════ */
+        /*   DESKTOP / LANDSCAPE (≥ 1024 px)
+           Two-column: brand left, form right */
         @media (min-width: 1024px) {
             .bg-image {
                 padding: 1.5rem;
@@ -228,7 +484,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 min-height: 70vh;
             }
 
-            /* ── Left brand panel ── */
+            /*  Left brand panel  */
             .brand-panel {
                 display: flex;
                 flex-direction: column;
@@ -304,7 +560,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="page-wrapper">
         <div class="layout-card">
 
-            <!-- ══════════ LEFT BRAND PANEL (desktop only) ══════════ -->
+            <!--  LEFT BRAND PANEL (desktop only)  -->
             <div class="brand-panel">
                 <div class="brand-dots"></div>
 
@@ -354,7 +610,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             </div>
 
-            <!-- ══════════ RIGHT FORM PANEL ══════════ -->
+            <!--  RIGHT FORM PANEL  -->
             <div class="form-panel">
 
                 <!-- Mobile top bar (hidden on desktop) -->
@@ -367,8 +623,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                 </div>
 
-                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Welcome Back</h2>
+                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Welcome!</h2>
                 <p class="text-slate-500 text-sm mb-8">Sign in to your Portal</p>
+
+                <?php if ($info_message): ?>
+                    <div class="mb-6 rounded-2xl bg-blue-50 border border-blue-200 px-5 py-3 text-blue-800 text-sm">
+                        <?= htmlspecialchars($info_message) ?>
+                    </div>
+                <?php endif; ?>
 
                 <?php if ($error): ?>
                     <div class="mb-6 rounded-2xl bg-red-50 border border-red-200 px-5 py-3 text-red-700 text-sm">
@@ -376,7 +638,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                 <?php endif; ?>
 
+                <?php $isLockedOut = isset($lockoutMinutes) && $lockoutMinutes > 0; ?>
+
                 <form method="POST" action="" class="space-y-5">
+                    <input type="hidden" name="form_type" value="login">
 
                     <!-- Email -->
                     <div>
@@ -390,7 +655,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <input type="email" name="email" id="email" required
                                 value="<?= htmlspecialchars($email_value) ?>"
                                 class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
-                                placeholder="yourname@example.com">
+                                placeholder="juandelacruz@example.com">
                         </div>
                     </div>
 
@@ -411,6 +676,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <i class="fas fa-eye text-sm" id="eyeIcon"></i>
                             </button>
                         </div>
+                        <?php if ($attemptsUsed > 0): ?>
+                            <p class="mt-2 text-xs font-medium <?= $attemptsUsed >= MAX_LOGIN_ATTEMPTS ? 'text-red-600' : 'text-amber-600' ?>">
+                                Login attempts: <?= $attemptsUsed ?>/<?= MAX_LOGIN_ATTEMPTS ?>
+                            </p>
+                        <?php endif; ?>
                     </div>
 
                     <!-- Remember me / Forgot password -->
@@ -426,7 +696,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </a>
                     </div>
 
-                    <button type="submit"
+                    <button type="submit" <?= $isLockedOut ? 'disabled' : '' ?>
                         class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider mt-2">
                         SIGN IN
                     </button>
@@ -439,6 +709,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] transition-colors">
                         Create account
                     </a>
+                </div>
+
+                <div class="text-center mt-3 text-xs text-slate-500">
+                    Account deactivated?
+                    <button type="button" id="openReactivationModal"
+                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] transition-colors underline bg-transparent border-none cursor-pointer">
+                        Request reactivation
+                    </button>
                 </div>
 
                 <!-- Mobile copyright -->
@@ -464,6 +742,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         });
     </script>
 
+    <!--  REACTIVATION REQUEST MODAL  -->
+    <div id="reactivationModal" style="display:<?= $show_reactivation_modal ? 'flex' : ($reactivation_success ? 'flex' : 'none') ?>;
+        position:fixed; inset:0; background:rgba(11,31,75,.6); backdrop-filter:blur(4px); z-index:500;
+        align-items:center; justify-content:center; padding:20px;">
+        <div style="background:#fff; border-radius:22px; width:100%; max-width:440px; overflow:hidden; box-shadow:0 24px 64px rgba(0,0,0,.2);">
+            <div style="padding:22px 26px 18px; background:linear-gradient(135deg, var(--navy) 0%, #1e3a8a 100%); position:relative;">
+                <h3 style="font-size:17px; font-weight:800; color:#fff; margin:0;">
+                    <i class="fas fa-rotate-left" style="margin-right:8px; opacity:.8;"></i>Request Account Reactivation
+                </h3>
+                <p style="font-size:12px; color:rgba(255,255,255,.65); margin:4px 0 0;">
+                    Verify your identity and tell us why you'd like your account reactivated.
+                </p>
+                <button type="button" onclick="closeReactivationModal()"
+                    style="position:absolute; top:18px; right:20px; width:30px; height:30px; border-radius:8px; background:rgba(255,255,255,.15); border:none; cursor:pointer; color:#fff; font-size:16px; display:flex; align-items:center; justify-content:center;">×</button>
+            </div>
+
+            <?php if ($reactivation_success): ?>
+                <div style="padding:26px; text-align:center;">
+                    <i class="fas fa-circle-check" style="font-size:32px; color:#059669; margin-bottom:10px;"></i>
+                    <p style="font-size:13.5px; color:#0f172a; font-weight:600; margin-bottom:6px;">Request Submitted</p>
+                    <p style="font-size:12.5px; color:#64748b;"><?= htmlspecialchars($reactivation_message) ?></p>
+                    <button type="button" onclick="closeReactivationModal()"
+                        style="margin-top:16px; padding:10px 24px; border-radius:10px; background:var(--blue); color:#fff; border:none; font-weight:700; font-size:13px; cursor:pointer;">
+                        Close
+                    </button>
+                </div>
+            <?php else: ?>
+                <form method="POST" action="" style="padding:24px 26px;">
+                    <input type="hidden" name="form_type" value="reactivation">
+
+                    <div style="margin-bottom:16px; padding:11px 14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:11px; font-size:12px; line-height:1.55; color:#1e40af;">
+                        <i class="fas fa-circle-info" style="margin-right:6px;"></i>
+                        The administrator will review your request. You will be notified by email whether it is <strong>approved</strong> or <strong>declined</strong>. Until then, you will not be able to log in.
+                    </div>
+
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; margin-bottom:7px;">Email Address</label>
+                        <input type="email" name="reactivation_email" required
+                            value="<?= htmlspecialchars($deactivated_email) ?>"
+                            style="width:100%; padding:11px 14px; border:1.5px solid #e2e8f0; border-radius:11px; font-family:'DM Sans',sans-serif; font-size:13px;">
+                    </div>
+
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; margin-bottom:7px;">Password</label>
+                        <input type="password" name="reactivation_password" required
+                            style="width:100%; padding:11px 14px; border:1.5px solid #e2e8f0; border-radius:11px; font-family:'DM Sans',sans-serif; font-size:13px;">
+                        <p style="font-size:10.5px; color:#94a3b8; margin-top:5px;">Used to verify this is your account.</p>
+                    </div>
+
+                    <div style="margin-bottom:16px;">
+                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; margin-bottom:7px;">Reason for Reactivation</label>
+                        <textarea name="reactivation_reason" required rows="3"
+                            style="width:100%; padding:11px 14px; border:1.5px solid #e2e8f0; border-radius:11px; font-family:'DM Sans',sans-serif; font-size:13px; resize:vertical;"
+                            placeholder="Tell the admin why you'd like your account reactivated (at least 10 characters)..."></textarea>
+                    </div>
+
+                    <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
+                        <button type="button" onclick="closeReactivationModal()"
+                            style="padding:10px 20px; border-radius:10px; border:1.5px solid #e2e8f0; background:#f8fafc; color:#475569; font-weight:600; font-size:13px; cursor:pointer;">Cancel</button>
+                        <button type="submit"
+                            style="padding:10px 24px; border-radius:10px; background:linear-gradient(135deg, var(--blue), #4f46e5); color:#fff; border:none; font-weight:700; font-size:13px; cursor:pointer;">
+                            <i class="fas fa-paper-plane"></i> Submit Request
+                        </button>
+                    </div>
+                </form>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <script>
+        function closeReactivationModal() {
+            document.getElementById('reactivationModal').style.display = 'none';
+        }
+        document.getElementById('openReactivationModal').addEventListener('click', function() {
+            document.getElementById('reactivationModal').style.display = 'flex';
+        });
+        document.getElementById('reactivationModal').addEventListener('click', function(e) {
+            if (e.target === this) closeReactivationModal();
+        });
+    </script>
 </body>
 
 </html>
