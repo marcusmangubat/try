@@ -1285,7 +1285,7 @@ if (!$app) {
 
     <header class="topbar no-print">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
+            <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -1332,7 +1332,7 @@ if (!$app) {
 
                     <!--  HEADER  -->
                     <div class="doc-header-table">
-                        <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW logo">
+                        <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                         <div>
                             <p class="republic-line">Republic of the Philippines</p>
                             <p class="agency-name">DEPARTMENT OF MIGRANT WORKERS</p>

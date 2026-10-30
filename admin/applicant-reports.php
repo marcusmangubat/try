@@ -2092,7 +2092,7 @@ $generatedAt = date('F j, Y g:i A');
         /*  PDF REPORT CONFIG  */
         // Configurable logo path. Point this at a locally-hosted file (e.g. '../assets/dmw-logo.png')
         // if the remote dmw.gov.ph image ever fails to embed due to CORS.
-        const DMW_LOGO_URL = '../pictures/dmw_tahanan_ng_ofw.png';
+        const DMW_LOGO_URL = '../pictures/dmw_logo.png';
 
         const STATUS_LABELS = {
             pending: 'Pending',

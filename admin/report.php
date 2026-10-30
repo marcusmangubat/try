@@ -820,14 +820,12 @@ $qCountry  = trim($_GET['country'] ?? '');
             <button class="btn btn-primary" id="btn-pdf" onclick="exportToPdf()"><i class="fas fa-file-pdf"></i> Export to PDF</button>
         </div>
 
-        <!-- ══════════════════════════════════════════════════════════
-             WEB VIEW — interactive on-screen layout.
-             ══════════════════════════════════════════════════════════ -->
+        <!-- WEB VIEW — interactive on-screen layout. -->
         <div class="webView">
             <div class="doc-sheet">
 
                 <div class="doc-header-table">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW logo">
+                    <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                     <div>
                         <p class="republic-line">Republic of the Philippines</p>
                         <p class="agency-name">DEPARTMENT OF MIGRANT WORKERS</p>
