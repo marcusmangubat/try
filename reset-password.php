@@ -1,17 +1,10 @@
 <?php
 // reset-password.php
-
 session_start();
-include 'db.php';
+require_once 'db.php';
+require_once 'includes/mailer.php';
 
 date_default_timezone_set('Asia/Manila');
-
-require 'phpmailer/src/PHPMailer.php';
-require 'phpmailer/src/SMTP.php';
-require 'phpmailer/src/Exception.php';
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
 
 $error   = '';
 $success = '';
@@ -19,9 +12,8 @@ $step    = 'email'; // email → code → password → done
 
 function generate_code()
 {
-    return substr(str_shuffle('0123456789'), 0, 6);
+    return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (isset($_POST['send_code'])) {
@@ -48,35 +40,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'attempts' => 0
                 ];
 
-                $mail = new PHPMailer(true);
                 try {
-                    $mail->isSMTP();
-                    $mail->Host       = 'smtp.gmail.com';
-                    $mail->SMTPAuth   = true;
-                    $mail->Username   = 'mgmangubat@ccc.edu.ph';
-                    $mail->Password   = 'oenv xscw mokz rohw';
-                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                    $mail->Port       = 587;
-
-                    $mail->setFrom('no-reply@dmw-ams.local', 'DMW AMS');
+                    $mail = create_mailer($database);
                     $mail->addAddress($email);
 
                     $mail->isHTML(true);
-                    $mail->Subject = 'DMW AMS – Password Reset Code';
+                    $mail->Subject = 'DMW AMS | Password Reset Code';
                     $mail->Body    = "
-                        <h2 style='color:#1e40af;'>Password Reset Request</h2>
+                        <h2 style='color:#0A1F44;'>Password Reset Request</h2>
                         <p>Use this code to reset your password:</p>
-                        <h1 style='font-size:2.5rem; letter-spacing:0.4em; color:#1e40af;'><b>$code</b></h1>
+                        <h1 style='font-size:2.5rem; letter-spacing:0.4em; color:#0A1F44;'><b>$code</b></h1>
                         <p>This code expires in <strong>10 minutes</strong>.</p>
                         <p>If you did not request this, please ignore this email.</p>
                         <br><p>Department of Migrant Workers – Regional Office IV-A</p>
                     ";
-
+                    $mail->AltBody = "Your password reset code is: $code\nExpires in 10 minutes.";
                     $mail->send();
+
                     $step    = 'code';
-                    $success = "A verification code has been sent to <strong>$email</strong>.<br>Please check your inbox (and spam/junk folder).";
-                } catch (Exception $e) {
-                    $error = "Failed to send email: " . htmlspecialchars($mail->ErrorInfo);
+                    $success = "A verification code has been sent to <strong>" . htmlspecialchars($email) . "</strong>.<br>Please check your inbox (and spam/junk folder).";
+                } catch (Throwable $e) {
+                    error_log('Password reset email failed: ' . $e->getMessage());
+                    unset($_SESSION['reset']);
+                    $error = "Could not send the verification email. Please try again later.";
                 }
             } else {
                 $error = "No account found with this email.";
@@ -97,7 +83,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error = "Code expired. Please request a new one.";
                 $step  = 'email';
                 unset($_SESSION['reset']);
-            } elseif ($entered === $reset['code']) {
+            } elseif (hash_equals($reset['code'], $entered)) {
+                $reset['verified'] = true;
                 $step = 'password';
             } else {
                 $reset['attempts']++;
@@ -113,8 +100,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } elseif (isset($_POST['reset_password'])) {
 
-        if (!isset($_SESSION['reset'])) {
-            $error = "Session expired.";
+        if (
+            !isset($_SESSION['reset']) || empty($_SESSION['reset']['verified'])
+            || (time() - $_SESSION['reset']['time']) > 600
+        ) {
+            unset($_SESSION['reset']);
+            $error = "Session expired. Please start again.";
             $step  = 'email';
         } else {
             $reset        = $_SESSION['reset'];
@@ -159,15 +150,69 @@ $current_step_num = $steps[$step] ?? 1;
     <title>DMW RO IV-A – Reset Password</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Same palette as index.php / login.php
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        navy: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        blue: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        gray: {
+                            50: '#F5F7FA',
+                            100: '#EAEEF4',
+                            200: '#D8DFEA',
+                            300: '#BCC6D6',
+                            400: '#8E9BB1',
+                            500: '#64718A',
+                            600: '#4A5670',
+                            700: '#36415A',
+                            800: '#222C44',
+                            900: '#121B30'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
-
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="pictures/dmw_logo.png">
     <style>
         :root {
-            --navy: #0b1f4b;
-            --blue: #1d4ed8;
-            --blue-lt: #3b82f6;
+            --primary: #0A1F44;
+            --primary-dark: #00205f;
+            --primary-light: #e6efff;
+            --accent: #00a0df;
+            --text: #1f2937;
+            --navy: #0A1F44;
+            --navy-700: #1B3563;
+            --blue: #2A4577;
+            --blue-lt: #44639A;
         }
 
         * {
@@ -175,16 +220,17 @@ $current_step_num = $steps[$step] ?? 1;
         }
 
         body {
-            font-family: 'DM Sans', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            color: var(--text);
             margin: 0;
             padding: 0;
         }
 
         .serif {
-            font-family: 'DM Serif Display', serif;
+            font-family: 'Playfair Display', serif;
         }
 
-        /* ─── BACKGROUND ─── */
+        /* ─── BACKGROUND (same overlay as index hero) ─── */
         .bg-image {
             background-image: url('pictures/dmw.jpg');
             background-size: cover;
@@ -197,10 +243,17 @@ $current_step_num = $steps[$step] ?? 1;
         }
 
         .overlay {
-            background: linear-gradient(135deg, rgba(11, 31, 75, 0.90), rgba(22, 45, 106, 0.85));
+            background: linear-gradient(rgba(10, 31, 68, 0.78), rgba(10, 31, 68, 0.9));
             position: fixed;
             inset: 0;
             z-index: 10;
+        }
+
+        @media (max-width: 1024px),
+        (prefers-reduced-motion: reduce) {
+            .bg-image {
+                background-attachment: scroll;
+            }
         }
 
         /* ─── INPUTS & BUTTONS ─── */
@@ -210,17 +263,18 @@ $current_step_num = $steps[$step] ?? 1;
 
         .input-field:focus {
             border-color: var(--blue-lt);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+            box-shadow: 0 0 0 4px rgba(68, 99, 154, 0.18);
         }
 
         .btn-primary {
-            background: linear-gradient(90deg, var(--navy), var(--blue));
+            background: var(--navy);
             transition: all 0.3s ease;
         }
 
         .btn-primary:hover {
+            background: var(--navy-700);
             transform: translateY(-2px);
-            box-shadow: 0 16px 30px -8px rgb(11 31 75 / 0.5);
+            box-shadow: 0 16px 30px -8px rgb(10 31 68 / 0.5);
         }
 
         /* ─── STEP PROGRESS ─── */
@@ -257,7 +311,7 @@ $current_step_num = $steps[$step] ?? 1;
             background: rgba(255, 255, 255, 0.97);
             backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.7);
-            box-shadow: 0 25px 70px -15px rgb(11 31 75 / 0.45);
+            box-shadow: 0 25px 70px -15px rgb(10 31 68 / 0.45);
             border-radius: 1.5rem;
             overflow: hidden;
         }
@@ -304,7 +358,7 @@ $current_step_num = $steps[$step] ?? 1;
                 justify-content: space-between;
                 width: 42%;
                 flex-shrink: 0;
-                background: linear-gradient(160deg, var(--navy) 0%, #1a3a7c 60%, #1d4ed8 100%);
+                background: linear-gradient(160deg, #0A1F44 0%, #122A55 60%, #1B3563 100%);
                 padding: 3rem 2.5rem;
                 position: relative;
                 overflow: hidden;
@@ -377,12 +431,12 @@ $current_step_num = $steps[$step] ?? 1;
                 <div class="brand-dots"></div>
 
                 <div class="relative z-10">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="pictures/dmw_logo.png"
                         alt="DMW Logo" class="h-16 w-auto mb-6">
                     <h1 class="serif text-white text-3xl leading-tight mb-2">
                         Department of<br>Migrant Workers
                     </h1>
-                    <p class="text-blue-200 text-sm tracking-widest uppercase mb-8">
+                    <p class="text-navy-200 text-sm tracking-widest uppercase mb-8">
                         Regional Office IV-A<br>CALABARZON
                     </p>
 
@@ -390,38 +444,38 @@ $current_step_num = $steps[$step] ?? 1;
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
                                 <?= $current_step_num >= 1 ? 'bg-white/20' : 'bg-white/10' ?>">
-                                <i class="fa-solid fa-envelope text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-envelope text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Step 1 — Verify Email</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Enter the email linked to your account.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Enter the email linked to your account.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
                                 <?= $current_step_num >= 2 ? 'bg-white/20' : 'bg-white/10' ?>">
-                                <i class="fa-solid fa-key text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-key text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Step 2 — Enter Code</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Check your inbox for the 6-digit code.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Check your inbox for the 6-digit code.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
                                 <?= $current_step_num >= 3 ? 'bg-white/20' : 'bg-white/10' ?>">
-                                <i class="fa-solid fa-lock text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-lock text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Step 3 — New Password</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Choose a strong new password for your account.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Choose a strong new password for your account.</p>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="relative z-10 mt-8">
-                    <p class="text-blue-300 text-xs">© <?= date("Y") ?> Department of Migrant Workers</p>
+                    <p class="text-navy-300 text-xs">© <?= date("Y") ?> Department of Migrant Workers</p>
                 </div>
             </div>
 
@@ -430,11 +484,11 @@ $current_step_num = $steps[$step] ?? 1;
 
                 <!-- Mobile top bar -->
                 <div class="mobile-top-bar -mx-8 -mt-8 mb-6 px-6 py-4">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="pictures/dmw_logo.png"
                         alt="DMW Logo" class="h-9 w-auto">
                     <div>
                         <h1 class="serif text-white text-base font-semibold leading-tight">Department of Migrant Workers</h1>
-                        <p class="text-blue-200 text-xs tracking-widest">Regional Office IV-A CALABARZON</p>
+                        <p class="text-navy-200 text-xs tracking-widest">Regional Office IV-A CALABARZON</p>
                     </div>
                 </div>
 
@@ -447,7 +501,7 @@ $current_step_num = $steps[$step] ?? 1;
                             $active   = $current_step_num === $i;
                             $complete = $current_step_num > $i;
                         ?>
-                            <div class="step-dot <?= $complete ? 'bg-[var(--blue)] text-white' : ($active ? 'bg-[var(--navy)] text-white' : 'bg-slate-200 text-slate-400') ?>">
+                            <div class="step-dot <?= $complete ? 'bg-[var(--blue)] text-white' : ($active ? 'bg-[var(--navy)] text-white' : 'bg-gray-200 text-gray-400') ?>">
                                 <?php if ($complete): ?>
                                     <i class="fas fa-check text-[10px]"></i>
                                 <?php else: ?>
@@ -455,7 +509,7 @@ $current_step_num = $steps[$step] ?? 1;
                                 <?php endif; ?>
                             </div>
                             <?php if ($i < 3): ?>
-                                <div class="step-line <?= $current_step_num > $i ? 'bg-[var(--blue)]' : 'bg-slate-200' ?>"></div>
+                                <div class="step-line <?= $current_step_num > $i ? 'bg-[var(--blue)]' : 'bg-gray-200' ?>"></div>
                             <?php endif; ?>
                         <?php endfor; ?>
                     </div>
@@ -471,8 +525,8 @@ $current_step_num = $steps[$step] ?? 1;
                 [$title, $subtitle] = $titles[$step] ?? ['Reset Password', ''];
                 ?>
 
-                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1"><?= $title ?></h2>
-                <p class="text-slate-500 text-sm mb-7"><?= $subtitle ?></p>
+                <h2 class="serif text-2xl font-bold text-[var(--navy)] mb-1"><?= $title ?></h2>
+                <p class="text-gray-500 text-sm mb-7"><?= $subtitle ?></p>
 
                 <?php if ($error): ?>
                     <div class="mb-5 rounded-2xl bg-red-50 border border-red-200 px-5 py-3 text-red-700 text-sm">
@@ -490,18 +544,18 @@ $current_step_num = $steps[$step] ?? 1;
                 <?php if ($step === 'email'): ?>
                     <form method="POST" class="space-y-5">
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">EMAIL ADDRESS</label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">EMAIL ADDRESS</label>
                             <div class="relative">
-                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
                                     <i class="fas fa-envelope text-sm"></i>
                                 </span>
                                 <input type="email" name="email" required
-                                    class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                    class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-11 pr-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                     placeholder="yourname@example.com">
                             </div>
                         </div>
                         <button type="submit" name="send_code"
-                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider">
+                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider shadow-lg shadow-blue-900/30">
                             SEND VERIFICATION CODE
                         </button>
                     </form>
@@ -511,16 +565,16 @@ $current_step_num = $steps[$step] ?? 1;
                 <?php if ($step === 'code'): ?>
                     <form method="POST" class="space-y-5">
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">VERIFICATION CODE</label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">VERIFICATION CODE</label>
                             <input type="text" name="code" required maxlength="6" pattern="\d{6}"
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-5 px-5 text-center text-3xl tracking-[0.5em] text-[var(--navy)] focus:outline-none"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-5 px-5 text-center text-3xl tracking-[0.5em] text-[var(--navy)] focus:outline-none"
                                 placeholder="000000" autofocus>
-                            <p class="text-center text-xs text-slate-400 mt-3">
+                            <p class="text-center text-xs text-gray-400 mt-3">
                                 <i class="fas fa-clock mr-1"></i> Code expires in 10 minutes
                             </p>
                         </div>
                         <button type="submit" name="verify_code"
-                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider">
+                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider shadow-lg shadow-blue-900/30">
                             VERIFY CODE
                         </button>
                     </form>
@@ -530,40 +584,40 @@ $current_step_num = $steps[$step] ?? 1;
                 <?php if ($step === 'password'): ?>
                     <form method="POST" class="space-y-5">
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">NEW PASSWORD</label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">NEW PASSWORD</label>
                             <div class="relative">
-                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
                                     <i class="fas fa-lock text-sm"></i>
                                 </span>
                                 <input type="password" name="new_password" id="new_password" required minlength="8"
-                                    class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-12 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                    class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-11 pr-12 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                     placeholder="••••••••">
                                 <button type="button" id="toggleNew"
-                                    class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                                    class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
                                     <i class="fas fa-eye text-sm" id="eyeNew"></i>
                                 </button>
                             </div>
 
                             <div id="password-requirements" class="mt-3 text-xs space-y-1.5">
-                                <div id="req-length" class="flex items-center gap-2 text-slate-500"><span class="w-4">•</span> At least 8 characters</div>
-                                <div id="req-upper" class="flex items-center gap-2 text-slate-500"><span class="w-4">•</span> At least one uppercase letter</div>
-                                <div id="req-lower" class="flex items-center gap-2 text-slate-500"><span class="w-4">•</span> At least one lowercase letter</div>
-                                <div id="req-number" class="flex items-center gap-2 text-slate-500"><span class="w-4">•</span> At least one number</div>
-                                <div id="req-special" class="flex items-center gap-2 text-slate-500"><span class="w-4">•</span> At least one special character</div>
+                                <div id="req-length" class="flex items-center gap-2 text-gray-500"><span class="w-4">•</span> At least 8 characters</div>
+                                <div id="req-upper" class="flex items-center gap-2 text-gray-500"><span class="w-4">•</span> At least one uppercase letter</div>
+                                <div id="req-lower" class="flex items-center gap-2 text-gray-500"><span class="w-4">•</span> At least one lowercase letter</div>
+                                <div id="req-number" class="flex items-center gap-2 text-gray-500"><span class="w-4">•</span> At least one number</div>
+                                <div id="req-special" class="flex items-center gap-2 text-gray-500"><span class="w-4">•</span> At least one special character</div>
                             </div>
                         </div>
 
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">CONFIRM PASSWORD</label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">CONFIRM PASSWORD</label>
                             <div class="relative">
-                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
                                     <i class="fas fa-lock text-sm"></i>
                                 </span>
                                 <input type="password" name="confirm_password" id="confirm_password" required
-                                    class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-12 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                    class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-11 pr-12 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                     placeholder="••••••••">
                                 <button type="button" id="toggleConfirm"
-                                    class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                                    class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
                                     <i class="fas fa-eye text-sm" id="eyeConfirm"></i>
                                 </button>
                             </div>
@@ -571,7 +625,7 @@ $current_step_num = $steps[$step] ?? 1;
                         </div>
 
                         <button type="submit" name="reset_password"
-                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider">
+                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider shadow-lg shadow-blue-900/30">
                             RESET PASSWORD
                         </button>
                     </form>
@@ -587,20 +641,20 @@ $current_step_num = $steps[$step] ?? 1;
                             <?= $success ?>
                         </div>
                         <a href="login.php"
-                            class="btn-primary inline-block px-8 py-4 rounded-2xl text-white font-semibold text-sm tracking-wider">
+                            class="btn-primary inline-block px-8 py-4 rounded-2xl text-white font-semibold text-sm tracking-wider shadow-lg shadow-blue-900/30">
                             GO TO SIGN IN
                         </a>
                     </div>
                 <?php endif; ?>
 
-                <div class="text-center mt-7 text-sm text-slate-600">
-                    <a href="login.php" class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] transition-colors">
+                <div class="text-center mt-7 text-sm text-gray-600">
+                    <a href="login.php" class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)] transition-colors">
                         <i class="fas fa-arrow-left text-xs mr-1"></i> Back to Sign In
                     </a>
                 </div>
 
                 <!-- Mobile copyright -->
-                <p class="lg:hidden text-center mt-6 text-xs text-slate-400">
+                <p class="lg:hidden text-center mt-6 text-xs text-gray-400">
                     © <?= date("Y") ?> Department of Migrant Workers • Regional Office IV-A
                 </p>
 
@@ -634,7 +688,7 @@ $current_step_num = $steps[$step] ?? 1;
                     for (const [key, ok] of Object.entries(checks)) {
                         reqElements[key].className = ok ?
                             'flex items-center gap-2 text-green-600' :
-                            'flex items-center gap-2 text-slate-500';
+                            'flex items-center gap-2 text-gray-500';
                     }
                 }
 

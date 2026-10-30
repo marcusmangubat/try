@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/../includes/app-helpers.php';
+require_once __DIR__ . '/../includes/activity_logger.php';
 
 
 function app_json_out(array $payload): void
@@ -137,7 +138,7 @@ function app_has_all_required_uploads(array $uploads, array $requiredDocs): bool
 /**
  * @param array<string, mixed> $job
  */
-function app_render_step2_fields(mysqli $db, array $job, int $job_id): string
+function app_render_step2_fields(mysqli $db, array $job, int $job_id, array $savedAnswers = []): string
 {
     $questions = app_fetch_questions_for_job($db, $job_id);
 
@@ -159,6 +160,7 @@ function app_render_step2_fields(mysqli $db, array $job, int $job_id): string
                     $qid = (int) $q['id'];
                     $label = trim((string) $q['question_text']);
                     $useTextarea = strlen($label) > 160;
+                    $prev = (string) ($savedAnswers[$qid] ?? '');
                     ?>
                     <div class="wiz-field">
                         <label class="wiz-label" for="q_<?= $qid ?>">
@@ -166,9 +168,9 @@ function app_render_step2_fields(mysqli $db, array $job, int $job_id): string
                             <?php if ($req): ?><span class="wiz-req">*</span><?php endif; ?>
                         </label>
                         <?php if ($useTextarea): ?>
-                            <textarea class="wiz-input" id="q_<?= $qid ?>" name="q_<?= $qid ?>" rows="4" <?= $req ? 'required' : '' ?>></textarea>
+                            <textarea class="wiz-input" id="q_<?= $qid ?>" name="q_<?= $qid ?>" rows="4" <?= $req ? 'required' : '' ?>><?= htmlspecialchars($prev) ?></textarea>
                         <?php else: ?>
-                            <input class="wiz-input" type="text" id="q_<?= $qid ?>" name="q_<?= $qid ?>" <?= $req ? 'required' : '' ?>>
+                            <input class="wiz-input" type="text" id="q_<?= $qid ?>" name="q_<?= $qid ?>" value="<?= htmlspecialchars($prev) ?>" <?= $req ? 'required' : '' ?>>
                         <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
@@ -209,12 +211,13 @@ function app_fetch_questions_for_job(mysqli $db, int $job_id): array
  */
 function app_render_step3_upload(array $job, int $job_id, array $uploads, array $requiredDocs): string
 {
+    $sessStep = (int) ($_SESSION['app_step'] ?? 0);
     ob_start(); ?>
     <div class="wiz-card" data-wizard-step="3">
         <div class="wiz-card-head">
-            <span class="wiz-step-pill">Step 3 of 4</span>
-            <h3 class="wiz-title">Upload requirements</h3>
-            <p class="wiz-sub">Upload one file for each required document type (PDF, JPG, or PNG).</p>
+            <span class="wiz-step-pill">Step 3 of 4<?= $sessStep > 3 ? ' &middot; You can still replace files' : '' ?></span>
+            <h3 class="wiz-title">Upload Requirements</h3>
+            <p class="wiz-sub">Upload one file per required document (PDF, JPG, or PNG).</p>
         </div>
         <div class="wiz-form">
             <?php foreach ($requiredDocs as $doc): ?>
@@ -224,27 +227,44 @@ function app_render_step3_upload(array $job, int $job_id, array $uploads, array 
                 $reqId = (int) ($doc['id'] ?? 0);
                 $isRequired = !empty($doc['is_required']);
                 $key = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType);
-                $has = !empty($uploads[$key]['file_path']);
+                $has = !empty($uploads[$key]['file_name']);
+                $fileName = (string) ($uploads[$key]['file_name'] ?? '');
+                $filePath = (string) ($uploads[$key]['file_path'] ?? '');
+                $fileExt = strtolower(pathinfo($filePath !== '' ? $filePath : $fileName, PATHINFO_EXTENSION));
                 ?>
-                <div class="wiz-field wiz-upload-row" data-doc-type="<?= htmlspecialchars($docType) ?>">
-                    <div class="wiz-label"><?= htmlspecialchars($docName) ?> <?= $has ? '<span style="color:var(--green);font-size:11px;">(uploaded)</span>' : ($isRequired ? '<span class="wiz-req">*</span>' : '<span style="font-size:11px;color:var(--text3);">(optional)</span>') ?></div>
+                <div class="wiz-upload-row <?= $has ? 'has-file' : '' ?>" data-doc-type="<?= htmlspecialchars($docType) ?>">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                        <i class="fas <?= $has ? 'fa-file-circle-check' : 'fa-file-arrow-up' ?>" style="color:<?= $has ? 'var(--green)' : 'var(--text3)' ?>;font-size:15px;"></i>
+                        <strong style="font-size:13px;color:var(--text1);"><?= htmlspecialchars($docName) ?></strong>
+                        <?php if ($isRequired): ?><span class="wiz-req" style="font-size:11px;">*</span><?php endif; ?>
+                    </div>
                     <?php if (!empty($doc['description'])): ?>
-                        <p class="wiz-muted" style="margin:0 0 6px;"><?= htmlspecialchars((string) $doc['description']) ?></p>
+                        <p class="wiz-muted" style="margin:0 0 6px 23px;"><?= htmlspecialchars((string) $doc['description']) ?></p>
                     <?php endif; ?>
                     <?php if ($has): ?>
-                        <p class="wiz-muted" style="margin:0 0 6px;">
-                            <i class="fas fa-file"></i> <?= htmlspecialchars($uploads[$key]['file_name'] ?? '') ?>
-                        </p>
+                        <div class="wiz-upload-filename" style="margin-left:23px;">
+                            <i class="fas fa-check"></i><?= htmlspecialchars($fileName) ?>
+                        </div>
                     <?php endif; ?>
-                    <form class="wiz-doc-upload-form" enctype="multipart/form-data">
+                    <form class="wiz-doc-upload-form" data-action="step3_upload">
                         <input type="hidden" name="action" value="step3_upload">
                         <input type="hidden" name="job_id" value="<?= (int) $job_id ?>">
                         <input type="hidden" name="required_doc_id" value="<?= (int) $reqId ?>">
                         <input type="hidden" name="document_type" value="<?= htmlspecialchars($docType) ?>">
                         <input type="hidden" name="document_name" value="<?= htmlspecialchars($docName) ?>">
-                        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-                            <input type="file" name="doc_file" accept=".pdf,.jpg,.jpeg,.png" class="wiz-input" style="flex:1;min-width:200px;padding:8px;" required>
-                            <button type="submit" class="wiz-btn primary" style="flex-shrink:0;"><i class="fas fa-upload"></i> Upload</button>
+                        <div class="wiz-upload-actions">
+                            <?php if ($has && $filePath !== ''): ?>
+                                <button type="button" class="wiz-btn secondary wiz-preview-btn" style="padding:7px 14px;font-size:11.5px;"
+                                    data-preview-src="../<?= htmlspecialchars($filePath) ?>"
+                                    data-preview-name="<?= htmlspecialchars($fileName) ?>"
+                                    data-preview-ext="<?= htmlspecialchars($fileExt) ?>">
+                                    <i class="fas fa-eye"></i> Preview
+                                </button>
+                            <?php endif; ?>
+                            <input type="file" name="doc_file" accept=".pdf,.jpg,.jpeg,.png" style="display:none;">
+                            <button type="button" class="wiz-btn secondary wiz-file-picker-btn" style="padding:7px 14px;font-size:11.5px;">
+                                <i class="fas fa-upload"></i> <?= $has ? 'Replace' : 'Choose File' ?>
+                            </button>
                         </div>
                     </form>
                 </div>
@@ -252,7 +272,7 @@ function app_render_step3_upload(array $job, int $job_id, array $uploads, array 
             <p id="wizard-step3-err" class="wiz-error hidden"></p>
             <div class="wiz-actions">
                 <a class="wiz-btn secondary" href="my-applications.php?job_id=<?= (int) $job_id ?>&step=2">Back</a>
-                <button type="button" class="wiz-btn primary" id="wizard-step3-continue">Continue to review</button>
+                <button type="button" class="wiz-btn primary" id="wizard-step3-continue"><?= $sessStep > 3 ? 'Save & Return to Review' : 'Continue' ?> <i class="fas fa-arrow-right"></i></button>
             </div>
         </div>
     </div>
@@ -303,8 +323,22 @@ function app_render_step4_review(mysqli $db, array $job, int $job_id): string
                         $docType = (string) ($doc['document_type'] ?? '');
                         $docName = (string) ($doc['document_name'] ?? $docType);
                         $reqId = (int) ($doc['id'] ?? 0);
-                        $uKey = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType); ?>
-                        <li><strong><?= htmlspecialchars($docName) ?>:</strong> <?= !empty($uploads[$uKey]['file_name']) ? htmlspecialchars($uploads[$uKey]['file_name']) : '—' ?></li>
+                        $uKey = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType);
+                        $revName = (string) ($uploads[$uKey]['file_name'] ?? '');
+                        $revPath = (string) ($uploads[$uKey]['file_path'] ?? '');
+                        $revExt = strtolower(pathinfo($revPath !== '' ? $revPath : $revName, PATHINFO_EXTENSION)); ?>
+                        <li>
+                            <strong><?= htmlspecialchars($docName) ?>:</strong>
+                            <?= $revName !== '' ? htmlspecialchars($revName) : '—' ?>
+                            <?php if ($revPath !== ''): ?>
+                                <button type="button" class="wiz-btn secondary wiz-preview-btn" style="padding:4px 10px;font-size:11px;margin-left:6px;vertical-align:middle;"
+                                    data-preview-src="../<?= htmlspecialchars($revPath) ?>"
+                                    data-preview-name="<?= htmlspecialchars($revName) ?>"
+                                    data-preview-ext="<?= htmlspecialchars($revExt) ?>">
+                                    <i class="fas fa-eye"></i> Preview
+                                </button>
+                            <?php endif; ?>
+                        </li>
                     <?php endforeach; ?>
                 </ul>
             </div>
@@ -336,20 +370,40 @@ if ($action === 'step1_proceed') {
     if (!$job) {
         app_json_out(['ok' => false, 'error' => 'This job is no longer available (closed, deadline passed, or no slots left).']);
     }
-    if (app_already_applied($database, $client_id, $job_id)) {
+
+    // A real (non-draft) application already exists → truly blocked.
+    // A draft already exists → resume it instead of blocking.
+    $stmt = $database->prepare("SELECT id, status FROM applications WHERE client_id = ? AND rsf_id = ? LIMIT 1");
+    $stmt->bind_param('ii', $client_id, $job_id);
+    $stmt->execute();
+    $existing = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if ($existing && $existing['status'] !== 'draft') {
         app_json_out(['ok' => false, 'error' => 'You have already applied for this position.']);
     }
 
     if (isset($_SESSION['job_id']) && (int) $_SESSION['job_id'] !== $job_id) {
-        unset($_SESSION['app_step'], $_SESSION['app_answers'], $_SESSION['app_checklist_ok'], $_SESSION['app_rsf_seen'], $_SESSION['wizard_uploads'], $_SESSION['app_uploads_ok']);
+        unset($_SESSION['app_step'], $_SESSION['app_answers'], $_SESSION['app_checklist_ok'], $_SESSION['app_rsf_seen'], $_SESSION['wizard_uploads'], $_SESSION['app_uploads_ok'], $_SESSION['draft_app_id']);
     }
 
-    $_SESSION['job_id'] = $job_id;
-    $_SESSION['app_step'] = 2;
-    $_SESSION['app_rsf_seen'] = true;
-    unset($_SESSION['app_answers'], $_SESSION['app_checklist_ok'], $_SESSION['wizard_uploads'], $_SESSION['app_uploads_ok']);
+    $draft_id = $existing ? (int) $existing['id'] : null;
+    if (!$draft_id) {
+        $stmt = $database->prepare("INSERT INTO applications (client_id, rsf_id, status) VALUES (?, ?, 'draft')");
+        $stmt->bind_param('ii', $client_id, $job_id);
+        $stmt->execute();
+        $draft_id = (int) $database->insert_id;
+        $stmt->close();
+    }
 
-    $html = app_render_step2_fields($database, $job, $job_id);
+    $_SESSION['job_id']        = $job_id;
+    $_SESSION['draft_app_id']  = $draft_id;
+    $_SESSION['app_step']      = 2;
+    $_SESSION['app_rsf_seen']  = true;
+    $_SESSION['app_answers']   = app_load_saved_answers($database, $draft_id);
+    $_SESSION['wizard_uploads'] = app_load_saved_uploads($database, $draft_id);
+
+    $html = app_render_step2_fields($database, $job, $job_id, $_SESSION['app_answers'] ?? []);
     app_json_out(['ok' => true, 'step' => 2, 'html' => $html]);
 }
 
@@ -366,8 +420,10 @@ if ($action === 'step2_save') {
     if (!$job) {
         app_json_out(['ok' => false, 'error' => 'This job is no longer available (closed, deadline passed, or no slots left).']);
     }
-    if (app_already_applied($database, $client_id, $job_id)) {
-        app_json_out(['ok' => false, 'error' => 'You have already applied for this position.']);
+
+    $draft_id = (int) ($_SESSION['draft_app_id'] ?? 0);
+    if ($draft_id <= 0) {
+        app_json_out(['ok' => false, 'error' => 'Session expired. Please open the job again from Job Opportunities.']);
     }
 
     $questions = app_fetch_questions_for_job($database, $job_id);
@@ -381,12 +437,29 @@ if ($action === 'step2_save') {
         $answers[$qid] = $val;
     }
 
+    // Persist to the DB immediately (delete + reinsert = safe upsert,
+    // application_answers has no unique key on question_id).
+    $del = $database->prepare("DELETE FROM application_answers WHERE application_id = ?");
+    $del->bind_param('i', $draft_id);
+    $del->execute();
+    $del->close();
+
+    $ins = $database->prepare("INSERT INTO application_answers (application_id, question_id, answer) VALUES (?, ?, ?)");
+    foreach ($answers as $qid => $ans) {
+        $qidInt = (int) $qid;
+        $ins->bind_param('iis', $draft_id, $qidInt, $ans);
+        $ins->execute();
+    }
+    $ins->close();
+
     $_SESSION['app_answers'] = $answers;
-    $_SESSION['app_step'] = 3;
-    unset($_SESSION['wizard_uploads'], $_SESSION['app_uploads_ok']);
+    // Never demote progress — only ever advance it. Editing answers again
+    // after reaching Step 3/4 must not push the applicant back a step.
+    $_SESSION['app_step'] = max((int) ($_SESSION['app_step'] ?? 0), 3);
 
     $requiredDocs = app_required_documents_for_job($database, $job_id);
-    $html = app_render_step3_upload($job, $job_id, [], $requiredDocs);
+    $uploads = app_load_saved_uploads($database, $draft_id);
+    $html = app_render_step3_upload($job, $job_id, $uploads, $requiredDocs);
     app_json_out(['ok' => true, 'step' => 3, 'html' => $html]);
 }
 
@@ -434,6 +507,11 @@ if ($action === 'step3_upload') {
     }
     $required_doc_id = (int) ($picked['id'] ?? 0);
 
+    $draft_id = (int) ($_SESSION['draft_app_id'] ?? 0);
+    if ($draft_id <= 0) {
+        app_json_out(['ok' => false, 'error' => 'Session expired.']);
+    }
+
     if (empty($_FILES['doc_file']) || (int) ($_FILES['doc_file']['error'] ?? 0) !== UPLOAD_ERR_OK) {
         app_json_out(['ok' => false, 'error' => 'Please choose a valid file to upload.']);
     }
@@ -444,34 +522,46 @@ if ($action === 'step3_upload') {
         app_json_out(['ok' => false, 'error' => 'Invalid file type. Allowed: PDF, JPG, PNG.']);
     }
 
-    $upload_dir = __DIR__ . '/../uploads/wizard_temp/';
-    if (!is_dir($upload_dir)) {
-        mkdir($upload_dir, 0755, true);
+    $app_dir = __DIR__ . '/../uploads/app_documents/';
+    if (!is_dir($app_dir)) {
+        mkdir($app_dir, 0755, true);
     }
 
-    $fname = 'w_' . $client_id . '_' . $job_id . '_' . $doc_type . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-    $abs = $upload_dir . $fname;
+    $fname = $draft_id . '_' . time() . '_doc_' . $required_doc_id . '_' . bin2hex(random_bytes(3)) . '.' . $ext;
+    $abs = $app_dir . $fname;
     if (!move_uploaded_file($_FILES['doc_file']['tmp_name'], $abs)) {
         app_json_out(['ok' => false, 'error' => 'Upload failed. Please try again.']);
     }
 
-    $rel = 'uploads/wizard_temp/' . $fname;
+    $rel = 'uploads/app_documents/' . $fname;
     $orig = (string) ($_FILES['doc_file']['name'] ?? 'file');
 
-    if (!isset($_SESSION['wizard_uploads']) || !is_array($_SESSION['wizard_uploads'])) {
-        $_SESSION['wizard_uploads'] = [];
-    }
-    $uploadKey = $required_doc_id > 0 ? 'doc_' . $required_doc_id : 'type_' . strtolower($doc_type);
-    $_SESSION['wizard_uploads'][$uploadKey] = [
-        'file_name' => $orig,
-        'file_path' => $rel,
-        'required_doc_id' => $required_doc_id,
-        'document_type' => $doc_type,
-        'document_name' => $doc_name,
-    ];
+    // Replace any earlier upload saved for this exact document slot.
+    $find = $database->prepare("SELECT id, file_path FROM application_documents WHERE application_id = ? AND ((required_doc_id = ? AND ? > 0) OR (required_doc_id IS NULL AND document_type = ?)) LIMIT 1");
+    $find->bind_param('iiis', $draft_id, $required_doc_id, $required_doc_id, $doc_type);
+    $find->execute();
+    $old = $find->get_result()->fetch_assoc();
+    $find->close();
 
-    $uploads = app_get_session_uploads();
-    $html = app_render_step3_upload($job, $job_id, $uploads, $requiredDocs);
+    if ($old) {
+        $oldAbs = __DIR__ . '/../' . $old['file_path'];
+        if (is_file($oldAbs)) {
+            @unlink($oldAbs);
+        }
+        $delOld = $database->prepare("DELETE FROM application_documents WHERE id = ?");
+        $delOld->bind_param('i', $old['id']);
+        $delOld->execute();
+        $delOld->close();
+    }
+
+    $docReqNullable = $required_doc_id > 0 ? $required_doc_id : null;
+    $insDoc = $database->prepare("INSERT INTO application_documents (application_id, document_type, required_doc_id, file_name, file_path) VALUES (?, ?, ?, ?, ?)");
+    $insDoc->bind_param('isiss', $draft_id, $doc_type, $docReqNullable, $orig, $rel);
+    $insDoc->execute();
+    $insDoc->close();
+
+    $_SESSION['wizard_uploads'] = app_load_saved_uploads($database, $draft_id);
+    $html = app_render_step3_upload($job, $job_id, $_SESSION['wizard_uploads'], $requiredDocs);
     app_json_out(['ok' => true, 'html' => $html]);
 }
 
@@ -489,9 +579,14 @@ if ($action === 'step3_continue') {
         app_json_out(['ok' => false, 'error' => 'This job is no longer available (closed, deadline passed, or no slots left).']);
     }
 
-    $uploads = app_get_session_uploads();
+    $draft_id = (int) ($_SESSION['draft_app_id'] ?? 0);
+    if ($draft_id <= 0) {
+        app_json_out(['ok' => false, 'error' => 'Session expired.']);
+    }
+
+    $uploads = app_load_saved_uploads($database, $draft_id);
     $requiredDocs = app_required_documents_for_job($database, $job_id);
-    if (!app_has_all_required_uploads($uploads, $requiredDocs)) {
+    if (!app_uploads_complete($uploads, $requiredDocs)) {
         app_json_out(['ok' => false, 'error' => 'Please upload all required documents before continuing.']);
     }
 
@@ -515,94 +610,53 @@ if ($action === 'step4_submit') {
     if (!$job) {
         app_json_out(['ok' => false, 'error' => 'This job is no longer available (closed, deadline passed, or no slots left).']);
     }
-    if (app_already_applied($database, $client_id, $job_id)) {
-        app_json_out(['ok' => false, 'error' => 'You have already applied for this position.']);
+
+    $draft_id = (int) ($_SESSION['draft_app_id'] ?? 0);
+    if ($draft_id <= 0) {
+        app_json_out(['ok' => false, 'error' => 'Session expired. Please start again.']);
     }
 
-    $answers = $_SESSION['app_answers'] ?? null;
-    if (!is_array($answers)) {
-        app_json_out(['ok' => false, 'error' => 'Application data is missing. Please start again from Job Opportunities.']);
-    }
     if (empty($_SESSION['app_rsf_seen'])) {
         app_json_out(['ok' => false, 'error' => 'Invalid application state.']);
     }
-    $requiredDocs = app_required_documents_for_job($database, $job_id);
-    if (empty($_SESSION['app_uploads_ok']) || !app_has_all_required_uploads(app_get_session_uploads(), $requiredDocs)) {
-        app_json_out(['ok' => false, 'error' => 'Required documents were not uploaded.']);
-    }
 
-    $uploads = app_get_session_uploads();
-    $app_dir = __DIR__ . '/../uploads/app_documents/';
-    if (!is_dir($app_dir)) {
-        mkdir($app_dir, 0755, true);
+    $requiredDocs = app_required_documents_for_job($database, $job_id);
+    $uploads = app_load_saved_uploads($database, $draft_id);
+    if (empty($_SESSION['app_uploads_ok']) || !app_uploads_complete($uploads, $requiredDocs)) {
+        app_json_out(['ok' => false, 'error' => 'Required documents were not uploaded.']);
     }
 
     $database->begin_transaction();
     try {
-        $stmt = $database->prepare("INSERT INTO applications (client_id, rsf_id, status) VALUES (?, ?, 'pending')");
-        $stmt->bind_param('ii', $client_id, $job_id);
-        if (!$stmt->execute()) {
-            throw new RuntimeException('insert');
-        }
-        $app_id = (int) $database->insert_id;
-        $stmt->close();
-
-        $stmt = $database->prepare('INSERT INTO application_answers (application_id, question_id, answer) VALUES (?, ?, ?)');
-        foreach ($answers as $qid => $ans) {
-            $qid = (int) $qid;
-            $ans = (string) $ans;
-            $stmt->bind_param('iis', $app_id, $qid, $ans);
-            $stmt->execute();
+        $stmt = $database->prepare("UPDATE applications SET status = 'pending', submitted_at = NOW(), updated_at = NOW() WHERE id = ? AND client_id = ? AND status = 'draft'");
+        $stmt->bind_param('ii', $draft_id, $client_id);
+        $stmt->execute();
+        if ($stmt->affected_rows !== 1) {
+            $stmt->close();
+            throw new RuntimeException('finalize');
         }
         $stmt->close();
 
-        $stmt = $database->prepare('INSERT INTO application_documents (application_id, document_type, required_doc_id, file_name, file_path) VALUES (?, ?, ?, ?, ?)');
-        foreach ($uploads as $type => $info) {
-            if (!is_array($info) || empty($info['file_path'])) {
-                continue;
-            }
-            $src = __DIR__ . '/../' . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $info['file_path']);
-            if (!is_file($src)) {
-                throw new RuntimeException('missing upload');
-            }
-            $ext = strtolower(pathinfo($src, PATHINFO_EXTENSION));
-            $destName = $app_id . '_' . time() . '_' . preg_replace('/[^a-z0-9_]/i', '', (string) $type) . '_' . bin2hex(random_bytes(3)) . '.' . $ext;
-            $destAbs = $app_dir . $destName;
-            if (!copy($src, $destAbs)) {
-                throw new RuntimeException('copy');
-            }
-            $relPath = 'uploads/app_documents/' . $destName;
-            $origName = (string) ($info['file_name'] ?? 'document');
-            $docType = (string) ($info['document_type'] ?? $type);
-            $docReqId = (int) ($info['required_doc_id'] ?? 0);
-            $docReqNullable = $docReqId > 0 ? $docReqId : null;
-            $stmt->bind_param('isiss', $app_id, $docType, $docReqNullable, $origName, $relPath);
-            $stmt->execute();
-        }
-        $stmt->close();
-
-        if (!application_status_change($database, $app_id, 'pending', $client_email, 'Application submitted')) {
+        if (!application_status_change($database, $draft_id, 'pending', $client_email, 'Application submitted')) {
             throw new RuntimeException('status');
         }
 
         $database->commit();
     } catch (Throwable $e) {
         $database->rollback();
-        if ($e->getMessage() === 'slot') {
-            app_json_out(['ok' => false, 'error' => 'This job has reached its application limit. No slots are available now.']);
-        }
-        app_json_out(['ok' => false, 'error' => 'Could not save your application. Please try again.']);
+        app_json_out(['ok' => false, 'error' => 'Could not submit your application. Please try again.']);
     }
 
-    foreach ($uploads as $info) {
-        if (!is_array($info) || empty($info['file_path'])) {
-            continue;
-        }
-        $p = __DIR__ . '/../' . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $info['file_path']);
-        if (is_file($p) && strpos((string) $info['file_path'], 'wizard_temp') !== false) {
-            @unlink($p);
-        }
-    }
+    $app_id = $draft_id;
+    log_activity(
+        $database,
+        $client_email,
+        'client',
+        'application',
+        'submit',
+        get_applicant_name($database, $app_id) . " submitted application for {$job['rsf_number']} ({$job['position_title']}) at {$job['employer_name']}",
+        $app_id
+    );
 
     unset(
         $_SESSION['job_id'],
@@ -611,18 +665,27 @@ if ($action === 'step4_submit') {
         $_SESSION['app_checklist_ok'],
         $_SESSION['app_rsf_seen'],
         $_SESSION['wizard_uploads'],
-        $_SESSION['app_uploads_ok']
+        $_SESSION['app_uploads_ok'],
+        $_SESSION['draft_app_id']
     );
 
     // Notify admins about new application submission
     notify_admins(
         $database,
         'New Application Submitted',
-        "A new application (#$app_id) has been submitted for review.",
+        get_applicant_name($database, $app_id) . " has submitted a new application for {$job['position_title']} ({$job['rsf_number']}) at {$job['employer_name']}.",
         'new_application',
         $app_id
     );
 
+    // Notify evaluators — case is unclaimed, no one is assigned yet
+    notify_evaluators(
+        $database,
+        'New Application Available',
+        get_applicant_name($database, $app_id) . " submitted a new application for {$job['position_title']} ({$job['rsf_number']}). It is available for evaluation.",
+        'new_application',
+        $app_id
+    );
     app_json_out(['ok' => true, 'message' => 'Your application was submitted successfully. An evaluator will review it soon.']);
 }
 

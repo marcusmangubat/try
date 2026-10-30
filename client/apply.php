@@ -15,7 +15,8 @@ $client_email = $_SESSION['user_email'];
 $stmt = $database->prepare("
     SELECT 
         cid, 
-        CONCAT(first_name, ' ', last_name) AS full_name 
+        CONCAT(first_name, ' ', last_name) AS full_name,
+        profile_picture
     FROM clients 
     WHERE email = ? 
     LIMIT 1
@@ -29,6 +30,9 @@ if (!$client) {
     exit;
 }
 $client_id = (int) $client['cid'];
+$client_name = $client['full_name'];
+$has_picture = !empty($client['profile_picture']);
+$picture_url = $has_picture ? '../' . $client['profile_picture'] : null;
 $app_count = 0;
 $stmt = $database->prepare("SELECT COUNT(*) as c FROM applications WHERE client_id = ?");
 $stmt->bind_param("i", $client_id);
@@ -63,7 +67,7 @@ if ($step >= 2 && !$application_id) {
     $step = 1;
 }
 
-// ========== STEP 1: Create Application ==========
+// STEP 1: Create Application 
 if ($step === 1 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create') {
     $stmt = $database->prepare("INSERT INTO applications (client_id, rsf_id, status) VALUES (?, ?, 'pending')");
     $stmt->bind_param("ii", $client_id, $rsf_id);
@@ -80,7 +84,7 @@ if ($step === 1 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
     $error = 'Failed to create application.';
 }
 
-// ========== STEP 2: Answer Questions ==========
+// STEP 2: Answer Questions 
 $questions = [];
 $res = $database->query("SELECT id, question_text, is_required, order_no FROM questions ORDER BY COALESCE(order_no, 999), id");
 if ($res) $questions = $res->fetch_all(MYSQLI_ASSOC);
@@ -109,7 +113,7 @@ if ($step === 2 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
     }
 }
 
-// ========== STEP 3: Upload Documents ==========
+// STEP 3: Upload Documents 
 $docs = [];
 if ($application_id) {
     $stmt = $database->prepare("SELECT * FROM application_documents WHERE application_id = ? ORDER BY uploaded_at");
@@ -148,7 +152,7 @@ if ($step === 3 && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// ========== STEP 4: Submit ==========
+// STEP 4: Submit 
 if ($step === 4 && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'submit') {
     $application_id = (int) $_SESSION['apply_app_id'];
     if (application_status_change($database, $application_id, 'pending', $client_email, 'Application submitted')) {
@@ -174,11 +178,11 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <link rel="stylesheet" href="../css/dashboard.css">
 
     <style>
-        /* ── Step tracker ── */
+        /*  Step tracker  */
         .stepper {
             display: flex;
             align-items: center;
@@ -515,7 +519,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
     <!-- TOP BAR -->
     <header class="topbar">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
+            <img src="../pictures/dmw_logo.png" alt="DMW">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -524,7 +528,39 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
-            <div class="topbar-avatar"><?= strtoupper(substr($client['full_name'] ?? 'U', 0, 2)) ?></div>
+            <div id="avatarMenu" role="menu"
+                class="hidden absolute right-0 top-[calc(100%+10px)] w-[240px] bg-[var(--card)] border border-[var(--border)] rounded-[14px] shadow-[0_16px_40px_rgba(11,31,75,.18)] overflow-hidden z-[700]">
+
+                <!-- Header: who is signed in -->
+                <div class="py-3 px-4 border-b border-[var(--border)] bg-[var(--surface)]">
+                    <div class="text-[12.5px] font-bold text-[var(--text1)] truncate"><?= htmlspecialchars($client_name) ?></div>
+                    <div class="text-[10.5px] text-[var(--text3)] truncate"><?= htmlspecialchars($client_email) ?></div>
+                </div>
+
+                <!-- Navigation -->
+                <div class="py-1.5">
+                    <a href="profile.php" role="menuitem"
+                        class="flex items-center gap-2.5 py-2 px-4 text-[12.5px] font-semibold text-[var(--text2)] no-underline transition-colors hover:bg-[var(--surface)]">
+                        <i class="fas fa-user-gear w-4 text-center text-[var(--blue-lt)]"></i> My Profile
+                    </a>
+                    <a href="my-applications.php" role="menuitem"
+                        class="flex items-center gap-2.5 py-2 px-4 text-[12.5px] font-semibold text-[var(--text2)] no-underline transition-colors hover:bg-[var(--surface)]">
+                        <i class="fas fa-file-lines w-4 text-center text-[var(--blue-lt)]"></i> My Applications
+                    </a>
+                    <a href="jobs.php" role="menuitem"
+                        class="flex items-center gap-2.5 py-2 px-4 text-[12.5px] font-semibold text-[var(--text2)] no-underline transition-colors hover:bg-[var(--surface)]">
+                        <i class="fas fa-briefcase w-4 text-center text-[var(--blue-lt)]"></i> Browse Jobs
+                    </a>
+                </div>
+
+                <!-- Logout (reuses your existing logout() function) -->
+                <div class="border-t border-[var(--border)] py-1.5">
+                    <button type="button" role="menuitem" onclick="logout('Applicant')"
+                        class="w-full flex items-center gap-2.5 py-2 px-4 text-[12.5px] font-semibold text-[#dc2626] bg-transparent border-0 cursor-pointer text-left transition-colors hover:bg-[var(--surface)]">
+                        <i class="fas fa-arrow-right-from-bracket w-4 text-center"></i> Logout
+                    </button>
+                </div>
+            </div>
         </div>
     </header>
 
@@ -574,7 +610,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
             </div>
         <?php endif; ?>
 
-        <!-- ====== STEP 1: Confirm ====== -->
+        <!--  STEP 1: Confirm  -->
         <?php if ($step === 1): ?>
             <div class="card fade-in">
                 <div class="card-head">
@@ -611,7 +647,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                 </form>
             </div>
 
-            <!-- ====== STEP 2: Questions ====== -->
+            <!--  STEP 2: Questions  -->
         <?php elseif ($step === 2): ?>
             <div class="card fade-in">
                 <div class="card-head">
@@ -658,7 +694,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                 </form>
             </div>
 
-            <!-- ====== STEP 3: Documents ====== -->
+            <!--  STEP 3: Documents  -->
         <?php elseif ($step === 3): ?>
             <div class="card fade-in" style="margin-bottom:12px;">
                 <div class="card-head">
@@ -732,7 +768,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                 </button>
             </form>
 
-            <!-- ====== STEP 4: Submit ====== -->
+            <!--STEP 4: Submit-->
         <?php elseif ($step === 4): ?>
             <div class="card fade-in">
                 <div class="card-head">
@@ -779,9 +815,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
 
     </main>
 
-    <!-- ══════════════════════════════════════════
-         FLOATING DOCK
-    ══════════════════════════════════════════ -->
+    <!-- FLOATING DOCK -->
     <div class="dock-wrap">
         <nav class="dock">
 
@@ -804,12 +838,6 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
                     <span class="dk-badge"><?= $app_count > 99 ? '99+' : $app_count ?></span>
                 <?php endif; ?>
             </a>
-
-            <a href="notifications.php" class="dk">
-                <i class="fas fa-bell"></i>
-                <span class="dk-lbl">Alerts</span>
-            </a>
-
             <div class="dk-div"></div>
 
             <a href="profile.php" class="dk">
@@ -824,17 +852,33 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
 
         </nav>
     </div>
-
-
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /*  Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
 
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
 
         function handleSubmit(e) {
@@ -855,6 +899,7 @@ $step_labels = ['Confirm', 'Questions', 'Documents', 'Submit'];
         }
     </script>
     <script type="module" src="../js/main.js"></script>
+    <script src="../js/avatar-menu.js"></script>
 </body>
 
 </html>

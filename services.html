@@ -4,6 +4,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Apply saved theme before first paint (same key as index.php) -->
+    <script>
+        (function () {
+            try {
+                var t = localStorage.getItem('dmw_theme');
+                if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                    document.documentElement.classList.add('dark');
+                }
+            } catch (e) { }
+        })();
+    </script>
     <title>Services | Department of Migrant Workers</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -64,6 +75,121 @@
             opacity: 1;
             transition: width 0.6s, height 0.6s, opacity 0.6s;
         }
+
+        @media (prefers-reduced-motion: reduce) {
+            .card-hover:hover {
+                transform: none;
+            }
+        }
+
+        /* Language switcher + theme toggle (white header) */
+        .lang-btn,
+        .theme-btn {
+            color: #64718A;
+            padding: 2px 4px;
+            border-bottom: 2px solid transparent;
+            transition: color .2s;
+        }
+
+        .theme-btn {
+            border-bottom: 0;
+            padding: 2px 6px;
+        }
+
+        .lang-btn:hover,
+        .theme-btn:hover {
+            color: var(--primary);
+        }
+
+        .lang-btn[aria-pressed="true"] {
+            color: var(--primary);
+            font-weight: 700;
+            border-bottom-color: var(--primary);
+        }
+
+        /* ===== Dark mode (palette matches index.php) ===== */
+        html.dark {
+            color-scheme: dark;
+            --primary: #9DB1D3;
+            --primary-dark: #44639A;
+            --primary-light: #122A55;
+            --text: #E3EAF5;
+            --text-light: #BCC6D6;
+            --bg-light: #0A1224;
+        }
+
+        html.dark body {
+            background-color: #0A1224;
+        }
+
+        /* Surfaces */
+        html.dark .bg-white {
+            background-color: #0F1A33;
+        }
+
+        /* Text */
+        html.dark .text-gray-900 {
+            color: #F1F5FB;
+        }
+
+        html.dark .text-gray-700 {
+            color: #D8DFEA;
+        }
+
+        html.dark .text-gray-600 {
+            color: #BCC6D6;
+        }
+
+        html.dark .text-gray-500 {
+            color: #A3AEC4;
+        }
+
+        html.dark .nav-brand-text {
+            color: #fff;
+        }
+
+        /* Borders */
+        html.dark .border-gray-100,
+        html.dark .border-b {
+            border-color: #2A3B5E;
+        }
+
+        /* Buttons / badges that used the (now light) --primary as a background */
+        html.dark .bg-\[var\(--primary\)\] {
+            background-color: #2A4577;
+        }
+
+        html.dark .hover\:bg-\[var\(--primary-dark\)\]:hover {
+            background-color: #44639A;
+        }
+
+        html.dark .hover\:text-\[var\(--primary-dark\)\]:hover {
+            color: #fff;
+        }
+
+        html.dark .site-footer {
+            background-color: #061330;
+        }
+
+        /* Switcher */
+        html.dark .lang-btn,
+        html.dark .theme-btn {
+            color: #BCC6D6;
+        }
+
+        html.dark .lang-btn:hover,
+        html.dark .theme-btn:hover,
+        html.dark .lang-btn[aria-pressed="true"] {
+            color: #fff;
+        }
+
+        html.dark .lang-btn[aria-pressed="true"] {
+            border-bottom-color: #fff;
+        }
+
+        html.dark .card-hover:hover {
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.5);
+        }
     </style>
 </head>
 
@@ -71,22 +197,38 @@
 
     <!-- Header -->
     <header class="bg-white border-b sticky top-0 z-50 shadow-sm">
-        <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-3">
             <!-- Back link -->
             <a href="index.php"
-                class="flex items-center gap-3 text-[var(--primary)] hover:text-[var(--primary-dark)] font-medium">
+                class="flex items-center gap-2 sm:gap-3 text-[var(--primary)] hover:text-[var(--primary-dark)] font-medium text-sm sm:text-base whitespace-nowrap">
                 <i class="fa-solid fa-arrow-left"></i>
-                Back to Home
+                <span>Back to Home</span>
             </a>
 
-            <!-- Logo + Text -->
-            <div class="flex items-center gap-x-4">
-                <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
-                    alt="Department of Migrant Workers Logo" class="h-12 w-auto object-contain">
-                <div>
-                    <div class="text-lg font-bold leading-none text-[#0A1F44]">Department of</div>
-                    <div class="text-lg font-bold leading-none text-[#0A1F44]">Migrant Workers</div>
-                    <div class="text-[9px] text-gray-500 tracking-widest -mt-0.5">REPUBLIC OF THE PHILIPPINES</div>
+            <div class="flex items-center gap-x-3 sm:gap-x-6 min-w-0">
+                <!-- Logo + Text -->
+                <div class="flex items-center gap-x-3 sm:gap-x-4 min-w-0">
+                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                        alt="Department of Migrant Workers Logo" class="h-10 sm:h-12 w-auto object-contain shrink-0">
+                    <div class="hidden sm:block">
+                        <div class="nav-brand-text text-lg font-bold leading-none text-[#0A1F44]">Department of</div>
+                        <div class="nav-brand-text text-lg font-bold leading-none text-[#0A1F44]">Migrant Workers</div>
+                        <div class="text-[9px] text-gray-500 tracking-widest mt-1">REPUBLIC OF THE PHILIPPINES</div>
+                    </div>
+                </div>
+
+                <!-- Theme toggle + language switcher -->
+                <div class="flex items-center gap-x-3 shrink-0">
+                    <button type="button" id="theme-toggle" class="theme-btn" aria-label="Switch to dark mode"
+                        aria-pressed="false">
+                        <i id="theme-icon" class="fa-solid fa-moon"></i>
+                    </button>
+                    <div class="flex items-center gap-x-1.5 text-xs uppercase tracking-widest whitespace-nowrap"
+                        role="group" aria-label="Language">
+                        <button type="button" class="lang-btn" data-lang="en" aria-pressed="true">EN</button>
+                        <span class="text-gray-400" aria-hidden="true">|</span>
+                        <button type="button" class="lang-btn" data-lang="fil" aria-pressed="false">FIL</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -219,11 +361,191 @@
     </main>
 
     <!-- Simple Footer -->
-    <footer class="bg-[var(--primary)] text-white py-8 text-center text-sm">
+    <footer class="site-footer bg-[var(--primary)] text-white py-8 text-center text-sm">
         © 2026 Department of Migrant Workers. All Rights Reserved.<br>
         Hotline: 1348 (local) | +63 2 8722-1144 (international)
     </footer>
 
+    <!-- Theme toggle (shares the "dmw_theme" setting with index.php) -->
+    <script>
+        (function () {
+            const root = document.documentElement;
+            const btn = document.getElementById('theme-toggle');
+            const icon = document.getElementById('theme-icon');
+            if (!btn || !icon) return;
+
+            function sync() {
+                const dark = root.classList.contains('dark');
+                icon.className = 'fa-solid ' + (dark ? 'fa-sun' : 'fa-moon');
+                btn.setAttribute('aria-pressed', dark);
+                btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+            }
+
+            btn.addEventListener('click', () => {
+                root.classList.toggle('dark');
+                try {
+                    localStorage.setItem('dmw_theme', root.classList.contains('dark') ? 'dark' : 'light');
+                } catch (e) { }
+                sync();
+            });
+
+            sync();
+        })();
+    </script>
+
+    <!-- EN | FIL translation (shares the "dmw_lang" setting with index.php) -->
+    <script>
+        (function () {
+            const DICT = {
+                // Header
+                "Back to Home": "Bumalik sa Tahanan",
+                "Department of": "Kagawaran ng",
+                "Migrant Workers": "Manggagawang Migrante",
+                "Department of Migrant Workers Logo": "Logo ng Kagawaran ng Manggagawang Migrante",
+                "REPUBLIC OF THE PHILIPPINES": "REPUBLIKA NG PILIPINAS",
+                "Language": "Wika",
+
+                // Intro
+                "SERVICES": "MGA SERBISYO",
+                "Access Essential Services for Overseas Filipino Workers": "Ma-access ang Mahahalagang Serbisyo para sa mga Overseas Filipino Worker",
+                "Register, apply for documents, check opportunities, get welfare support, and more — all through official DMW channels.": "Magrehistro, mag-apply ng mga dokumento, tingnan ang mga oportunidad, makakuha ng suportang pangkapakanan, at marami pa — lahat sa pamamagitan ng mga opisyal na channel ng DMW.",
+
+                // Card 1
+                "e-Registration & Profile Update": "e-Registration at Pag-update ng Profile",
+                "Create your account or update your profile to get your e-Registration Number — required for most overseas job applications.": "Gumawa ng account o i-update ang iyong profile para makuha ang iyong e-Registration Number — kinakailangan sa karamihan ng aplikasyon sa trabaho sa ibang bansa.",
+                "Start Registration": "Simulan ang Pagrehistro",
+
+                // Card 2
+                "OEC / Pass Issuance": "Pagpapalabas ng OEC / Pass",
+                "Apply for your Overseas Employment Certificate or digital Pass — your exit clearance for deployment.": "Mag-apply para sa iyong Overseas Employment Certificate o digital Pass — ang iyong exit clearance para sa deployment.",
+                "Apply for OEC/Pass": "Mag-apply para sa OEC/Pass",
+
+                // Card 3
+                "Pre-Employment Orientation Seminar (PEOS)": "Pre-Employment Orientation Seminar (PEOS)",
+                "Complete the mandatory online seminar to prepare for life and work abroad.": "Kumpletuhin ang sapilitang online na seminar bilang paghahanda sa buhay at trabaho sa ibang bansa.",
+                "Take PEOS Online": "Kunin ang PEOS Online",
+
+                // Card 4
+                "Government-to-Government & Job Opportunities": "Government-to-Government at mga Oportunidad sa Trabaho",
+                "Browse ethical, no-fee jobs through G2G partnerships and other verified listings.": "Maghanap ng etikal at walang-bayad na trabaho sa pamamagitan ng mga G2G na pakikipagtulungan at iba pang beripikadong listahan.",
+                "View Job Vacancies": "Tingnan ang mga Bakanteng Trabaho",
+
+                // Card 5
+                "Welfare & Assistance (Hotline / Helpdesk)": "Kapakanan at Tulong (Hotline / Helpdesk)",
+                "24/7 support, case monitoring, repatriation help, and on-site welfare through embassies.": "24/7 na suporta, pagsubaybay sa kaso, tulong sa repatriation, at suportang pangkapakanan sa lugar ng trabaho sa pamamagitan ng mga embahada.",
+                "Contact Helpdesk": "Makipag-ugnayan sa Helpdesk",
+
+                // Card 6
+                "Reintegration & Livelihood Programs": "Mga Programa sa Reintegrasyon at Kabuhayan",
+                "Access training, entrepreneurship grants, and support when returning to the Philippines.": "Makakuha ng pagsasanay, mga grant sa pagnenegosyo, at suporta sa pagbabalik sa Pilipinas.",
+                "Explore Reintegration": "Alamin ang Reintegrasyon",
+
+                // CTA
+                "For the most up-to-date access, visit the official DMW portal:": "Para sa pinakabagong access, bisitahin ang opisyal na portal ng DMW:",
+                "Go to Official DMW Portal": "Pumunta sa Opisyal na DMW Portal",
+
+                // Footer
+                "© 2026 Department of Migrant Workers. All Rights Reserved.": "© 2026 Kagawaran ng Manggagawang Migrante. Nakareserba ang Lahat ng Karapatan.",
+                "Hotline: 1348 (local) | +63 2 8722-1144 (international)": "Hotline: 1348 (lokal) | +63 2 8722-1144 (internasyonal)"
+            };
+
+            const ATTRS = ['alt', 'aria-label'];
+            const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'OPTION']);
+            const ORIG_TITLE = document.title;
+            const TITLE_FIL = 'Mga Serbisyo | Kagawaran ng Manggagawang Migrante';
+            const norm = s => s.replace(/\s+/g, ' ').trim();
+            const nodeOrig = new WeakMap();
+            let lang = 'en';
+
+            function tr(str) {
+                const core = norm(str);
+                if (!core) return str;
+                const t = Object.prototype.hasOwnProperty.call(DICT, core) ? DICT[core] : undefined;
+                if (t === undefined) return str;
+                return str.match(/^\s*/)[0] + t + str.match(/\s*$/)[0];
+            }
+
+            function applyNode(node) {
+                const rec = nodeOrig.get(node);
+                if (lang === 'fil') {
+                    if (rec && node.nodeValue === rec.shown) return;
+                    const orig = node.nodeValue,
+                        t = tr(orig);
+                    if (t !== orig) {
+                        nodeOrig.set(node, {
+                            orig,
+                            shown: t
+                        });
+                        node.nodeValue = t;
+                    } else nodeOrig.delete(node);
+                } else {
+                    if (rec && node.nodeValue === rec.shown) node.nodeValue = rec.orig;
+                    nodeOrig.delete(node);
+                }
+            }
+
+            function applyAttrs(root) {
+                const sel = '[alt],[aria-label]';
+                const els = root.querySelectorAll(sel);
+                const list = root.matches && root.matches(sel) ? [root, ...els] : els;
+                list.forEach(el => {
+                    if (el.id === 'theme-toggle') return; // its label is managed by the theme script
+                    ATTRS.forEach(a => {
+                        if (!el.hasAttribute(a)) return;
+                        const key = 'data-i18n-' + a;
+                        if (lang === 'fil') {
+                            const orig = el.hasAttribute(key) ? el.getAttribute(key) : el.getAttribute(a);
+                            el.setAttribute(key, orig);
+                            el.setAttribute(a, tr(orig));
+                        } else if (el.hasAttribute(key)) {
+                            el.setAttribute(a, el.getAttribute(key));
+                        }
+                    });
+                });
+            }
+
+            function walk(root) {
+                const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                    acceptNode: n => SKIP.has(n.parentNode.nodeName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+                });
+                const nodes = [];
+                while (w.nextNode()) nodes.push(w.currentNode);
+                nodes.forEach(applyNode);
+                applyAttrs(root);
+            }
+
+            function setLang(next) {
+                lang = next === 'fil' ? 'fil' : 'en';
+                document.documentElement.lang = lang;
+                document.title = lang === 'fil' ? TITLE_FIL : ORIG_TITLE;
+                walk(document.body);
+                document.querySelectorAll('.lang-btn').forEach(b =>
+                    b.setAttribute('aria-pressed', b.dataset.lang === lang ? 'true' : 'false'));
+                try {
+                    localStorage.setItem('dmw_lang', lang);
+                } catch (e) { }
+            }
+
+            document.querySelectorAll('.lang-btn').forEach(b =>
+                b.addEventListener('click', () => setLang(b.dataset.lang)));
+
+            // Language priority: ?lang= in the URL, then the shared "dmw_lang" setting
+            const q = new URLSearchParams(location.search).get('lang');
+            let saved = 'en';
+            try {
+                saved = (q === 'fil' || q === 'en') ? q : (localStorage.getItem('dmw_lang') || 'en');
+            } catch (e) {
+                if (q === 'fil') saved = 'fil';
+            }
+            if (saved === 'fil' || q) setLang(saved);
+
+            // Keep the "Back to Home" link in the current language
+            document.querySelectorAll('a[href^="index.php"]').forEach(a =>
+                a.addEventListener('click', () => {
+                    a.href = 'index.php?lang=' + lang;
+                }));
+        })();
+    </script>
 </body>
 
 </html>

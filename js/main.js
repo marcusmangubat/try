@@ -15,16 +15,14 @@ window.logout = logout;
         .notif-modal-overlay {
             position: fixed;
             inset: 0;
-            background: rgba(2, 6, 23, .45);
+            background: transparent;
             display: none;
-            align-items: center;
-            justify-content: center;
             z-index: 9999;
-            padding: 16px;
         }
         .notif-modal {
-            width: min(560px, 100%);
-            max-height: 78vh;
+            position: fixed;
+            width: min(380px, calc(100vw - 24px));
+            max-height: 70vh;
             display: flex;
             flex-direction: column;
             background: #fff;
@@ -32,6 +30,32 @@ window.logout = logout;
             border-radius: 14px;
             box-shadow: 0 16px 40px rgba(2, 6, 23, .22);
             overflow: hidden;
+            transform-origin: top right;
+        }
+        .notif-modal::before {
+            content: '';
+            position: absolute;
+            top: -7px;
+            right: 22px;
+            width: 14px;
+            height: 14px;
+            background: #fff;
+            border-left: 1px solid #e2e8f0;
+            border-top: 1px solid #e2e8f0;
+            transform: rotate(45deg);
+        }
+        .notif-modal-overlay.notif-show .notif-modal {
+            animation: notifModalPop .22s cubic-bezier(.34, 1.56, .64, 1);
+        }
+        @keyframes notifModalPop {
+            0% {
+                opacity: 0;
+                transform: translateY(-8px) scale(0.92);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
         }
         .notif-modal-head {
             display: flex;
@@ -41,6 +65,8 @@ window.logout = logout;
             padding: 12px 14px;
             border-bottom: 1px solid #e2e8f0;
             background: #f8fafc;
+            position: relative;
+            z-index: 1;
         }
         .notif-modal-head h3 {
             margin: 0;
@@ -66,6 +92,8 @@ window.logout = logout;
             overflow: auto;
             padding: 8px;
             background: #fff;
+            position: relative;
+            z-index: 1;
         }
         .notif-item {
             border: 1px solid #e2e8f0;
@@ -119,7 +147,7 @@ window.logout = logout;
             line-height: 1.45;
             animation: notifPopIn .18s ease;
         }
-        .notif-login-pop strong {
+          .notif-login-pop strong {
             display: block;
             margin-bottom: 2px;
             font-size: 12.5px;
@@ -127,6 +155,88 @@ window.logout = logout;
         @keyframes notifPopIn {
             from { opacity: 0; transform: translateY(-6px); }
             to { opacity: 1; transform: translateY(0); }
+        }
+
+        [data-theme="dark"] .notif-modal {
+            background: #1e293b;
+            border-color: #2d3748;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, .45);
+        }
+        [data-theme="dark"] .notif-modal::before {
+            background: #1e293b;
+            border-left-color: #2d3748;
+            border-top-color: #2d3748;
+        }
+        [data-theme="dark"] .notif-modal-head {
+            background: #263449;
+            border-bottom-color: #2d3748;
+        }
+        [data-theme="dark"] .notif-modal-head h3 {
+            color: #e2e8f0;
+        }
+        [data-theme="dark"] .notif-btn {
+            background: #1e293b;
+            border-color: #3b4658;
+            color: #cbd5e1;
+        }
+        [data-theme="dark"] .notif-btn:hover {
+            background: #263449;
+        }
+        [data-theme="dark"] .notif-list {
+            background: #1e293b;
+        }
+        [data-theme="dark"] .notif-item {
+            background: #1e293b;
+            border-color: #2d3748;
+        }
+        [data-theme="dark"] .notif-item.unread {
+            border-color: #3b82f6;
+            background: rgba(59, 130, 246, .12);
+        }
+        [data-theme="dark"] .notif-title {
+            color: #e2e8f0;
+        }
+        [data-theme="dark"] .notif-message {
+            color: #94a3b8;
+        }
+        [data-theme="dark"] .notif-meta {
+            color: #64748b;
+        }
+              [data-theme="dark"] .notif-empty {
+            color: #64748b;
+        }
+
+        /* Scrollbar theming for the notification list */
+        .notif-list {
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e1 #f8fafc;
+        }
+        .notif-list::-webkit-scrollbar {
+            width: 8px;
+        }
+        .notif-list::-webkit-scrollbar-track {
+            background: #f8fafc;
+        }
+        .notif-list::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 999px;
+        }
+        .notif-list::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        [data-theme="dark"] .notif-list {
+            scrollbar-width: thin;
+            scrollbar-color: #475569 #1e293b;
+        }
+        [data-theme="dark"] .notif-list::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        [data-theme="dark"] .notif-list::-webkit-scrollbar-thumb {
+            background: #475569;
+        }
+        [data-theme="dark"] .notif-list::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
         }
     `;
     document.head.appendChild(style);
@@ -151,6 +261,23 @@ window.logout = logout;
     const closeBtn = overlay.querySelector('#notifCloseBtn');
     const markAllBtn = overlay.querySelector('#notifMarkAllBtn');
 
+    /* Position the dropdown just under the bell, right-aligned to it */
+    function positionModal() {
+        const rect = bellButton.getBoundingClientRect();
+        const modal = overlay.querySelector('.notif-modal');
+        const gap = 12; // space between bell and modal, room for the arrow
+        const top = rect.bottom + gap;
+        let right = window.innerWidth - rect.right - 8; // nudge left of the bell's right edge
+        if (right < 8) right = 8;
+        modal.style.top = `${top}px`;
+        modal.style.right = `${right}px`;
+        modal.style.left = 'auto';
+    }
+
+    window.addEventListener('resize', () => {
+        if (overlay.style.display === 'block') positionModal();
+    });
+
     function formatDate(dt) {
         const d = new Date(dt);
         if (Number.isNaN(d.getTime())) return '';
@@ -161,6 +288,25 @@ window.logout = logout;
             hour: '2-digit',
             minute: '2-digit',
         });
+    }
+    function timeAgo(dt) {
+        const date = new Date(dt);
+        if (Number.isNaN(date.getTime())) return '';
+
+        const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+
+        if (diffSec < 60) return 'Just now';
+
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin} minute${diffMin > 1 ? 's' : ''} ago`;
+
+        const diffHour = Math.floor(diffMin / 60);
+        if (diffHour < 24) return `${diffHour} hour${diffHour > 1 ? 's' : ''} ago`;
+
+        const diffDay = Math.floor(diffHour / 24);
+        if (diffDay < 7) return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+
+        return formatDate(dt); // 7+ days old — show full date instead
     }
 
     function setDot(count) {
@@ -176,14 +322,28 @@ window.logout = logout;
         }
         notifList.innerHTML = items.map((n) => {
             const unreadClass = Number(n.is_read) === 0 ? 'unread' : '';
-            const appInfo = n.application_id ? `Application #${n.application_id}` : (n.type || 'General');
+
+            // Client notifications carry position_title/worksite_country.
+            // Evaluator notifications carry first_name/last_name.
+            let appInfo;
+            if (n.position_title) {
+                appInfo = n.worksite_country
+                    ? `Application for ${n.position_title} in ${n.worksite_country}`
+                    : `Application for ${n.position_title}`;
+            } else if (n.first_name || n.last_name) {
+                const fullName = [n.first_name, n.last_name].filter(Boolean).join(' ');
+                appInfo = `Applicant: ${fullName}`;
+            } else {
+                appInfo = 'General';
+            }
+
             return `
                 <div class="notif-item ${unreadClass}" data-id="${n.id}">
                     <div class="notif-title">${escapeHtml(n.title || 'Notification')}</div>
                     <div class="notif-message">${escapeHtml(n.message || '')}</div>
                     <div class="notif-meta">
                         <span>${escapeHtml(appInfo)}</span>
-                        <span>${escapeHtml(formatDate(n.created_at))}</span>
+                        <span title="${escapeHtml(formatDate(n.created_at))}">${escapeHtml(timeAgo(n.created_at))}</span>
                     </div>
                 </div>
             `;
@@ -232,11 +392,17 @@ window.logout = logout;
     }
 
     function showModal() {
-        overlay.style.display = 'flex';
+        overlay.style.display = 'block';
+        positionModal();
+        // restart animation each time it opens
+        overlay.classList.remove('notif-show');
+        void overlay.offsetWidth; // force reflow so the animation replays
+        overlay.classList.add('notif-show');
     }
 
     function hideModal() {
         overlay.style.display = 'none';
+        overlay.classList.remove('notif-show');
     }
 
     function showLoginPopup(message) {

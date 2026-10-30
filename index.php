@@ -35,7 +35,9 @@ function render_job_card(array $job): string
     ob_start(); ?>
     <div class="bg-navy-50 rounded-xl p-4 sm:p-6 border border-navy-200 enhanced-border job-card <?= $isPreview ? 'ring-2 ring-dashed ring-navy-400' : '' ?>"
         data-search="<?= strtolower($employer . ' ' . $position . ' ' . $rsf) ?>"
-        data-country="<?= strtolower($country) ?>">
+        data-country="<?= strtolower($country) ?>"
+        data-country-label="<?= $country ?>"
+        data-slots="<?= $slots ?>">
         <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2 mb-1">
@@ -76,12 +78,11 @@ while ($row = $result->fetch_assoc()) {
     $jobsByYear[$year][] = $row;
     $totalOpportunities += (int)$row['slots_available'];
     if (!empty($row['worksite_country'])) {
-        $countries[$row['worksite_country']] = true;
+        $countries[$row['worksite_country']] = ($countries[$row['worksite_country']] ?? 0) + 1;
     }
 }
 krsort($jobsByYear);
-$countries = array_keys($countries);
-sort($countries);
+ksort($countries);
 ?>
 
 <!DOCTYPE html>
@@ -90,6 +91,16 @@ sort($countries);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script>
+        (function() {
+            try {
+                var t = localStorage.getItem('dmw_theme');
+                if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                    document.documentElement.classList.add('dark');
+                }
+            } catch (e) {}
+        })();
+    </script>
     <title>Department of Migrant Workers | Republic of the Philippines</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -142,7 +153,7 @@ sort($countries);
         }
     </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <link rel="icon" type="image/png" href="pictures/dmw_logo.png">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Playfair+Display:wght@700&amp;display=swap"
         rel="stylesheet">
@@ -177,6 +188,11 @@ sort($countries);
 
         html {
             scroll-behavior: smooth;
+        }
+
+        section[id],
+        footer[id] {
+            scroll-margin-top: 5rem;
         }
 
         /* Hero Background + Parallax */
@@ -268,6 +284,23 @@ sort($countries);
             transition: width 0.6s, height 0.6s, opacity 0.6s;
         }
 
+        .lang-btn {
+            color: #C5D2E8;
+            padding: 2px 4px;
+            border-bottom: 2px solid transparent;
+            transition: color .2s;
+        }
+
+        .lang-btn:hover {
+            color: #fff;
+        }
+
+        .lang-btn[aria-pressed="true"] {
+            color: #fff;
+            font-weight: 700;
+            border-bottom-color: #fff;
+        }
+
         /*  Pulse animation (used for emergency button, alerts, etc.) */
         @keyframes pulse-subtle {
 
@@ -316,9 +349,178 @@ sort($countries);
                 letter-spacing: -0.5px;
             }
         }
+
+        /* ===== Dark mode ===== */
+        .theme-btn {
+            color: #C5D2E8;
+            padding: 2px 6px;
+            transition: color .2s;
+        }
+
+        .theme-btn:hover {
+            color: #fff;
+        }
+
+        html.dark {
+            color-scheme: dark;
+            --primary: #9DB1D3;
+            --primary-dark: #44639A;
+            --primary-light: #122A55;
+            --text: #E3EAF5;
+            --text-light: #BCC6D6;
+        }
+
+        /* Page + sections */
+        html.dark body.bg-white {
+            background-color: #0A1224;
+        }
+
+        html.dark .section-bg-light,
+        html.dark .section-bg-blue,
+        html.dark #news {
+            background: #0A1224;
+        }
+
+        html.dark .bg-gray-50 {
+            background-color: #0D182E;
+        }
+
+        html.dark #services-section {
+            background-image: none;
+            background-color: #0D182E;
+        }
+
+        html.dark .accordion-summary {
+            background-image: none;
+            background-color: #122A55;
+        }
+
+        html.dark .hero-bg svg {
+            fill: #0A1224;
+        }
+
+        /* Surfaces */
+        html.dark .bg-white {
+            background-color: #0F1A33;
+        }
+
+        html.dark .bg-navy-50 {
+            background-color: #0F1A33;
+        }
+
+        html.dark .bg-navy-100 {
+            background-color: #1B2A4A;
+        }
+
+        html.dark .bg-gray-200 {
+            background-color: #22304F;
+        }
+
+        html.dark .job-card {
+            background-color: #14213D;
+        }
+
+        html.dark .hover\:bg-gray-50:hover,
+        html.dark .hover\:bg-navy-50:hover,
+        html.dark .focus\:bg-navy-50:focus {
+            background-color: #1B2A4A;
+        }
+
+        /* Text */
+        html.dark .text-gray-900,
+        html.dark .text-gray-800 {
+            color: #F1F5FB;
+        }
+
+        html.dark .text-gray-700 {
+            color: #D8DFEA;
+        }
+
+        html.dark .text-gray-600 {
+            color: #BCC6D6;
+        }
+
+        html.dark .text-gray-500 {
+            color: #A3AEC4;
+        }
+
+        html.dark .text-navy-700,
+        html.dark .text-navy-800 {
+            color: #C5D2E8;
+        }
+
+        /* Borders */
+        html.dark .border-gray-100,
+        html.dark .border-gray-200,
+        html.dark .border-gray-300,
+        html.dark .border-gray-100\/70,
+        html.dark .border-navy-200 {
+            border-color: #2A3B5E;
+        }
+
+        html.dark nav {
+            border-color: #22304F;
+        }
+
+        /* Inputs */
+        html.dark input,
+        html.dark select {
+            background-color: #0F1A33;
+            color: #F1F5FB;
+            border-color: #2A3B5E;
+        }
+
+        html.dark input::placeholder {
+            color: #8E9BB1;
+        }
+
+        /* Buttons that used the (now light) --primary as a background */
+        html.dark .bg-\[var\(--primary\)\] {
+            background-color: #2A4577;
+        }
+
+        html.dark .hover\:bg-\[var\(--primary-dark\)\]:hover {
+            background-color: #44639A;
+        }
+
+        html.dark nav a.bg-\[\#0A1F44\] {
+            background-color: #2A4577;
+        }
+
+        html.dark nav a.bg-\[\#0A1F44\]:hover {
+            background-color: #44639A;
+        }
+
+        html.dark .from-\[var\(--primary\)\] {
+            --tw-gradient-from: #2A4577 var(--tw-gradient-from-position);
+        }
+
+        /* Hero button stays white */
+        html.dark .hero-bg a.bg-white {
+            background-color: #fff;
+            color: #0A1F44;
+        }
+
+        html.dark .hero-bg a.bg-white:hover {
+            background-color: #E3EAF5;
+        }
+
+        /* Timeline */
+        html.dark .z-10.shrink-0.rounded-full.bg-\[\#0A1F44\] {
+            background-color: #2A4577;
+        }
+
+        html.dark .w-1.bg-\[\#0A1F44\]\/20 {
+            background-color: rgb(157 177 211 / .25);
+        }
+
+        html[data-theme="dark"] .nav-brand-text,
+        html.dark .nav-brand-text,
+        html[data-theme="dark"] nav .truncate,
+        html.dark nav .truncate {
+            color: #fff !important;
+        }
     </style>
-
-
 </head>
 
 <body class="tailwind-content bg-white text-gray-900">
@@ -342,12 +544,14 @@ sort($countries);
                     <span>Mon - Fri: 8:00 AM - 5:00 PM</span>
                 </div>
                 <div class="hidden md:block h-4 w-px bg-white/30"></div>
-                <button onclick="toggleLanguage()"
-                    class="flex items-center gap-x-1.5 text-xs uppercase tracking-widest hover:text-blue-200 transition-colors whitespace-nowrap">
-                    <span class="font-medium">EN</span>
-                    <span class="text-blue-200">|</span>
-                    <span>FIL</span>
+                <button type="button" id="theme-toggle" class="theme-btn" aria-label="Switch to dark mode" aria-pressed="false">
+                    <i id="theme-icon" class="fa-solid fa-moon"></i>
                 </button>
+                <div class="flex items-center gap-x-1.5 text-xs uppercase tracking-widest whitespace-nowrap" role="group" aria-label="Language">
+                    <button type="button" class="lang-btn" data-lang="en" aria-pressed="true">EN</button>
+                    <span class="text-blue-200" aria-hidden="true">|</span>
+                    <button type="button" class="lang-btn" data-lang="fil" aria-pressed="false">FIL</button>
+                </div>
             </div>
         </div>
     </div>
@@ -358,22 +562,22 @@ sort($countries);
             <div class="flex items-center justify-between h-16 sm:h-20">
                 <!-- Logo -->
                 <div class="flex items-center gap-x-2 sm:gap-x-4 min-w-0">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="pictures/dmw_logo.png"
                         alt="Department of Migrant Workers Logo" class="h-9 sm:h-14 w-auto object-contain shrink-0">
                     <div class="min-w-0">
-                        <div class="text-sm sm:text-2xl font-bold leading-none text-[#0A1F44] truncate">Department of</div>
-                        <div class="text-sm sm:text-2xl font-bold leading-none text-[#0A1F44] truncate">Migrant Workers</div>
+                        <div class="nav-brand-text text-sm sm:text-2xl font-bold leading-none text-[#0A1F44] truncate">Department of</div>
+                        <div class="nav-brand-text text-sm sm:text-2xl font-bold leading-none text-[#0A1F44] truncate">Migrant Workers</div>
                         <div class="hidden sm:block text-[10px] text-gray-500 tracking-widest -mt-0.5">REPUBLIC OF THE PHILIPPINES</div>
                     </div>
                 </div>
 
                 <!-- Desktop Menu -->
-                <div class="hidden md:flex items-center gap-x-10 text-sm font-medium">
+                <div class="hidden md:flex items-center gap-x-6 lg:gap-x-10 text-sm font-medium">
                     <a href="#" class="nav-link text-gray-700">Home</a>
 
-                    <!-- About Dropdown -->
+                    <!-- About Dropdown (unchanged) -->
                     <div class="relative group">
-                        <button onclick="toggleDropdown(this)" class="nav-link text-gray-700 flex items-center gap-x-1">
+                        <button class="nav-link text-gray-700 flex items-center gap-x-1">
                             About
                             <i class="fa-solid fa-chevron-down text-xs transition-transform group-hover:rotate-180"></i>
                         </button>
@@ -391,9 +595,11 @@ sort($countries);
                         </div>
                     </div>
 
-                    <a href="https://dmw.gov.ph/careers" class="nav-link text-gray-700">Careers</a>
-                    <a href="https://dmw.gov.ph/news-releases" class="nav-link text-gray-700">News</a>
-                    <a href="https://dmw.gov.ph/contact-us" class="nav-link text-gray-700">Contact</a>
+                    <a href="#vacancies" class="nav-link text-gray-700">Vacancies</a>
+                    <a href="#how-it-works" class="nav-link text-gray-700">How It Works</a>
+                    <a href="#news" class="nav-link text-gray-700">News</a>
+                    <a href="#services-section" class="nav-link text-gray-700">Services</a>
+                    <a href="#contact" class="nav-link text-gray-700">Contact</a>
                 </div>
 
                 <!-- Right Side -->
@@ -417,13 +623,27 @@ sort($countries);
         <div id="mobile-menu" class="hidden md:hidden bg-white border-t">
             <div class="px-6 py-8 flex flex-col gap-y-6 text-lg">
                 <a href="#" class="font-medium">Home</a>
-                <a href="#" class="font-medium">About</a>
-                <a href="#" class="font-medium">Services</a>
-                <a href="#" class="font-medium">Programs</a>
-                <a href="#" class="font-medium">News</a>
-                <a href="#" class="font-medium">Contact</a>
-                <a href="#" onclick="showPortalModal()"
-                    class="bg-[#0A1F44] text-white py-4 text-center rounded-2xl font-semibold">OFW Portal</a>
+
+                <!-- About (expandable) -->
+                <details class="group">
+                    <summary class="font-medium flex items-center justify-between cursor-pointer list-none">
+                        About
+                        <i class="fa-solid fa-chevron-down text-xs transition-transform group-open:rotate-180"></i>
+                    </summary>
+                    <div class="mt-4 ml-4 flex flex-col gap-y-4 text-base text-gray-600">
+                        <a href="https://dmw.gov.ph/about/mission-vision-and-core-values">Our Mission, Vision & Core Values</a>
+                        <a href="https://dmw.gov.ph/about/mandate">Our Mandate</a>
+                        <a href="https://dmw.gov.ph/about/organizational-overview">Organizational Structure</a>
+                    </div>
+                </details>
+
+                <a href="#vacancies" class="font-medium">Vacancies</a>
+                <a href="#how-it-works" class="font-medium">How It Works</a>
+                <a href="#news" class="font-medium">News</a>
+                <a href="#services-section" class="font-medium">Services</a>
+                <a href="#contact" class="font-medium">Contact</a>
+                <a href="login.php"
+                    class="bg-[#0A1F44] text-white py-4 text-center rounded-2xl font-semibold">Applicant Portal</a>
             </div>
         </div>
     </nav>
@@ -475,7 +695,7 @@ sort($countries);
                 <div
                     class="animate-on-scroll opacity-0 translate-y-8 transition-all duration-1100 delay-500 mt-8 sm:mt-10 border-t border-b border-white/20 bg-white/10 backdrop-blur-md">
                     <div
-                        class="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col md:flex-row items-center justify-between gap-4 sm:gap-6 text-white">
+                        class="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col items-center justify-between gap-3 sm:gap-4 text-white">
 
                         <!-- Left Label -->
                         <div class="text-[10px] sm:text-xs uppercase tracking-widest text-white/70 font-medium text-center md:text-left">
@@ -484,7 +704,7 @@ sort($countries);
 
                         <!-- Certifications -->
                         <div
-                            class="flex flex-wrap items-center justify-center md:justify-end gap-5 sm:gap-8 md:gap-10 text-xs sm:text-sm">
+                            class="flex flex-wrap sm:flex-nowrap items-center justify-center gap-4 sm:gap-5 md:gap-8 text-xs sm:text-sm">
 
                             <!-- ISO -->
                             <div class="flex items-center gap-2 sm:gap-3 hover:opacity-100 opacity-90 transition">
@@ -588,7 +808,7 @@ sort($countries);
 
 
     <!-- Enhanced Quick Access – G2G Vacancies with Search/Filter & Accordion -->
-    <section class="py-12 sm:py-16 md:py-20 enhanced-bg section-bg-light">
+    <section id="vacancies" class="py-12 sm:py-16 md:py-20 enhanced-bg section-bg-light">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <!-- Header -->
             <div class="flex flex-col md:flex-row md:items-end justify-between mb-6 sm:mb-8 md:mb-12 gap-4 sm:gap-6">
@@ -624,20 +844,36 @@ sort($countries);
                     </div>
 
                     <!-- Jobsite Dropdown -->
-                    <div class="w-full md:w-64">
-                        <label for="jobsite" class="sr-only">Jobsite</label>
-                        <select id="jobsite" class="block w-full py-3 sm:py-4 px-4 border border-gray-300 rounded-xl focus:ring-[var(--primary)] focus:border-[var(--primary)] text-gray-900 text-sm sm:text-base">
+                    <div id="jobsite-wrap" class="w-full md:w-64 relative">
+                        <label for="jobsite-btn" class="sr-only">Jobsite</label>
+
+                        <!-- Hidden native select (keeps the filter logic working) -->
+                        <select id="jobsite" class="sr-only" tabindex="-1" aria-hidden="true">
                             <option value="all">All Jobsites</option>
-                            <?php foreach ($countries as $c): ?>
-                                <option value="<?= strtolower(htmlspecialchars($c)) ?>"><?= htmlspecialchars($c) ?></option>
+                            <?php foreach ($countries as $c => $n): ?>
+                                <option value="<?= strtolower(htmlspecialchars($c)) ?>"><?= htmlspecialchars($c) ?> (<?= (int)$n ?>)</option>
                             <?php endforeach; ?>
                         </select>
+
+                        <!-- Custom button -->
+                        <button type="button" id="jobsite-btn" aria-haspopup="listbox" aria-expanded="false"
+                            class="w-full flex items-center justify-between gap-3 py-3 sm:py-4 pl-4 pr-4 bg-white border border-gray-300 rounded-xl text-gray-900 text-sm sm:text-base text-left focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-[var(--primary)]">
+                            <span class="flex items-center gap-2 min-w-0">
+                                <i class="fa-solid fa-earth-asia text-[var(--primary)] shrink-0"></i>
+                                <span id="jobsite-label" class="truncate">All Jobsites</span>
+                            </span>
+                            <i id="jobsite-arrow" class="fa-solid fa-chevron-down text-gray-500 text-xs shrink-0 transition-transform duration-200"></i>
+                        </button>
+
+                        <!-- Styled list -->
+                        <ul id="jobsite-panel" role="listbox"
+                            class="hidden absolute left-0 right-0 top-full mt-2 z-30 max-h-64 overflow-y-auto bg-white border border-navy-200 rounded-xl shadow-xl py-1"></ul>
                     </div>
 
                     <!-- Opportunity Badge -->
                     <div class="flex items-center justify-center md:justify-start gap-3 bg-[var(--primary-light)] px-4 sm:px-5 py-3 rounded-xl">
                         <i class="fa-solid fa-briefcase text-[var(--primary)] text-lg sm:text-xl"></i>
-                        <span class="font-semibold text-[var(--primary)] text-sm sm:text-base whitespace-nowrap"><?= $totalOpportunities ?> opportunities</span>
+                        <span class="font-semibold text-[var(--primary)] text-sm sm:text-base whitespace-nowrap"><span id="opportunity-number"><?= $totalOpportunities ?></span> opportunities</span>
                     </div>
                 </div>
             </div>
@@ -648,7 +884,7 @@ sort($countries);
                     <p class="text-center text-gray-500 py-12">No active job orders at the moment. Please check back soon.</p>
                 <?php endif; ?>
                 <?php foreach ($jobsByYear as $year => $jobs): ?>
-                    <details <?= $year == date('Y') ? 'open' : '' ?> class="bg-white enhanced-shadow enhanced-border rounded-2xl overflow-hidden">
+                    <details <?= $year == date('Y') ? 'open' : '' ?> class="year-group bg-white enhanced-shadow enhanced-border rounded-2xl overflow-hidden">
                         <summary class="accordion-summary flex items-center justify-between px-4 sm:px-6 py-4 sm:py-5 cursor-pointer bg-gradient-to-r from-[var(--primary-light)] to-white">
                             <div class="flex items-center gap-3 sm:gap-4">
                                 <i class="fa-solid fa-calendar-day text-[var(--primary)] text-xl sm:text-2xl"></i>
@@ -663,13 +899,14 @@ sort($countries);
                         </div>
                     </details>
                 <?php endforeach; ?>
+                <p id="no-results" class="hidden text-center text-gray-500 py-12">No vacancies match your search.</p>
             </div>
         </div>
     </section>
 
 
     <!-- How It Works Timeline – Adapted for G2G Placement -->
-    <section class="py-12 sm:py-16 md:py-20 bg-gray-50">
+    <section id="how-it-works" class="py-12 sm:py-16 md:py-20 bg-gray-50">
         <div class="max-w-7xl mx-auto px-4 sm:px-6">
             <div class="text-center mb-10 sm:mb-16">
                 <span
@@ -990,14 +1227,14 @@ sort($countries);
     </section>
 
     <!-- Footer -->
-    <footer class="bg-[#0A1F44] text-white">
+    <footer id="contact" class="bg-[#0A1F44] text-white">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 pt-14 sm:pt-20">
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-y-10 sm:gap-y-16 gap-x-8">
                 <!-- Logo Column -->
                 <div class="sm:col-span-2 lg:col-span-4">
                     <div class="flex items-center gap-x-3 sm:gap-x-4 mb-6 sm:mb-8">
                         <div class="w-11 h-11 sm:w-14 sm:h-14 flex items-center justify-center overflow-hidden shrink-0">
-                            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                            <img src="pictures/dmw_logo.png"
                                 alt="Department of Migrant Workers Logo"
                                 class="w-full h-full object-contain p-1.5 sm:p-2">
                         </div>
@@ -1111,11 +1348,6 @@ sort($countries);
                 });
             });
         }
-
-        //  LANGUAGE TOGGLE (placeholder)
-        window.toggleLanguage = function() {
-            alert("🌏 Language switched to Filipino.\n\n(This is a demo — real implementation would switch content)");
-        };
 
         //  ESC KEY + ACCESSIBILITY
         document.addEventListener('keydown', (e) => {
@@ -1239,20 +1471,470 @@ sort($countries);
         });
     </script>
     <script>
-        const searchInput = document.getElementById('g2g-search');
-        const jobsiteSelect = document.getElementById('jobsite');
+        (function() {
+            const searchInput = document.getElementById('g2g-search');
+            const jobsiteSelect = document.getElementById('jobsite');
+            const cards = Array.from(document.querySelectorAll('.job-card'));
+            const yearGroups = document.querySelectorAll('.year-group');
+            const countEl = document.getElementById('opportunity-number');
+            const noResults = document.getElementById('no-results');
+            if (!searchInput || !jobsiteSelect) return;
 
-        function filterJobs() {
-            const term = searchInput.value.toLowerCase();
-            const country = jobsiteSelect.value.toLowerCase();
-            document.querySelectorAll('.job-card').forEach(card => {
-                const matchesSearch = card.dataset.search.includes(term);
-                const matchesCountry = country === 'all' || card.dataset.country === country;
-                card.style.display = (matchesSearch && matchesCountry) ? '' : 'none';
+            function addOption(value, text) {
+                const opt = document.createElement('option');
+                opt.value = value;
+                opt.textContent = text;
+                jobsiteSelect.appendChild(opt);
+            }
+
+            // Rebuild the dropdown from the cards that match the search text
+            function rebuildJobsites(term) {
+                const current = jobsiteSelect.value;
+                const counts = new Map();
+                let matched = 0;
+
+                cards.forEach(card => {
+                    if (!card.dataset.search.includes(term)) return;
+                    matched++;
+                    const key = card.dataset.country;
+                    if (!key) return;
+                    const entry = counts.get(key) || {
+                        label: card.dataset.countryLabel,
+                        n: 0
+                    };
+                    entry.n++;
+                    counts.set(key, entry);
+                });
+
+                jobsiteSelect.innerHTML = '';
+                addOption('all', 'All Jobsites (' + matched + ')');
+                Array.from(counts.entries())
+                    .sort((a, b) => a[1].label.localeCompare(b[1].label))
+                    .forEach(([key, e]) => addOption(key, e.label + ' (' + e.n + ')'));
+
+                jobsiteSelect.value = counts.has(current) ? current : 'all';
+            }
+
+            function applyFilters() {
+                const term = searchInput.value.toLowerCase().trim();
+                rebuildJobsites(term);
+                const country = jobsiteSelect.value;
+
+                let slots = 0,
+                    visible = 0;
+                cards.forEach(card => {
+                    const show = card.dataset.search.includes(term) &&
+                        (country === 'all' || card.dataset.country === country);
+                    card.style.display = show ? '' : 'none';
+                    if (show) {
+                        visible++;
+                        slots += parseInt(card.dataset.slots, 10) || 0;
+                    }
+                });
+
+                yearGroups.forEach(group => {
+                    const hasVisible = Array.from(group.querySelectorAll('.job-card'))
+                        .some(c => c.style.display !== 'none');
+                    group.style.display = hasVisible ? '' : 'none';
+                });
+
+                if (countEl) countEl.textContent = slots;
+                if (noResults) noResults.classList.toggle('hidden', visible > 0);
+            }
+
+            searchInput.addEventListener('input', applyFilters);
+            jobsiteSelect.addEventListener('change', applyFilters);
+
+            // Custom dropdown UI
+            const wrap = document.getElementById('jobsite-wrap');
+            const btn = document.getElementById('jobsite-btn');
+            const btnLabel = document.getElementById('jobsite-label');
+            const panel = document.getElementById('jobsite-panel');
+            const arrow = document.getElementById('jobsite-arrow');
+
+            function setOpen(state) {
+                panel.classList.toggle('hidden', !state);
+                btn.setAttribute('aria-expanded', state);
+                arrow.classList.toggle('rotate-180', state);
+            }
+
+            function choose(value) {
+                jobsiteSelect.value = value;
+                jobsiteSelect.dispatchEvent(new Event('change'));
+                renderPanel();
+                setOpen(false);
+                btn.focus();
+            }
+
+            function renderPanel() {
+                panel.innerHTML = '';
+                Array.from(jobsiteSelect.options).forEach(opt => {
+                    const selected = opt.value === jobsiteSelect.value;
+                    const m = opt.textContent.match(/^(.*) \((\d+)\)$/);
+                    const name = m ? m[1] : opt.textContent;
+                    const count = m ? m[2] : '';
+
+                    const li = document.createElement('li');
+                    li.setAttribute('role', 'option');
+                    li.setAttribute('aria-selected', selected);
+                    li.tabIndex = -1;
+                    li.dataset.value = opt.value;
+                    li.className = 'flex items-center justify-between gap-3 px-4 py-2.5 text-sm cursor-pointer transition-colors focus:outline-none ' +
+                        (selected ?
+                            'bg-navy-100 text-navy-800 font-semibold' :
+                            'text-gray-700 hover:bg-navy-50 focus:bg-navy-50');
+
+                    li.innerHTML =
+                        '<span class="flex items-center gap-2 min-w-0">' +
+                        '<i class="fa-solid fa-check text-xs text-[var(--primary)] w-3 ' + (selected ? '' : 'invisible') + '"></i>' +
+                        '<span class="truncate"></span></span>' +
+                        (count ? '<span class="text-xs bg-navy-100 text-navy-700 rounded-full px-2 py-0.5 shrink-0">' + count + '</span>' : '');
+                    li.querySelector('.truncate').textContent = name; // textContent avoids XSS
+
+                    li.addEventListener('click', () => choose(opt.value));
+                    panel.appendChild(li);
+                });
+
+                const current = jobsiteSelect.options[jobsiteSelect.selectedIndex];
+                btnLabel.textContent = current ? current.textContent : 'All Jobsites';
+            }
+
+            // Re-draw the list whenever the filter code rebuilds the options
+            new MutationObserver(renderPanel).observe(jobsiteSelect, {
+                childList: true
             });
-        }
-        searchInput?.addEventListener('input', filterJobs);
-        jobsiteSelect?.addEventListener('change', filterJobs);
+
+            btn.addEventListener('click', () => setOpen(panel.classList.contains('hidden')));
+
+            document.addEventListener('click', (e) => {
+                if (!wrap.contains(e.target)) setOpen(false);
+            });
+
+            wrap.addEventListener('keydown', (e) => {
+                const items = Array.from(panel.children);
+                const idx = items.indexOf(document.activeElement);
+                if (e.key === 'Escape') {
+                    setOpen(false);
+                    btn.focus();
+                } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setOpen(true);
+                    items[Math.min(idx + 1, items.length - 1)]?.focus();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    items[Math.max(idx - 1, 0)]?.focus();
+                } else if (e.key === 'Enter' && idx > -1) {
+                    e.preventDefault();
+                    choose(items[idx].dataset.value);
+                }
+            });
+
+            renderPanel();
+        })();
+    </script>
+    <script>
+        (function() {
+            const DICT = {
+                // Top bar & nav
+                "Mon - Fri: 8:00 AM - 5:00 PM": "Lun - Biy: 8:00 NU - 5:00 NH",
+                "Department of": "Kagawaran ng",
+                "Migrant Workers": "Manggagawang Migrante",
+                "Department of Migrant Workers": "Kagawaran ng Manggagawang Migrante",
+                "Department of Migrant Workers Logo": "Logo ng Kagawaran ng Manggagawang Migrante",
+                "REPUBLIC OF THE PHILIPPINES": "REPUBLIKA NG PILIPINAS",
+                "Home": "Tahanan",
+                "About": "Tungkol sa Amin",
+                "Our Mission, Vision & Core Values": "Aming Misyon, Bisyon, at Pangunahing Pagpapahalaga",
+                "Our Mandate": "Aming Mandato",
+                "Organizational Structure": "Estruktura ng Organisasyon",
+                "Vacancies": "Mga Bakante",
+                "How It Works": "Paano Ito Gumagana",
+                "News": "Balita",
+                "Services": "Mga Serbisyo",
+                "Contact": "Makipag-ugnayan",
+                "Applicant Portal": "Portal ng Aplikante",
+                "Language": "Wika",
+
+                // Hero
+                "PROTECTING FILIPINO WORKERS WORLDWIDE": "PINOPROTEKTAHAN ANG MGA MANGGAGAWANG PILIPINO SA BUONG MUNDO",
+                "Empowering and protecting Overseas Filipino Workers through comprehensive services, welfare programs, and policy advocacy for a dignified and safe migration experience.": "Pinapalakas at pinoprotektahan ang mga Overseas Filipino Worker sa pamamagitan ng komprehensibong serbisyo, mga programang pangkapakanan, at adbokasiya sa patakaran para sa marangal at ligtas na karanasan sa migrasyon.",
+                "Access OFW Services →": "Ma-access ang mga Serbisyo para sa OFW →",
+                "Learn More": "Alamin Pa",
+                "Certified & Committed to Excellence": "Sertipikado at Nakatuon sa Kahusayan",
+                "ISO 9001:2015 Certified": "Sertipikado ng ISO 9001:2015",
+                "Quality Management": "Pamamahala ng Kalidad",
+                "Philippine Transparency Seal": "Transparency Seal ng Pilipinas",
+                "Full Compliance": "Ganap na Pagsunod",
+                "Service Excellence": "Kahusayan sa Serbisyo",
+                "OFWs PROTECTED": "MGA OFW NA PROTEKTADO",
+                "COUNTRIES": "MGA BANSA",
+                "Based on latest DMW reports": "Batay sa pinakabagong ulat ng DMW",
+
+                // Vacancies
+                "G2G OPPORTUNITIES": "MGA OPORTUNIDAD SA G2G",
+                "Government-to-Government Vacancies": "Mga Bakanteng Government-to-Government",
+                "Browse ethical, no-fee overseas jobs through bilateral government partnerships. Updated from official DMW listings.": "Maghanap ng etikal at walang-bayad na trabaho sa ibang bansa sa pamamagitan ng bilateral na pakikipagtulungan ng mga pamahalaan. Binabago mula sa opisyal na listahan ng DMW.",
+                "View All on DMW Site →": "Tingnan Lahat sa Site ng DMW →",
+                "Search vacancies": "Maghanap ng bakante",
+                "Search by position, employer, control number...": "Maghanap ayon sa posisyon, employer, control number...",
+                "Jobsite": "Lugar ng Trabaho",
+                "opportunities": "mga oportunidad",
+                "No active job orders at the moment. Please check back soon.": "Walang aktibong job order sa ngayon. Bumalik muli sa lalong madaling panahon.",
+                "No vacancies match your search.": "Walang bakanteng tumutugma sa iyong paghahanap.",
+
+                // Job cards
+                "No Placement Fee": "Walang Bayad sa Placement",
+                "Closed": "Sarado",
+                "Salary not specified": "Hindi tinukoy ang sahod",
+                "VIEW RSF": "TINGNAN ANG RSF",
+                "RSF document not yet uploaded": "Hindi pa naka-upload ang dokumento ng RSF",
+                "(Position not set)": "(Hindi pa naitakda ang posisyon)",
+
+                // Timeline
+                "STEP-BY-STEP GUIDE": "GABAY NA HAKBANG-HAKBANG",
+                "Your G2G Journey with DMW": "Ang Iyong G2G Journey Kasama ang DMW",
+                "Safe, ethical, and no-fee overseas employment through government-to-government partnerships.": "Ligtas, etikal, at walang-bayad na trabaho sa ibang bansa sa pamamagitan ng government-to-government na pakikipagtulungan.",
+                "Register on the DMW Portal": "Magrehistro sa DMW Portal",
+                "Create or log in to your account. Complete your profile with personal info, education, work experience, skills, and job preferences.": "Gumawa o mag-log in sa iyong account. Kumpletuhin ang iyong profile gamit ang personal na impormasyon, edukasyon, karanasan sa trabaho, kasanayan, at piniling trabaho.",
+                "Browse & Select G2G Vacancies": "Mag-browse at Pumili ng G2G na Bakante",
+                "Visit the": "Bisitahin ang",
+                "G2G Job Opportunities page": "pahina ng G2G Job Opportunities",
+                "to view current Recruitment Specification Forms (RSF) from partner countries. Filter by country, position, or control number and choose roles that match your skills.": "para makita ang kasalukuyang Recruitment Specification Forms (RSF) mula sa mga katuwang na bansa. I-filter ayon sa bansa, posisyon, o control number at pumili ng mga trabahong angkop sa iyong kasanayan.",
+                "Apply & Upload Documents": "Mag-apply at Mag-upload ng mga Dokumento",
+                "Submit your application through the G2G portal or specified process. Upload required documents such as valid passport, resume, certificates (TESDA/training), employment history, and any language proficiency proofs.": "Isumite ang iyong aplikasyon sa pamamagitan ng G2G portal o itinakdang proseso. I-upload ang mga kinakailangang dokumento tulad ng balidong pasaporte, resume, mga sertipiko (TESDA/pagsasanay), kasaysayan ng pagtatrabaho, at anumang patunay ng kasanayan sa wika.",
+                "Screening, Shortlisting & Interview": "Screening, Shortlisting, at Panayam",
+                "DMW and/or the partner country's agency reviews applications. Qualified candidates may undergo skills assessment, interviews (virtual or in-person), and further evaluation. Stay updated via your DMW account.": "Susuriin ng DMW at/o ng ahensya ng katuwang na bansa ang mga aplikasyon. Ang mga kwalipikadong kandidato ay maaaring sumailalim sa pagtatasa ng kasanayan, panayam (virtual o personal), at karagdagang pagsusuri. Manatiling updated sa pamamagitan ng iyong DMW account.",
+                "Receive Offer & Complete Processing": "Tumanggap ng Alok at Kumpletuhin ang Proseso",
+                "If selected, receive a job offer. Undergo medical exam, contract validation, pre-departure orientation (if required), and final document processing. DMW issues your Overseas Employment Certificate (OEC) for deployment.": "Kung mapili, makatatanggap ka ng alok na trabaho. Sasailalim ka sa medical exam, pagpapatunay ng kontrata, pre-departure orientation (kung kinakailangan), at huling pagproseso ng mga dokumento. Ilalabas ng DMW ang iyong Overseas Employment Certificate (OEC) para sa deployment.",
+                "Deployment & Continued Protection": "Deployment at Patuloy na Proteksyon",
+                "Depart safely with full government protection. DMW provides on-site welfare support through embassies/consulates and 24/7 hotlines. Enjoy ethical employment with no placement fees.": "Umalis nang ligtas na may buong proteksyon ng pamahalaan. Nagbibigay ang DMW ng suportang pangkapakanan sa lugar ng trabaho sa pamamagitan ng mga embahada/konsulado at 24/7 na hotline. Magtrabaho nang etikal at walang placement fee.",
+                "Start Your G2G Journey Now": "Simulan Na ang Iyong G2G Journey",
+
+                // News
+                "UPDATES": "MGA UPDATE",
+                "News & Announcements": "Balita at Anunsyo",
+                "View all news on DMW site": "Tingnan ang lahat ng balita sa site ng DMW",
+                "Bilateral Cooperation": "Bilateral na Kooperasyon",
+                "DMW Meets Mongolian Delegation on Proposed Labor Agreement": "Nakipagpulong ang DMW sa Delegasyon ng Mongolia Ukol sa Iminungkahing Kasunduan sa Paggawa",
+                "Discussions focused on a proposed bilateral labor agreement to protect OFWs in Mongolia, held at the DMW Central Office in Mandaluyong City.": "Nakatuon ang talakayan sa iminungkahing bilateral na kasunduan sa paggawa para protektahan ang mga OFW sa Mongolia, na ginanap sa Central Office ng DMW sa Lungsod ng Mandaluyong.",
+                "DMW-NCR Releases ₱5.95M AKSYON Fund Aid to 118 OFWs": "Naglabas ang DMW-NCR ng ₱5.95M na Tulong mula sa AKSYON Fund sa 118 OFW",
+                "Financial assistance was distributed to 118 overseas Filipino workers at the DMW Central Office.": "Namahagi ng tulong-pinansyal sa 118 overseas Filipino worker sa Central Office ng DMW.",
+                "OFW Assistance": "Tulong sa OFW",
+                "Over ₱10M AKSYON Fund Aid Delivered to 200 OFWs in Pasay": "Mahigit ₱10M na Tulong mula sa AKSYON Fund, Naihatid sa 200 OFW sa Pasay",
+                "OFWs and their families received assistance during the \"Handog ng Pangulo: Serbisyong Sapat Para sa Lahat\" event at the Pasay City Astrodome.": "Tumanggap ng tulong ang mga OFW at kanilang pamilya sa programang \"Handog ng Pangulo: Serbisyong Sapat Para sa Lahat\" sa Pasay City Astrodome.",
+                "Read More →": "Basahin Pa →",
+                "Source: Department of Migrant Workers.": "Pinagmulan: Kagawaran ng Manggagawang Migrante.",
+                "Visit the official News Releases page": "Bisitahin ang opisyal na pahina ng News Releases",
+                "for the full articles and the latest updates.": "para sa buong artikulo at pinakabagong balita.",
+
+                // Services
+                "WHAT WE OFFER": "ALOK NAMIN",
+                "Comprehensive": "Komprehensibong",
+                "Services for OFWs": "Serbisyo para sa mga OFW",
+                "From pre-departure preparation to safe return and reintegration, the Department of Migrant Workers stands with every OFW at every step.": "Mula sa paghahanda bago umalis hanggang sa ligtas na pag-uwi at reintegrasyon, kasama ng Kagawaran ng Manggagawang Migrante ang bawat OFW sa bawat hakbang.",
+                "Response Time": "Oras ng Pagtugon",
+                "Partner Countries": "Mga Katuwang na Bansa",
+                "Pre-Employment": "Bago ang Pagtatrabaho",
+                "Document verification & authentication": "Pagberipika at pagpapatunay ng dokumento",
+                "Skills matching & training": "Pagtutugma ng kasanayan at pagsasanay",
+                "Employment contract review": "Pagsusuri ng kontrata sa trabaho",
+                "On-Site Protection": "Proteksyon sa Lugar ng Trabaho",
+                "24/7 OWWA-DMW hotline support": "24/7 na suporta ng hotline ng OWWA-DMW",
+                "Philippine Embassy / Consulate assistance": "Tulong ng Embahada / Konsulado ng Pilipinas",
+                "Real-time welfare case monitoring": "Real-time na pagsubaybay sa mga kaso ng kapakanan",
+                "Reintegration": "Reintegrasyon",
+                "Livelihood & entrepreneurship programs": "Mga programang pangkabuhayan at pangnegosyo",
+                "Skills upgrading & re-training": "Pagpapahusay ng kasanayan at muling pagsasanay",
+                "Financial literacy & reintegration grants": "Kaalamang pampinansyal at mga grant sa reintegrasyon",
+                "Policy & Advocacy": "Patakaran at Adbokasiya",
+                "Bilateral labor agreements negotiation": "Negosasyon ng mga bilateral na kasunduan sa paggawa",
+                "Representation in international forums": "Representasyon sa mga pandaigdigang forum",
+                "Protection of OFW rights & welfare": "Proteksyon sa karapatan at kapakanan ng mga OFW",
+
+                // Footer
+                "Serving and protecting the modern-day heroes of the Philippines.": "Naglilingkod at nagpoprotekta sa mga makabagong bayani ng Pilipinas.",
+                "Quick Links": "Mabilisang Link",
+                "OFW Portal": "Portal ng OFW",
+                "OEC Application": "Aplikasyon sa OEC",
+                "Resources": "Mga Mapagkukunan",
+                "Laws & Policies": "Mga Batas at Patakaran",
+                "Download Forms": "Mag-download ng mga Form",
+                "Statistics": "Estadistika",
+                "Research": "Pananaliksik",
+                "Get in touch": "Makipag-ugnayan",
+                "MAIN OFFICE": "PANGUNAHING OPISINA",
+                "Calamba, Philippines, 4027": "Calamba, Pilipinas, 4027",
+                "HOTLINES": "MGA HOTLINE",
+                "Domestic: 1348": "Lokal: 1348",
+                "International: +63 2 8722 1144": "Internasyonal: +63 2 8722 1144",
+                "© 2026 Department of Migrant Workers. All Rights Reserved.": "© 2026 Kagawaran ng Manggagawang Migrante. Nakareserba ang Lahat ng Karapatan.",
+                "Privacy Policy": "Patakaran sa Privacy",
+                "Terms of Use": "Mga Tuntunin sa Paggamit",
+                "Accessibility": "Pagiging Naa-access"
+            };
+
+            const MONTHS = {
+                January: 'Enero',
+                February: 'Pebrero',
+                March: 'Marso',
+                April: 'Abril',
+                May: 'Mayo',
+                June: 'Hunyo',
+                July: 'Hulyo',
+                August: 'Agosto',
+                September: 'Setyembre',
+                October: 'Oktubre',
+                November: 'Nobyembre',
+                December: 'Disyembre'
+            };
+
+            // Dynamic strings (numbers / values built by PHP and JS)
+            const PATTERNS = [
+                [/^Control No\. (.*)$/, m => 'Control Blg. ' + m[1]],
+                [/^(\d+) days left to apply$/, m => m[1] + ' araw na lang para mag-apply'],
+                [/^(.*) \/ month$/, m => m[1] + ' / buwan'],
+                [/^All Jobsites(?: \((\d+)\))?$/, m => 'Lahat ng Lugar ng Trabaho' + (m[1] !== undefined ? ' (' + m[1] + ')' : '')],
+                [new RegExp('^(' + Object.keys(MONTHS).join('|') + ') (\\d{1,2}), (\\d{4})$'), m => MONTHS[m[1]] + ' ' + m[2] + ', ' + m[3]]
+            ];
+
+            const ATTRS = ['placeholder', 'alt', 'aria-label'];
+            const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'OPTION']);
+            const ORIG_TITLE = document.title;
+            const norm = s => s.replace(/\s+/g, ' ').trim();
+            const nodeOrig = new WeakMap();
+            let lang = 'en';
+
+            function tr(str) {
+                const core = norm(str);
+                if (!core) return str;
+                let t = DICT[core];
+                if (t === undefined) {
+                    for (const [re, fn] of PATTERNS) {
+                        const m = core.match(re);
+                        if (m) {
+                            t = fn(m);
+                            break;
+                        }
+                    }
+                }
+                if (t === undefined) return str;
+                return str.match(/^\s*/)[0] + t + str.match(/\s*$/)[0];
+            }
+
+            function applyNode(node) {
+                const rec = nodeOrig.get(node);
+                if (lang === 'fil') {
+                    if (rec && node.nodeValue === rec.shown) return;
+                    const orig = node.nodeValue,
+                        t = tr(orig);
+                    if (t !== orig) {
+                        nodeOrig.set(node, {
+                            orig,
+                            shown: t
+                        });
+                        node.nodeValue = t;
+                    } else nodeOrig.delete(node);
+                } else {
+                    if (rec && node.nodeValue === rec.shown) node.nodeValue = rec.orig;
+                    nodeOrig.delete(node);
+                }
+            }
+
+            function applyAttrs(root) {
+                const els = root.querySelectorAll ? root.querySelectorAll('[placeholder],[alt],[aria-label]') : [];
+                const list = root.matches && root.matches('[placeholder],[alt],[aria-label]') ? [root, ...els] : els;
+                list.forEach(el => ATTRS.forEach(a => {
+                    if (!el.hasAttribute(a)) return;
+                    const key = 'data-i18n-' + a;
+                    if (lang === 'fil') {
+                        const orig = el.hasAttribute(key) ? el.getAttribute(key) : el.getAttribute(a);
+                        el.setAttribute(key, orig);
+                        el.setAttribute(a, tr(orig));
+                    } else if (el.hasAttribute(key)) {
+                        el.setAttribute(a, el.getAttribute(key));
+                    }
+                }));
+            }
+
+            function walk(root) {
+                if (root.nodeType === 3) {
+                    applyNode(root);
+                    return;
+                }
+                if (root.nodeType !== 1) return;
+                const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                    acceptNode: n => SKIP.has(n.parentNode.nodeName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+                });
+                const nodes = [];
+                while (w.nextNode()) nodes.push(w.currentNode);
+                nodes.forEach(applyNode);
+                applyAttrs(root);
+            }
+
+            function setLang(next) {
+                lang = next;
+                document.documentElement.lang = next;
+                document.title = next === 'fil' ? tr(ORIG_TITLE) : ORIG_TITLE;
+                walk(document.body);
+                document.querySelectorAll('.lang-btn').forEach(b =>
+                    b.setAttribute('aria-pressed', b.dataset.lang === next ? 'true' : 'false'));
+                try {
+                    localStorage.setItem('dmw_lang', next);
+                } catch (e) {}
+            }
+
+            // Translate content that JavaScript adds later (job filter, dropdown list, counters)
+            new MutationObserver(muts => {
+                if (lang !== 'fil') return;
+                muts.forEach(m => {
+                    if (m.type === 'characterData') {
+                        if (m.target.parentNode && !SKIP.has(m.target.parentNode.nodeName)) applyNode(m.target);
+                    } else m.addedNodes.forEach(n => {
+                        if (n.nodeType === 3) {
+                            if (!SKIP.has(n.parentNode.nodeName)) applyNode(n);
+                        } else walk(n);
+                    });
+                });
+            }).observe(document.body, {
+                childList: true,
+                subtree: true,
+                characterData: true
+            });
+
+            document.querySelectorAll('.lang-btn').forEach(b =>
+                b.addEventListener('click', () => setLang(b.dataset.lang)));
+
+            let saved = 'en';
+            try {
+                saved = localStorage.getItem('dmw_lang') || 'en';
+            } catch (e) {}
+            if (saved === 'fil') setLang('fil');
+        })();
+    </script>
+    <script>
+        (function() {
+            const root = document.documentElement;
+            const btn = document.getElementById('theme-toggle');
+            const icon = document.getElementById('theme-icon');
+            if (!btn || !icon) return;
+
+            function sync() {
+                const dark = root.classList.contains('dark');
+                icon.className = 'fa-solid ' + (dark ? 'fa-sun' : 'fa-moon');
+                btn.setAttribute('aria-pressed', dark);
+                btn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+            }
+
+            btn.addEventListener('click', () => {
+                root.classList.toggle('dark');
+                try {
+                    localStorage.setItem('dmw_theme', root.classList.contains('dark') ? 'dark' : 'light');
+                } catch (e) {}
+                sync();
+            });
+
+            sync();
+        })();
     </script>
 </body>
 

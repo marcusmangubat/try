@@ -1,10 +1,21 @@
 <?php
-// job-orders.php
 session_start();
 require_once '../db.php';
+require_once '../includes/activity_logger.php';
 if (!isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header("Location: ../login.php");
     exit();
+}
+
+$admin_email = $_SESSION['user_email'] ?? '';
+$admin_name  = $_SESSION['admin_name'] ?? '';
+if (!$admin_name && $admin_email) {
+    $stmt = $database->prepare("SELECT full_name FROM admins WHERE email = ? LIMIT 1");
+    $stmt->bind_param('s', $admin_email);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $admin_name = $row['full_name'] ?? 'Admin';
 }
 
 $status_filter = $_GET['status'] ?? '';
@@ -99,7 +110,8 @@ const QUAL_TYPES = [
     'max_weight_kg',
     'min_education',
     'civil_status',
-    'required_degree'
+    'required_degree',
+    'required_license'
 ];
 
 function parsePostedQualifications(): array
@@ -118,14 +130,63 @@ function parsePostedQualifications(): array
         if ($type === '' || $value === '') continue;
         if (!in_array($type, QUAL_TYPES, true))
             throw new RuntimeException("Invalid qualification type: $type");
-        if (isset($seen[$type]))
-            throw new RuntimeException("Duplicate qualification type: $type");
 
-        $seen[$type] = true;
+        // required_degree and required_license can both be added multiple times
+        // per job order (e.g. accept "BS Agriculture" OR "BS Agricultural Engineering",
+        // or "PRC Nurse License" OR "PRC Midwife License"), so both are exempt
+        // from the one-per-type rule enforced for everything else.
+        if ($type !== 'required_degree' && $type !== 'required_license') {
+            if (isset($seen[$type]))
+                throw new RuntimeException("Duplicate qualification type: $type");
+            $seen[$type] = true;
+        } else {
+            $multiKey = $type . '|' . strtolower($value);
+            if (isset($seen[$multiKey])) continue; // skip exact duplicate
+            $seen[$multiKey] = true;
+        }
+
         $qualifications[] = ['qualification_type' => $type, 'qualification_value' => $value];
     }
 
     return $qualifications;
+}
+
+/**
+ * @return array<int, array{skill_id:int, importance:string, min_proficiency:string}>
+ */
+function parsePostedSkills(): array
+{
+    $skillIds = $_POST['skill_id'] ?? [];
+    $importances = $_POST['skill_importance'] ?? [];
+    $minProfs = $_POST['skill_min_proficiency'] ?? [];
+
+    if (!is_array($skillIds)) return [];
+
+    $validImportance = ['Required', 'Preferred'];
+    $validProficiency = ['Beginner', 'Intermediate', 'Advanced', 'Expert'];
+
+    $skills = [];
+    $seen = [];
+    foreach ($skillIds as $k => $rawId) {
+        $skillId = (int) $rawId;
+        if ($skillId <= 0) continue;
+        if (isset($seen[$skillId])) continue; // skip picking the same skill twice
+        $seen[$skillId] = true;
+
+        $importance = trim((string) ($importances[$k] ?? 'Required'));
+        if (!in_array($importance, $validImportance, true)) $importance = 'Required';
+
+        $minProficiency = trim((string) ($minProfs[$k] ?? 'Beginner'));
+        if (!in_array($minProficiency, $validProficiency, true)) $minProficiency = 'Beginner';
+
+        $skills[] = [
+            'skill_id' => $skillId,
+            'importance' => $importance,
+            'min_proficiency' => $minProficiency,
+        ];
+    }
+
+    return $skills;
 }
 
 /**
@@ -157,7 +218,7 @@ function getExchangeRate(mysqli $database, string $currencyCode): ?float
  */
 function convertToPhp(mysqli $database, ?float $amount, string $currencyCode): ?float
 {
-    if ($amount === null || $amount <= 0) {
+    if ($amount === null || $amount < 0) {
         return null;
     }
 
@@ -215,9 +276,7 @@ function updateExchangeRates(mysqli $db): bool
     }
 }
 
-/**
- * Re-calculate PHP salaries for ALL existing job orders
- */
+//Re-calculate PHP salaries for ALL existing job orders
 function updateAllJobOrderPhpSalaries(mysqli $db): bool
 {
     $result = $db->query("SELECT id, salary_min, salary_max, salary_currency 
@@ -283,7 +342,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if (ob_get_length()) ob_clean();
     header('Content-Type: application/json');
 
-    // ── NEW: Get applicants for a specific RSF job order ──────────────────────
+    //  NEW: Get applicants for a specific RSF job order 
     if ($_POST['action'] === 'get_applicants') {
         try {
             $rsf_id = (int)($_POST['rsf_id'] ?? 0);
@@ -295,36 +354,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             // Fetch all applicants for this job order, with client info, status,
             // and the assigned evaluator (if any)
             $sql = "
-                SELECT
-                    a.id                AS application_id,
-                    a.status,
-                    a.submitted_at,
-                    a.notes,
-                    c.cid,
-                    CONCAT(c.first_name, ' ',
-                           COALESCE(CONCAT(c.middle_name, ' '), ''),
-                           c.last_name,
-                           COALESCE(CONCAT(' ', c.suffix), '')) AS client_name,
-                    c.email             AS client_email,
-                    c.phone             AS client_phone,
-                    e.eid               AS evaluator_id,
-                    e.full_name         AS evaluator_name,
-                    e.email             AS evaluator_email
-                FROM applications a
-                INNER JOIN clients c ON c.cid = a.client_id
-                LEFT JOIN assignments asgn ON asgn.application_id = a.id
-                    AND asgn.status = 'active'
-                LEFT JOIN evaluators e ON e.eid = asgn.evaluator_id
-                WHERE a.rsf_id = ?
-                ORDER BY a.submitted_at DESC
-            ";
+                    SELECT
+                        a.id                AS application_id,
+                        a.status,
+                        a.submitted_at,
+                        a.notes,
+                        c.cid,
+                        CONCAT(c.first_name, ' ',
+                            COALESCE(CONCAT(c.middle_name, ' '), ''),
+                            c.last_name,
+                            COALESCE(CONCAT(' ', c.suffix), '')) AS client_name,
+                        c.email             AS client_email,
+                        c.phone             AS client_phone,
+                        e.eid               AS evaluator_id,
+                        e.full_name         AS evaluator_name,
+                        e.email             AS evaluator_email
+                    FROM applications a
+                    INNER JOIN clients c ON c.cid = a.client_id
+                    LEFT JOIN evaluators e ON e.eid = a.current_evaluator_id
+                    WHERE a.rsf_id = ? AND a.status != 'draft'
+                    ORDER BY a.submitted_at DESC
+                ";
             $stmt = $database->prepare($sql);
             $stmt->bind_param('i', $rsf_id);
             $stmt->execute();
             $applicants = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
-            // Also fetch all active evaluators for the assign dropdown
-            $eval_stmt = $database->query("SELECT eid, full_name, email FROM evaluators ORDER BY full_name ASC");
+            // Only evaluators whose account is active can be assigned
+            $eval_stmt = $database->query("
+                SELECT e.eid, e.full_name, e.email
+                FROM evaluators e
+                JOIN webuser w ON w.email = e.email
+                WHERE w.is_active = 1
+                ORDER BY e.full_name ASC
+            ");
             $evaluators = $eval_stmt->fetch_all(MYSQLI_ASSOC);
 
             echo json_encode([
@@ -338,7 +401,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // ── NEW: Preview next auto-generated RSF number ───────────────────────────
+    //  NEW: Preview next auto-generated RSF number 
     if ($_POST['action'] === 'peek_rsf_number') {
         try {
             echo json_encode([
@@ -368,7 +431,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // ── NEW: Assign evaluator to an application ───────────────────────────────
+    //  NEW: Assign evaluator to an application 
     if ($_POST['action'] === 'assign_evaluator') {
         try {
             $application_id = (int)($_POST['application_id'] ?? 0);
@@ -376,6 +439,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             if ($application_id <= 0 || $evaluator_id <= 0) {
                 echo json_encode(['status' => 'error', 'message' => 'Invalid application or evaluator ID.']);
+                exit;
+            }
+
+            // Reject deactivated evaluators even if the ID was submitted directly
+            $activeChk = $database->prepare("
+                SELECT 1
+                FROM evaluators e
+                JOIN webuser w ON w.email = e.email
+                WHERE e.eid = ? AND w.is_active = 1
+                LIMIT 1
+            ");
+            $activeChk->bind_param('i', $evaluator_id);
+            $activeChk->execute();
+            $evaluatorIsActive = $activeChk->get_result()->num_rows > 0;
+            $activeChk->close();
+
+            if (!$evaluatorIsActive) {
+                echo json_encode(['status' => 'error', 'message' => "The selected evaluator's account is deactivated. Please choose an active evaluator."]);
                 exit;
             }
 
@@ -429,7 +510,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // ── EXISTING: Add ─────────────────────────────────────────────────────────
+    //  EXISTING: Add  
     if ($_POST['action'] === 'add') {
         $txStarted = false;
         try {
@@ -441,22 +522,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $subcategory_id  = !empty($_POST['subcategory_id']) ? (int) $_POST['subcategory_id'] : null;
             $slots_available = (int)($_POST['slots_available'] ?? 0);
             $qualifications  = trim($_POST['qualifications'] ?? '');
-            //  $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
-            //  $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
-            //  $salary_currency = trim($_POST['salary_currency'] ?? '') !== '' ? trim($_POST['salary_currency']) : 'PHP';
-            //  $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
-            //  $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
             $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
             $pdf_path = null;
             $requirements = parsePostedRequirements();
             $questions = parsePostedQuestions();
             $qualifications_structured = parsePostedQualifications();
-            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float)$_POST['salary_min'] : null;
-            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float)$_POST['salary_max'] : null;
-            $salary_currency = trim($_POST['salary_currency'] ?? 'PHP');
-            $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
-            $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
+            $skills_structured = parsePostedSkills();
 
+            // ── Salary (validated) ──
+            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
+            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
+            $salary_currency = strtoupper(trim($_POST['salary_currency'] ?? '')) ?: 'PHP';
+
+            if ($salary_min !== null && $salary_min < 0) {
+                echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be negative.']);
+                exit;
+            }
+            if ($salary_max !== null && $salary_max < 0) {
+                echo json_encode(['status' => 'error', 'message' => 'Salary Max cannot be negative.']);
+                exit;
+            }
+            if ($salary_min !== null && $salary_max !== null && $salary_min > $salary_max) {
+                echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be greater than Salary Max.']);
+                exit;
+            }
+            if ($salary_currency !== 'PHP' && ($salary_min !== null || $salary_max !== null)) {
+                if (getExchangeRate($database, $salary_currency) === null) {
+                    echo json_encode([
+                        'status'  => 'error',
+                        'message' => "No cached exchange rate for \"$salary_currency\" yet. Click \"Refresh Rates\" first, or choose a different currency."
+                    ]);
+                    exit;
+                }
+            }
+
+            $salary_min_php = convertToPhp($database, $salary_min, $salary_currency);
+            $salary_max_php = convertToPhp($database, $salary_max, $salary_currency);
             if (isset($_FILES['rsf_pdf']) && $_FILES['rsf_pdf']['error'] === UPLOAD_ERR_OK) {
                 $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'rsf_pdfs' . DIRECTORY_SEPARATOR;
                 if (!is_dir($upload_dir)) mkdir($upload_dir, 0755, true);
@@ -525,7 +626,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                     $qualStmt->close();
                 }
+                if ($skills_structured !== []) {
+                    $skillStmt = $database->prepare("INSERT INTO rsf_required_skills (rsf_id, skill_id, importance, min_proficiency) VALUES (?, ?, ?, ?)");
+                    foreach ($skills_structured as $sk) {
+                        $skillStmt->bind_param('iiss', $newId, $sk['skill_id'], $sk['importance'], $sk['min_proficiency']);
+                        if (!$skillStmt->execute())
+                            throw new RuntimeException('Failed to save skills: ' . $skillStmt->error);
+                    }
+                    $skillStmt->close();
+                }
                 $database->commit();
+                log_activity(
+                    $database,
+                    $admin_email,
+                    'admin',
+                    'job_order',
+                    'add',
+                    "Added job order {$rsf_number}: {$position_title} at {$employer_name} ({$worksite_country})"
+                );
                 echo json_encode([
                     'status' => 'success',
                     'message' => "RSF Job Order created successfully! ({$rsf_number})",
@@ -543,7 +661,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // ── EXISTING: Edit ────────────────────────────────────────────────────────
+    //  EXISTING: Edit 
     if ($_POST['action'] === 'edit') {
         $txStarted = false;
         try {
@@ -552,6 +670,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 echo json_encode(['status' => 'error', 'message' => 'Invalid job order ID.']);
                 exit;
             }
+
+            // Check if applicants already answered this job's current questions.
+            // If so, we must not delete/replace those questions later (FK constraint).
+            $checkAns = $database->prepare("
+                SELECT COUNT(*) AS cnt
+                FROM application_answers aa
+                INNER JOIN questions q ON q.id = aa.question_id
+                WHERE q.rsf_id = ?
+            ");
+            $checkAns->bind_param('i', $id);
+            $checkAns->execute();
+            $ansRow = $checkAns->get_result()->fetch_assoc();
+            $hasAnsweredQuestions = (int)($ansRow['cnt'] ?? 0) > 0;
+
             $pdf_path = null;
             $rsf_number = '';
             $stmt = $database->prepare("SELECT pdf_path, rsf_number FROM rsf_job_orders WHERE id = ?");
@@ -569,20 +701,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $subcategory_id  = !empty($_POST['subcategory_id']) ? (int) $_POST['subcategory_id'] : null;
             $slots_available = (int)($_POST['slots_available'] ?? 0);
             $qualifications  = trim($_POST['qualifications'] ?? '');
-            // $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
-            // $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
-            // $salary_currency = trim($_POST['salary_currency'] ?? '') !== '' ? trim($_POST['salary_currency']) : 'PHP';
-            // $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
-            // $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
             $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
             $requirements = parsePostedRequirements();
             $questions = parsePostedQuestions();
             $qualifications_structured = parsePostedQualifications();
-            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float)$_POST['salary_min'] : null;
-            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float)$_POST['salary_max'] : null;
-            $salary_currency = trim($_POST['salary_currency'] ?? 'PHP');
-            $salary_min_php  = convertToPhp($database, $salary_min, $salary_currency);
-            $salary_max_php  = convertToPhp($database, $salary_max, $salary_currency);
+            $skills_structured = parsePostedSkills();
+
+            // ── Salary (validated) ──
+            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
+            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
+            $salary_currency = strtoupper(trim($_POST['salary_currency'] ?? '')) ?: 'PHP';
+
+            if ($salary_min !== null && $salary_min < 0) {
+                echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be negative.']);
+                exit;
+            }
+            if ($salary_max !== null && $salary_max < 0) {
+                echo json_encode(['status' => 'error', 'message' => 'Salary Max cannot be negative.']);
+                exit;
+            }
+            if ($salary_min !== null && $salary_max !== null && $salary_min > $salary_max) {
+                echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be greater than Salary Max.']);
+                exit;
+            }
+            if ($salary_currency !== 'PHP' && ($salary_min !== null || $salary_max !== null)) {
+                if (getExchangeRate($database, $salary_currency) === null) {
+                    echo json_encode([
+                        'status'  => 'error',
+                        'message' => "No cached exchange rate for \"$salary_currency\" yet. Click \"Refresh Rates\" first, or choose a different currency."
+                    ]);
+                    exit;
+                }
+            }
+
+            $salary_min_php = convertToPhp($database, $salary_min, $salary_currency);
+            $salary_max_php = convertToPhp($database, $salary_max, $salary_currency);
 
             $pdf_path = null;
             $stmt = $database->prepare("SELECT pdf_path FROM rsf_job_orders WHERE id = ?");
@@ -633,21 +786,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                     $reqStmt->close();
                 }
-                $qDel = $database->prepare("DELETE FROM questions WHERE rsf_id = ?");
-                $qDel->bind_param('i', $id);
-                $qDel->execute();
-                $qDel->close();
+                if ($hasAnsweredQuestions) {
+                    // Skip: applicants already answered one or more current questions.
+                    // Deleting them would violate the application_answers FK constraint.
+                } else {
+                    $qDel = $database->prepare("DELETE FROM questions WHERE rsf_id = ?");
+                    $qDel->bind_param('i', $id);
+                    $qDel->execute();
+                    $qDel->close();
 
-                if ($questions !== []) {
-                    $qStmt = $database->prepare("INSERT INTO questions (question_text, is_required, order_no, rsf_id) VALUES (?, ?, ?, ?)");
-                    foreach ($questions as $q) {
-                        $qOrder = $q['order_no'];
-                        $qStmt->bind_param('siii', $q['question_text'], $q['is_required'], $qOrder, $id);
-                        if (!$qStmt->execute()) {
-                            throw new RuntimeException('Failed to update questions: ' . $qStmt->error);
+                    if ($questions !== []) {
+                        $qStmt = $database->prepare("INSERT INTO questions (question_text, is_required, order_no, rsf_id) VALUES (?, ?, ?, ?)");
+                        foreach ($questions as $q) {
+                            $qOrder = $q['order_no'];
+                            $qStmt->bind_param('siii', $q['question_text'], $q['is_required'], $qOrder, $id);
+                            if (!$qStmt->execute()) {
+                                throw new RuntimeException('Failed to update questions: ' . $qStmt->error);
+                            }
                         }
+                        $qStmt->close();
                     }
-                    $qStmt->close();
                 }
                 $qualDelStmt = $database->prepare("DELETE FROM rsf_qualifications WHERE rsf_id = ?");
                 $qualDelStmt->bind_param('i', $id);
@@ -662,8 +820,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                     $qualStmt->close();
                 }
+                $skillDelStmt = $database->prepare("DELETE FROM rsf_required_skills WHERE rsf_id = ?");
+                $skillDelStmt->bind_param('i', $id);
+                $skillDelStmt->execute();
+                $skillDelStmt->close();
+                if ($skills_structured !== []) {
+                    $skillStmt = $database->prepare("INSERT INTO rsf_required_skills (rsf_id, skill_id, importance, min_proficiency) VALUES (?, ?, ?, ?)");
+                    foreach ($skills_structured as $sk) {
+                        $skillStmt->bind_param('iiss', $id, $sk['skill_id'], $sk['importance'], $sk['min_proficiency']);
+                        if (!$skillStmt->execute())
+                            throw new RuntimeException('Failed to update skills: ' . $skillStmt->error);
+                    }
+                    $skillStmt->close();
+                }
                 $database->commit();
-                echo json_encode(['status' => 'success', 'message' => 'RSF Job Order updated successfully!']);
+                log_activity(
+                    $database,
+                    $admin_email,
+                    'admin',
+                    'job_order',
+                    'edit',
+                    "Edited job order {$rsf_number}: {$position_title} at {$employer_name} ({$worksite_country})"
+                );
+                $message = 'RSF Job Order updated successfully!';
+                if ($hasAnsweredQuestions) {
+                    $message .= ' Note: application questions were not changed because applicants have already submitted answers to them.';
+                }
+                echo json_encode(['status' => 'success', 'message' => $message]);
             } else {
                 $database->rollback();
                 echo json_encode(['status' => 'error', 'message' => 'Failed to update. ' . $stmt->error]);
@@ -677,7 +860,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
-    // ── EXISTING: Delete ──────────────────────────────────────────────────────
+    //  EXISTING: Delete 
     if ($_POST['action'] === 'delete') {
         try {
             $id = (int)($_POST['id'] ?? 0);
@@ -690,7 +873,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $check->execute();
             $row = $check->get_result()->fetch_assoc();
             if ($row['cnt'] > 0) {
-                echo json_encode(['status' => 'error', 'message' => 'Cannot delete: this job order has applications.']);
+                echo json_encode(['status' => 'error', 'message' => 'Cannot delete: This job order has applications.']);
                 exit;
             }
             $stmt = $database->prepare("DELETE FROM rsf_job_orders WHERE id = ?");
@@ -711,7 +894,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 $stmt = $database->query("
     SELECT r.*, COUNT(a.id) AS applicant_count
     FROM rsf_job_orders r
-    LEFT JOIN applications a ON a.rsf_id = r.id
+    LEFT JOIN applications a ON a.rsf_id = r.id AND a.status != 'draft'
     GROUP BY r.id
     ORDER BY r.created_at DESC
 ");
@@ -761,10 +944,31 @@ if ($qualStmt) {
         ];
     }
 }
-$search = trim($_GET['search'] ?? '');
-$filter_class = trim($_GET['classification'] ?? '');
+$skillsByRsf = [];
+$rsfSkillStmt = $database->query("
+    SELECT rs.rsf_id, rs.skill_id, s.skill_name, rs.importance, rs.min_proficiency
+    FROM rsf_required_skills rs
+    INNER JOIN skills s ON s.id = rs.skill_id
+    ORDER BY rs.id ASC
+");
+if ($rsfSkillStmt) {
+    while ($rs = $rsfSkillStmt->fetch_assoc()) {
+        $rid = (int) ($rs['rsf_id'] ?? 0);
+        if (!isset($skillsByRsf[$rid])) $skillsByRsf[$rid] = [];
+        $skillsByRsf[$rid][] = [
+            'skill_id' => (int) $rs['skill_id'],
+            'skill_name' => (string) $rs['skill_name'],
+            'importance' => (string) $rs['importance'],
+            'min_proficiency' => (string) $rs['min_proficiency'],
+        ];
+    }
+}
 
-// ── NEW: Lookup data for Category/Subcategory + Degree dropdowns ──────────
+$search = trim($_GET['search'] ?? '');
+//$filter_class = trim($_GET['classification'] ?? '');
+$filter_country = trim($_GET['country'] ?? '');
+
+//  NEW: Lookup data for Category/Subcategory + Degree dropdowns 
 $jobCategories = [];
 $catStmt = $database->query("SELECT id, category_name FROM job_categories ORDER BY category_name ASC");
 if ($catStmt) {
@@ -788,6 +992,26 @@ $degStmt = $database->query("SELECT id, degree_name FROM degree_programs ORDER B
 if ($degStmt) {
     while ($d = $degStmt->fetch_assoc()) {
         $degreePrograms[] = (string) $d['degree_name'];
+    }
+}
+
+$professionalLicenses = [];
+$licStmt = $database->query("SELECT license_name FROM professional_licenses ORDER BY license_name ASC");
+if ($licStmt) {
+    while ($l = $licStmt->fetch_assoc()) {
+        $professionalLicenses[] = (string) $l['license_name'];
+    }
+}
+
+$allSkills = [];
+$skillsStmt = $database->query("SELECT id, skill_name, skill_category FROM skills ORDER BY skill_category ASC, skill_name ASC");
+if ($skillsStmt) {
+    while ($s = $skillsStmt->fetch_assoc()) {
+        $allSkills[] = [
+            'id' => (int) $s['id'],
+            'skill_name' => (string) $s['skill_name'],
+            'skill_category' => (string) ($s['skill_category'] ?? ''),
+        ];
     }
 }
 
@@ -819,12 +1043,14 @@ if (empty($allCurrencies)) {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Job Orders (RSF) DMW</title>
+    <?php include '../includes/theme-init.php'; ?>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <link rel="stylesheet" href="../css/darkmode.css">
+    <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <link rel="stylesheet" href="../css/dashboard.css">
     <style>
         /* ── Applicants Modal ── */
@@ -993,7 +1219,388 @@ if (empty($allCurrencies)) {
         #editModal .modal-panel {
             animation: slideUp .22s cubic-bezier(.22, .68, 0, 1.2);
         }
+
+        /* ── Repeatable-row selects (qualifications, skills) — visual match
+           for the custom dropdown panels used elsewhere, without the JS
+           panel overhead since these rows are rebuilt on every add/remove. ── */
+        .qual-row select,
+        .skill-row select {
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2212%22%20height%3D%228%22%20viewBox%3D%220%200%2012%208%22%3E%3Cpath%20fill%3D%22%239ca3af%22%20d%3D%22M1%201l5%205%205-5%22%20stroke%3D%22%239ca3af%22%20stroke-width%3D%221.4%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            padding-right: 28px;
+            transition: border-color .15s;
+        }
+
+        .qual-row select:hover,
+        .skill-row select:hover {
+            border-color: #d1d5db;
+        }
+
+        .qual-row select:focus,
+        .skill-row select:focus {
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(217, 119, 6, .12);
+        }
+
+        .skill-row select:focus {
+            box-shadow: 0 0 0 3px rgba(8, 145, 178, .12);
+        }
+
+        /* ================= DARK MODE — Add/Edit RSF Modals ================= */
+        [data-theme="dark"] #addModal .modal-panel,
+        [data-theme="dark"] #editModal .modal-panel {
+            background: var(--card, #111827);
+            color: var(--text1, #f1f5f9);
+        }
+
+        [data-theme="dark"] #addModal .modal-panel>div:first-child,
+        [data-theme="dark"] #editModal .modal-panel>div:first-child {
+            background: var(--card, #111827) !important;
+            border-color: var(--border, #334155);
+        }
+
+        [data-theme="dark"] #addModal .text-gray-900,
+        [data-theme="dark"] #editModal .text-gray-900 {
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        [data-theme="dark"] #addModal .text-gray-800,
+        [data-theme="dark"] #editModal .text-gray-800 {
+            color: var(--text1, #e2e8f0) !important;
+        }
+
+        [data-theme="dark"] #addModal .text-gray-700,
+        [data-theme="dark"] #editModal .text-gray-700 {
+            color: var(--text2, #cbd5e1) !important;
+        }
+
+        [data-theme="dark"] #addModal .text-gray-600,
+        [data-theme="dark"] #editModal .text-gray-600 {
+            color: var(--text2, #94a3b8) !important;
+        }
+
+        [data-theme="dark"] #addModal .text-gray-500,
+        [data-theme="dark"] #editModal .text-gray-500 {
+            color: var(--text3, #94a3b8) !important;
+        }
+
+        [data-theme="dark"] #addModal .text-gray-400,
+        [data-theme="dark"] #editModal .text-gray-400 {
+            color: var(--text3, #64748b) !important;
+        }
+
+        [data-theme="dark"] #addModal hr,
+        [data-theme="dark"] #editModal hr,
+        [data-theme="dark"] #addModal .border-gray-200,
+        [data-theme="dark"] #editModal .border-gray-200,
+        [data-theme="dark"] #addModal .border-gray-100,
+        [data-theme="dark"] #editModal .border-gray-100 {
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #addModal .bg-white,
+        [data-theme="dark"] #editModal .bg-white,
+        [data-theme="dark"] #addModal .bg-gray-50,
+        [data-theme="dark"] #editModal .bg-gray-50 {
+            background-color: var(--surface, #1e293b) !important;
+        }
+
+        [data-theme="dark"] #addModal input:not([type="checkbox"]),
+        [data-theme="dark"] #addModal select,
+        [data-theme="dark"] #addModal textarea,
+        [data-theme="dark"] #editModal input:not([type="checkbox"]),
+        [data-theme="dark"] #editModal select,
+        [data-theme="dark"] #editModal textarea {
+            background-color: var(--surface, #1e293b) !important;
+            border-color: var(--border, #334155) !important;
+            color: var(--text1, #f1f5f9) !important;
+            color-scheme: dark;
+        }
+
+        [data-theme="dark"] #addModal input::placeholder,
+        [data-theme="dark"] #editModal input::placeholder,
+        [data-theme="dark"] #addModal textarea::placeholder,
+        [data-theme="dark"] #editModal textarea::placeholder {
+            color: var(--text3, #64748b) !important;
+        }
+
+        [data-theme="dark"] #addModal input:disabled,
+        [data-theme="dark"] #editModal input:disabled {
+            background-color: var(--surface2, #0f172a) !important;
+            color: var(--text3, #64748b) !important;
+        }
+
+        [data-theme="dark"] #addModal .requirement-row,
+        [data-theme="dark"] #editModal .requirement-row,
+        [data-theme="dark"] #addModal .question-row,
+        [data-theme="dark"] #editModal .question-row {
+            background: var(--surface, #1e293b) !important;
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #addModal .hover\:bg-gray-100:hover,
+        [data-theme="dark"] #editModal .hover\:bg-gray-100:hover {
+            background-color: var(--hover-row, rgba(148, 163, 184, .12)) !important;
+        }
+
+        /* Custom select trigger + panel (enhanceAdminSelect) */
+        [data-theme="dark"] #addModal [role="listbox"],
+        [data-theme="dark"] #editModal [role="listbox"] {
+            background: var(--surface, #1e293b) !important;
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #addModal [role="option"],
+        [data-theme="dark"] #editModal [role="option"] {
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        [data-theme="dark"] #addModal [role="option"]:hover,
+        [data-theme="dark"] #editModal [role="option"]:hover {
+            background-color: var(--hover-row, rgba(148, 163, 184, .12)) !important;
+        }
+
+        [data-theme="dark"] #addModal [role="option"].bg-blue-50,
+        [data-theme="dark"] #editModal [role="option"].bg-blue-50 {
+            background-color: var(--selected-row, rgba(59, 130, 246, .18)) !important;
+            color: #93c5fd !important;
+        }
+
+        /* ================= DARK MODE — Job Orders Table ================= */
+        [data-theme="dark"] .jo-table-card {
+            background: var(--card, #111827);
+            border-color: var(--border, #334155);
+        }
+
+        [data-theme="dark"] .jo-table thead th {
+            background: var(--surface, #1e293b);
+            border-bottom-color: var(--border, #334155);
+            color: var(--text3, #94a3b8) !important;
+        }
+
+        [data-theme="dark"] .jo-table tbody tr:hover {
+            background-color: var(--hover-row, rgba(148, 163, 184, .08));
+        }
+
+        [data-theme="dark"] .jo-table tbody tr:not(:last-child) td {
+            border-bottom-color: var(--border, #334155);
+        }
+
+        [data-theme="dark"] .jo-table .text-gray-900,
+        [data-theme="dark"] .jo-table .text-gray-700 {
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        [data-theme="dark"] .jo-table .text-gray-500,
+        [data-theme="dark"] .jo-table .text-gray-400,
+        [data-theme="dark"] .jo-table .text-gray-300 {
+            color: var(--text3, #94a3b8) !important;
+        }
+
+        [data-theme="dark"] .jo-deadline-ok {
+            color: var(--text2, #cbd5e1);
+        }
+
+        [data-theme="dark"] .jo-action-btn:hover {
+            background: var(--hover-row, rgba(148, 163, 184, .12));
+        }
+
+        /* ================= DARK MODE — Applicants Modal ================= */
+        [data-theme="dark"] #applicantsModal .modal-panel {
+            background: var(--card, #111827);
+            color: var(--text1, #f1f5f9);
+        }
+
+        [data-theme="dark"] #applicantsModal .border-b,
+        [data-theme="dark"] #applicantsModal .border-t {
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal .text-gray-900,
+        [data-theme="dark"] #applicantsModal .text-gray-800 {
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal .text-gray-700,
+        [data-theme="dark"] #applicantsModal .text-gray-600 {
+            color: var(--text2, #cbd5e1) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal .text-gray-500,
+        [data-theme="dark"] #applicantsModal .text-gray-400,
+        [data-theme="dark"] #applicantsModal .text-gray-300 {
+            color: var(--text3, #94a3b8) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal .bg-white,
+        [data-theme="dark"] #applicantsModal .bg-gray-50 {
+            background-color: var(--surface, #1e293b) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal thead.bg-gray-50 {
+            background-color: var(--surface, #1e293b) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal .divide-gray-100> :not([hidden])~ :not([hidden]) {
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal .hover\:bg-gray-50:hover,
+        [data-theme="dark"] #applicantsModal .hover\:bg-gray-100:hover {
+            background-color: var(--hover-row, rgba(148, 163, 184, .12)) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal select {
+            background-color: var(--surface, #1e293b) !important;
+            border-color: var(--border, #334155) !important;
+            color: var(--text1, #f1f5f9) !important;
+            color-scheme: dark;
+        }
+
+        [data-theme="dark"] #applicantsModal select option {
+            background-color: var(--surface, #1e293b);
+            color: var(--text1, #f1f5f9);
+        }
+
+        [data-theme="dark"] #applicantsModal .border-gray-200,
+        [data-theme="dark"] #applicantsModal .border-gray-100 {
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal [role="listbox"] {
+            background: var(--surface, #1e293b) !important;
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal [role="option"] {
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal [role="option"]:hover {
+            background-color: var(--hover-row, rgba(148, 163, 184, .12)) !important;
+        }
+
+        [data-theme="dark"] #applicantsModal [role="option"].bg-blue-50 {
+            background-color: var(--selected-row, rgba(59, 130, 246, .18)) !important;
+            color: #93c5fd !important;
+        }
+
+        [data-theme="dark"] #applicantsModal button[aria-haspopup="listbox"] {
+            background-color: var(--surface, #1e293b) !important;
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        /* DARK MODE — Scrollbars  */
+        [data-theme="dark"] * {
+            scrollbar-width: thin;
+            scrollbar-color: #475569 #1e293b;
+            /* thumb, track — Firefox */
+        }
+
+        [data-theme="dark"] ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+
+        [data-theme="dark"] ::-webkit-scrollbar-track {
+            background: var(--surface, #1e293b);
+        }
+
+        [data-theme="dark"] ::-webkit-scrollbar-thumb {
+            background: var(--border, #475569);
+            border-radius: 8px;
+            border: 2px solid var(--surface, #1e293b);
+        }
+
+        [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+
+        [data-theme="dark"] ::-webkit-scrollbar-corner {
+            background: var(--surface, #1e293b);
+        }
+
+        [data-theme="dark"] #filterCountry+button,
+        [data-theme="dark"] #filterCountry~button {
+            background-color: var(--surface, #1e293b) !important;
+            color: var(--text1, #f1f5f9) !important;
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] [role="listbox"] {
+            background: var(--surface, #1e293b) !important;
+            border-color: var(--border, #334155) !important;
+        }
+
+        [data-theme="dark"] [role="listbox"] [role="option"] {
+            color: var(--text1, #f1f5f9) !important;
+        }
+
+        [data-theme="dark"] [role="listbox"] [role="option"]:hover,
+        [data-theme="dark"] [role="listbox"] [role="option"].bg-blue-50 {
+            background-color: var(--hover-row, rgba(148, 163, 184, .15)) !important;
+            color: #93c5fd !important;
+        }
+
+        /* Dark mode: neutral badges and borders */
+        [data-theme="dark"] .jo-pill,
+        [data-theme="dark"] .badge-pending,
+        [data-theme="dark"] .badge-unassigned,
+        [data-theme="dark"] .badge-assigned,
+        [data-theme="dark"] .badge-under_evaluation,
+        [data-theme="dark"] .badge-for_compliance,
+        [data-theme="dark"] .badge-approved,
+        [data-theme="dark"] .badge-disapproved {
+            background: var(--surface, #1e293b) !important;
+            border: 1px solid var(--border, #475569) !important;
+        }
+
+        /* Keep badge text readable */
+        [data-theme="dark"] .badge-pending {
+            color: #fde047 !important;
+        }
+
+        [data-theme="dark"] .badge-unassigned,
+        [data-theme="dark"] .badge-disapproved {
+            color: #fca5a5 !important;
+        }
+
+        [data-theme="dark"] .badge-assigned {
+            color: #93c5fd !important;
+        }
+
+        [data-theme="dark"] .badge-under_evaluation {
+            color: #c4b5fd !important;
+        }
+
+        [data-theme="dark"] .badge-for_compliance {
+            color: #fdba74 !important;
+        }
+
+        [data-theme="dark"] .badge-approved {
+            color: #86efac !important;
+        }
+
+        /* Neutralize colored borders in dark mode */
+        [data-theme="dark"] .border,
+        [data-theme="dark"] [class*="border-gray-"],
+        [data-theme="dark"] [class*="border-blue-"],
+        [data-theme="dark"] [class*="border-indigo-"],
+        [data-theme="dark"] [class*="border-violet-"],
+        [data-theme="dark"] [class*="border-emerald-"],
+        [data-theme="dark"] [class*="border-red-"] {
+            border-color: var(--border, #475569) !important;
+        }
     </style>
+    <script>
+        (function() {
+            const t = localStorage.getItem('dmw_theme') || 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
 </head>
 
 <body class="min-h-screen bg-gray-50">
@@ -1001,7 +1608,7 @@ if (empty($allCurrencies)) {
     <!-- TOP BAR -->
     <header class="topbar">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
+            <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -1010,9 +1617,13 @@ if (empty($allCurrencies)) {
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
+            <button type="button" class="theme-toggle" title="Toggle dark mode">
+                <i class="fas fa-moon"></i>
+                <i class="fas fa-sun"></i>
+            </button>
             <div class="tb-btn"><i class="fas fa-bell"></i><span class="notif-dot"></span></div>
-            <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>
-            <div class="topbar-avatar">AU</div>
+            <!-- <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
+            <?php include __DIR__ . '/avatar-menu.php'; ?>
         </div>
     </header>
 
@@ -1030,74 +1641,86 @@ if (empty($allCurrencies)) {
         <main class="flex-1 min-w-0 px-6 py-8 overflow-auto">
             <div class="flex items-center justify-between mb-8">
                 <div>
-                    <h2 class="text-3xl font-bold text-gray-900"></h2>
-                    <p class="text-[15px] text-gray-500 mt-1.5 leading-relaxed">
+                    <h2 class="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900"></h2>
+                    <p class="inline-block bg-white text-gray-700 font-semibold text-[11px] sm:text-[13px] lg:text-[15px] mt-1 sm:mt-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl shadow-sm leading-relaxed" style="font-family: 'DM Sans', sans-serif;">
                         Manage Recruitment Specification Forms and available positions
                     </p>
                 </div>
 
-                <div class="flex items-center gap-3">
+                <div class="flex items-center gap-2 sm:gap-3 flex-wrap">
                     <!-- Refresh Rates Button -->
                     <button onclick="refreshExchangeRates()"
-                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-2xl font-medium flex items-center gap-2 shadow-sm transition">
-                        <i class="fas fa-sync-alt"></i> Refresh Rates
+                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-xs sm:px-4 sm:py-2.5 sm:text-sm md:px-5 md:py-3 md:text-base rounded-xl md:rounded-2xl font-medium flex items-center gap-1.5 sm:gap-2 shadow-sm transition whitespace-nowrap">
+                        <i class="fas fa-sync-alt text-[11px] sm:text-sm"></i>
+                        <span class="hidden xs:inline sm:inline">Refresh Rates</span>
                     </button>
 
                     <!-- Add New Button -->
                     <button onclick="openAddModal()"
-                        class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-medium flex items-center gap-2 shadow-sm transition">
-                        <i class="fas fa-plus"></i> Add New RSF Job Order
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 text-xs sm:px-4 sm:py-2.5 sm:text-sm md:px-6 md:py-3 md:text-base rounded-xl md:rounded-2xl font-medium flex items-center gap-1.5 sm:gap-2 shadow-sm transition whitespace-nowrap">
+                        <i class="fas fa-plus text-[11px] sm:text-sm"></i>
+                        <span class="hidden xs:inline sm:inline">Add New RSF Job Order</span>
+                        <span class="inline xs:hidden sm:hidden">Add RSF</span>
                     </button>
                 </div>
             </div>
 
             <!-- Filters -->
-            <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-6 mb-8">
-                <div class="flex flex-col md:flex-row gap-4">
+            <div class="bg-white rounded-2xl sm:rounded-3xl shadow-sm p-3 sm:p-4 md:p-6 mb-6 md:mb-8">
+                <div class="flex flex-col md:flex-row gap-2 sm:gap-3 md:gap-4">
                     <div class="flex-1 relative">
                         <input type="text" id="searchInput" placeholder="Search by RSF Number, Employer or Position..." value="<?= htmlspecialchars($search) ?>"
-                            class="w-full pl-11 pr-4 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <i class="fas fa-search absolute left-4 top-3.5 text-gray-400"></i>
+                            class="w-full pl-9 sm:pl-11 pr-3 sm:pr-4 py-2 sm:py-2.5 md:py-3 text-xs sm:text-sm md:text-base border border-gray-200 rounded-xl md:rounded-2xl focus:outline-none focus:border-blue-500">
+                        <i class="fas fa-search absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-gray-400 text-xs sm:text-sm"></i>
                     </div>
-                    <select id="filterClassification" class="px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="">All Classifications</option>
-                        <option value="Government" <?= $filter_class === 'Government' ? 'selected' : '' ?>>Government</option>
-                        <!--<option value="Private" <?= $filter_class === 'Private' ? 'selected' : '' ?>>Private</option>-->
+                    <select id="filterCountry" class="px-3 py-2 sm:px-4 sm:py-2.5 md:px-5 md:py-3 text-xs sm:text-sm md:text-base border border-gray-200 rounded-xl md:rounded-2xl focus:outline-none focus:border-blue-500">
+                        <option value="">All Countries</option>
+                        <?php
+                        $countryList = [];
+                        foreach ($jobOrders as $j) {
+                            $c = trim($j['worksite_country'] ?? '');
+                            if ($c !== '') $countryList[$c] = true;
+                        }
+                        ksort($countryList);
+                        foreach (array_keys($countryList) as $country):
+                        ?>
+                            <option value="<?= htmlspecialchars($country) ?>" <?= $filter_country === $country ? 'selected' : '' ?>><?= htmlspecialchars($country) ?></option>
+                        <?php endforeach; ?>
                     </select>
-                    <button onclick="applyFilters()" class="bg-gray-800 hover:bg-gray-900 text-white px-8 py-3 rounded-2xl font-medium">Filter</button>
+                    <button onclick="applyFilters()" class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 sm:px-6 sm:py-2.5 md:px-8 md:py-3 text-xs sm:text-sm md:text-base rounded-xl md:rounded-2xl font-medium whitespace-nowrap">Filter</button>
                 </div>
             </div>
 
             <!-- Table -->
-            <!-- Table -->
+            <p class="text-xs sm:text-sm text-gray-500 mb-3" id="jobsCountLine"></p>
             <div class="jo-table-card">
                 <div class="overflow-x-auto">
-                    <table class="w-full min-w-[1200px] jo-table">
+                    <table class="w-full min-w-[720px] sm:min-w-[900px] lg:min-w-[1200px] jo-table">
                         <thead>
                             <tr>
-                                <th class="px-6 py-4 text-left text-[11px] font-bold uppercase tracking-widest text-gray-400">RSF Number</th>
-                                <th class="px-6 py-4 text-left text-[11px] font-bold uppercase tracking-widest text-gray-400">Employer</th>
-                                <th class="px-6 py-4 text-left text-[11px] font-bold uppercase tracking-widest text-gray-400">Position</th>
-                                <th class="px-6 py-4 text-left text-[11px] font-bold uppercase tracking-widest text-gray-400">Country</th>
-                                <th class="px-6 py-4 text-center text-[11px] font-bold uppercase tracking-widest text-gray-400">Type</th>
-                                <th class="px-6 py-4 text-center text-[11px] font-bold uppercase tracking-widest text-gray-400">Slots</th>
-                                <th class="px-6 py-4 text-center text-[11px] font-bold uppercase tracking-widest text-gray-400">Reqs</th>
-                                <th class="px-6 py-4 text-center text-[11px] font-bold uppercase tracking-widest text-gray-400">Applicants</th>
-                                <th class="px-6 py-4 text-center text-[11px] font-bold uppercase tracking-widest text-gray-400">Deadline</th>
-                                <th class="px-6 py-4 text-center text-[11px] font-bold uppercase tracking-widest text-gray-400">Actions</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">RSF Number</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Employer</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Position</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Country</th>
+                                <!--<th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Type</th>-->
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Slots</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Reqs</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Applicants</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Deadline</th>
+                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Actions</th>
                             </tr>
                         </thead>
                         <tbody class="text-sm text-gray-700">
                             <?php if (empty($jobOrders)): ?>
                                 <tr>
-                                    <td colspan="10" class="px-8 py-20 text-center text-gray-400">
-                                        <i class="fas fa-inbox text-3xl mb-3 block text-gray-300"></i>
+                                    <td colspan="10" class="px-4 py-12 sm:px-8 sm:py-20 text-center text-gray-400 text-[11px] sm:text-sm">
+                                        <i class="fas fa-inbox text-2xl sm:text-3xl mb-2 sm:mb-3 block text-gray-300"></i>
                                         No job orders yet. Click "Add New RSF Job Order" to create one.
                                     </td>
                                 </tr>
                             <?php else: ?>
                                 <tr id="noResultsRow" class="hidden">
-                                    <td colspan="10" class="px-8 py-16 text-center text-gray-400">No job orders match your filters.</td>
+                                    <td colspan="10" class="px-4 py-10 sm:px-8 sm:py-16 text-center text-gray-400 text-[11px] sm:text-sm">No job orders match your filters.</td>
                                 </tr>
                                 <?php foreach ($jobOrders as $job): ?>
                                     <?php
@@ -1108,48 +1731,49 @@ if (empty($allCurrencies)) {
                                     <tr class="job-row"
                                         data-id="<?= (int)$job['id'] ?>"
                                         data-search="<?= htmlspecialchars(strtolower($job['rsf_number'] . ' ' . ($job['employer_name'] ?? '') . ' ' . ($job['position_title'] ?? '') . ' ' . ($job['worksite_country'] ?? ''))) ?>"
-                                        data-classification="<?= htmlspecialchars($job['classification'] ?? '') ?>"
+                                        data-country="<?= htmlspecialchars($job['worksite_country'] ?? '') ?>"
                                         data-job="<?= htmlspecialchars(json_encode($job), ENT_QUOTES, 'UTF-8') ?>"
                                         data-docs="<?= htmlspecialchars(json_encode($docsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>"
                                         data-questions="<?= htmlspecialchars(json_encode($questionsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>"
-                                        data-quals="<?= htmlspecialchars(json_encode($qualsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>">
-                                        <td class="px-6 py-5 font-mono text-blue-700 font-medium whitespace-nowrap"><?= htmlspecialchars($job['rsf_number']) ?></td>
-                                        <td class="px-6 py-5 font-medium text-gray-900"><?= htmlspecialchars($job['employer_name']) ?></td>
-                                        <td class="px-6 py-5"><?= htmlspecialchars($job['position_title']) ?></td>
-                                        <td class="px-6 py-5 text-gray-500"><?= htmlspecialchars($job['worksite_country'] ?? '-') ?></td>
-                                        <td class="px-6 py-5 text-center">
-                                            <span class="jo-pill <?= $job['classification'] === 'Government' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700' ?>">
+                                        data-quals="<?= htmlspecialchars(json_encode($qualsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>"
+                                        data-skills="<?= htmlspecialchars(json_encode($skillsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>">
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 font-mono text-blue-700 font-medium whitespace-nowrap text-[10px] sm:text-[12px] lg:text-sm"><?= htmlspecialchars($job['rsf_number']) ?></td>
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 font-medium text-gray-900 text-[11px] sm:text-[12.5px] lg:text-sm"><?= htmlspecialchars($job['employer_name']) ?></td>
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-[11px] sm:text-[12.5px] lg:text-sm"><?= htmlspecialchars($job['position_title']) ?></td>
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-gray-500 text-[10px] sm:text-[11.5px] lg:text-sm"><?= htmlspecialchars($job['worksite_country'] ?? '-') ?></td>
+                                        <!-- <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
+                                            <span class="jo-pill <?= $job['classification'] === 'Government' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700' ?> !px-2 !py-0.5 sm:!px-3 sm:!py-1 !text-[9px] sm:!text-[11px]">
                                                 <?= htmlspecialchars($job['classification']) ?>
                                             </span>
-                                        </td>
-                                        <td class="px-6 py-5 text-center font-semibold text-gray-900"><?= $job['slots_available'] ?></td>
-                                        <td class="px-6 py-5 text-center">
+                                        </td>-->
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center font-semibold text-gray-900 text-[11px] sm:text-[12.5px] lg:text-sm"><?= $job['slots_available'] ?></td>
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
                                             <?php if ($reqCount > 0): ?>
-                                                <span class="jo-pill bg-violet-50 text-violet-700">
-                                                    <i class="fas fa-list-check text-[9px]"></i><?= (int) $reqCount ?>
+                                                <span class="jo-pill bg-violet-50 text-violet-700 !px-2 !py-0.5 sm:!px-3 sm:!py-1 !text-[9px] sm:!text-[11px]">
+                                                    <i class="fas fa-list-check text-[7px] sm:text-[9px]"></i><?= (int) $reqCount ?>
                                                 </span>
                                             <?php else: ?>
-                                                <span class="text-gray-300 text-xs">—</span>
+                                                <span class="text-gray-300 text-[10px] sm:text-xs">—</span>
                                             <?php endif; ?>
                                         </td>
-                                        <td class="px-6 py-5 text-center">
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
                                             <?php if ($job['applicant_count'] > 0): ?>
                                                 <button onclick="openApplicantsModal(<?= (int)$job['id'] ?>, <?= htmlspecialchars(json_encode($job['rsf_number']), ENT_QUOTES) ?>, <?= htmlspecialchars(json_encode($job['position_title']), ENT_QUOTES) ?>)"
-                                                    class="jo-pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition cursor-pointer">
-                                                    <i class="fas fa-users text-[9px]"></i><?= (int)$job['applicant_count'] ?>
+                                                    class="jo-pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition cursor-pointer !px-2 !py-0.5 sm:!px-3 sm:!py-1 !text-[9px] sm:!text-[11px]">
+                                                    <i class="fas fa-users text-[7px] sm:text-[9px]"></i><?= (int)$job['applicant_count'] ?>
                                                 </button>
                                             <?php else: ?>
-                                                <span class="text-gray-300 text-xs">—</span>
+                                                <span class="text-gray-300 text-[10px] sm:text-xs">—</span>
                                             <?php endif; ?>
                                         </td>
-                                        <td class="px-6 py-5 text-center text-xs <?= $deadlineClass ?> whitespace-nowrap"><?= date('M j, Y', strtotime($job['deadline'])) ?></td>
-                                        <td class="px-6 py-5 text-center">
-                                            <div class="flex items-center justify-center gap-1">
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center text-[9.5px] sm:text-[11px] lg:text-xs <?= $deadlineClass ?> whitespace-nowrap"><?= date('M j, Y', strtotime($job['deadline'])) ?></td>
+                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
+                                            <div class="flex items-center justify-center gap-0.5 sm:gap-1">
                                                 <?php if (!empty($job['pdf_path'])): ?>
-                                                    <a href="../<?= htmlspecialchars($job['pdf_path']) ?>" target="_blank" class="jo-action-btn text-green-600" title="View PDF"><i class="fas fa-file-pdf"></i></a>
+                                                    <a href="../<?= htmlspecialchars($job['pdf_path']) ?>" target="_blank" class="jo-action-btn text-green-600 !w-6 !h-6 sm:!w-8 sm:!h-8 !text-[11px] sm:!text-base" title="View PDF"><i class="fas fa-file-pdf"></i></a>
                                                 <?php endif; ?>
-                                                <button onclick="editJob(<?= $job['id'] ?>)" class="jo-action-btn text-blue-600" title="Edit"><i class="fas fa-edit"></i></button>
-                                                <button onclick="deleteJob(<?= $job['id'] ?>)" class="jo-action-btn text-red-500" title="Delete"><i class="fas fa-trash"></i></button>
+                                                <button onclick="editJob(<?= $job['id'] ?>)" class="jo-action-btn text-blue-600 !w-6 !h-6 sm:!w-8 sm:!h-8 !text-[11px] sm:!text-base" title="Edit"><i class="fas fa-edit"></i></button>
+                                                <button onclick="deleteJob(<?= $job['id'] ?>)" class="jo-action-btn text-red-500 !w-6 !h-6 sm:!w-8 sm:!h-8 !text-[11px] sm:!text-base" title="Delete"><i class="fas fa-trash"></i></button>
                                             </div>
                                         </td>
                                     </tr>
@@ -1162,10 +1786,8 @@ if (empty($allCurrencies)) {
         </main>
     </div>
 
-    <!-- ═══════════════════════════════════════════════════════════════════════
-         APPLICANTS MODAL (NEW)
-    ═══════════════════════════════════════════════════════════════════════ -->
-    <div id="applicantsModal" class="hidden fixed inset-0 z-[200] flex items-center justify-center">
+    <!-- APPLICANTS MODAL (NEW) -->
+    <div id="applicantsModal" class="hidden fixed inset-0 z-[300] flex items-center justify-center">
         <!-- overlay -->
         <div class="modal-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeApplicantsModal()"></div>
 
@@ -1360,6 +1982,23 @@ if (empty($allCurrencies)) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
+                <!-- Section: Required Skills -->
+                <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div>
+                            <label class="block text-sm font-semibold text-gray-800">Required Skills</label>
+                            <p class="text-xs text-gray-500 mt-0.5">Pick from the master skills list. Used for applicant skill matching.</p>
+                        </div>
+                        <button type="button" onclick="addSkillRow('addSkillsWrap')"
+                            class="text-xs bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded-xl">
+                            <i class="fas fa-plus"></i> Add skill
+                        </button>
+                    </div>
+                    <div id="addSkillsWrap" class="space-y-2"></div>
+                </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
                 <!-- Section: PDF Upload -->
 
 
@@ -1546,7 +2185,20 @@ if (empty($allCurrencies)) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-
+                <!-- Section: Required Skills -->
+                <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div>
+                            <label class="block text-sm font-semibold text-gray-800">Required Skills</label>
+                            <p class="text-xs text-gray-500 mt-0.5">Pick from the master skills list. Used for applicant skill matching.</p>
+                        </div>
+                        <button type="button" onclick="addSkillRow('editSkillsWrap')"
+                            class="text-xs bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded-xl">
+                            <i class="fas fa-plus"></i> Add skill
+                        </button>
+                    </div>
+                    <div id="editSkillsWrap" class="space-y-2"></div>
+                </div>
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
@@ -1620,28 +2272,32 @@ if (empty($allCurrencies)) {
                 </div>
             </div>
             <div class="dk-div"></div>
-            <a href="user.php" class="dk" data-tip="Evaluators">
-                <i class="fas fa-users-gear"></i>
-                <span class="dk-lbl">Evaluators</span>
-            </a>
-            <a href="assignments.html" class="dk" data-tip="Assignments">
+            <!--<a href="assignments.html" class="dk" data-tip="Assignments">
                 <i class="fas fa-list-check"></i>
                 <span class="dk-lbl">Assign</span>
-            </a>
+            </a>-->
             <a href="job-orders.php" class="dk active" data-tip="Job Orders">
                 <i class="fas fa-briefcase"></i>
                 <span class="dk-lbl">RSF</span>
             </a>
-            <a href="try.php" class="dk" data-tip="Reports">
+            <a href="reports.php" class="dk" data-tip="Reports">
                 <i class="fas fa-chart-bar"></i>
                 <span class="dk-lbl">Reports</span>
+            </a>
+            <a href="applicant-reports.php" class="dk " data-tip="Applicant Reports">
+                <i class="fas fa-file-contract"></i>
+                <span class="dk-lbl">Applicants</span>
             </a>
             <a href="analytics.php" class="dk">
                 <i class="fas fa-chart-bar text-blue-300 text-base leading-none"></i>
                 <span class="dk-lbl">Analytics</span>
             </a>
+            <a href="user.php" class="dk" data-tip="Users">
+                <i class="fas fa-users-gear"></i>
+                <span class="dk-lbl">Users</span>
+            </a>
             <div class="dk-div"></div>
-            <a href="settings.html" class="dk" data-tip="Settings">
+            <a href="settings.php" class="dk" data-tip="Settings">
                 <i class="fas fa-gear"></i>
                 <span class="dk-lbl">Settings</span>
             </a>
@@ -1654,10 +2310,12 @@ if (empty($allCurrencies)) {
 
 
     <script>
-        // ── NEW: Lookup data injected from PHP for Category/Subcategory + Degree dropdowns ──
+        //  NEW: Lookup data injected from PHP for Category/Subcategory + Degree dropdowns 
         const JOB_CATEGORIES = <?= json_encode($jobCategories) ?>;
         const JOB_SUBCATEGORIES = <?= json_encode($jobSubcategories) ?>;
         const DEGREE_PROGRAMS = <?= json_encode($degreePrograms) ?>;
+        const PROFESSIONAL_LICENSES = <?= json_encode($professionalLicenses) ?>;
+        const SKILLS_LIST = <?= json_encode($allSkills) ?>;
         // 1 unit of currency = X PHP, cached daily by the rate-refresh cron job.
         const EXCHANGE_RATES = <?= json_encode($exchangeRates) ?>;
 
@@ -1701,13 +2359,17 @@ if (empty($allCurrencies)) {
             const filtered = JOB_SUBCATEGORIES.filter(s => String(s.category_id) === String(categoryId));
             if (!categoryId || filtered.length === 0) {
                 sel.innerHTML = '<option value="">Select category first…</option>';
-                return;
+            } else {
+                let opts = '<option value="">Select subcategory…</option>';
+                filtered.forEach(s => {
+                    opts += `<option value="${s.id}" ${String(s.id) === String(selectedSubId) ? 'selected' : ''}>${s.subcategory_name}</option>`;
+                });
+                sel.innerHTML = opts;
             }
-            let opts = '<option value="">Select subcategory…</option>';
-            filtered.forEach(s => {
-                opts += `<option value="${s.id}" ${String(s.id) === String(selectedSubId) ? 'selected' : ''}>${s.subcategory_name}</option>`;
-            });
-            sel.innerHTML = opts;
+            // Keep the custom dropdown panel's option list/label in sync
+            // with the options just rebuilt above.
+            if (selectId === 'add_subcategory_id' && typeof addSubcategoryDD !== 'undefined') addSubcategoryDD.refresh();
+            if (selectId === 'edit_subcategory_id' && typeof editSubcategoryDD !== 'undefined') editSubcategoryDD.refresh();
         }
 
         function onCategoryChange(prefix) {
@@ -1725,14 +2387,32 @@ if (empty($allCurrencies)) {
         populateCategorySelect('add_category_id');
         populateCategorySelect('edit_category_id');
 
-        //  Live date 
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /*  Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
         //  Dock flyout  
         function toggleFlyout(e, id) {
@@ -1751,6 +2431,7 @@ if (empty($allCurrencies)) {
             setRequirementRows('addRequirementsWrap', []);
             setQuestionRows('addQuestionsWrap', []);
             setQualRows('addQualWrap', []);
+            setSkillRows('addSkillsWrap', []);
             document.getElementById('addModal').classList.remove('hidden');
         }
 
@@ -1987,10 +2668,11 @@ if (empty($allCurrencies)) {
             document.getElementById('appl-position-label').textContent = positionTitle;
             document.getElementById('appl-stats-bar').innerHTML = '';
             document.getElementById('appl-status-filter').value = '';
+            applStatusFilterDD.refresh(); // <-- NEW: sync the custom trigger's label back to "All statuses"
             document.getElementById('appl-body').innerHTML = `
-                <div class="flex items-center justify-center h-32 text-gray-400">
-                    <i class="fas fa-circle-notch spin text-2xl mr-3"></i> Loading applicants…
-                </div>`;
+        <div class="flex items-center justify-center h-32 text-gray-400">
+            <i class="fas fa-circle-notch spin text-2xl mr-3"></i> Loading applicants…
+        </div>`;
             modal.classList.remove('hidden');
 
             try {
@@ -2052,20 +2734,20 @@ if (empty($allCurrencies)) {
                 const isUnassigned = ['unassign', 'pending'].includes((a.status || '').toLowerCase());
                 const assignCell = isUnassigned ?
                     `<div class="assign-row flex items-center gap-2">
-                            <select id="sel-${a.application_id}" class="text-xs border border-gray-200 rounded-xl px-2 py-1.5 focus:outline-none focus:border-indigo-400">
+                            <select id="sel-${a.application_id}">
                                 <option value="">— Select evaluator —</option>
                                 ${evalOptions}
                             </select>
-                            <button onclick="assignEvaluator(${a.application_id}, ${rsfId})"
+                            <button type="button" onclick="assignEvaluator(${a.application_id}, ${rsfId}, this)"
                                 class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-xl font-medium transition whitespace-nowrap">
                                 Assign
                             </button>
-                       </div>` :
+                    </div>` :
                     `<span class="text-gray-700 text-xs font-medium">
                             ${a.evaluator_name
                                 ? `<i class="fas fa-user-check text-green-500 mr-1"></i>${a.evaluator_name}`
                                 : '<span class="text-gray-400">—</span>'}
-                       </span>`;
+                    </span>`;
 
                 return `
                     <tr class="hover:bg-gray-50 transition appl-row" id="appl-row-${a.application_id}" data-status="${normalizeApplicantStatus(a.status)}">
@@ -2101,10 +2783,16 @@ if (empty($allCurrencies)) {
                     No matching applications for this job order.
                 </div>`;
 
+            document.querySelectorAll('#appl-body select[id^="sel-"]').forEach(sel => {
+                enhanceAdminSelect(sel, {
+                    widthClass: 'w-40 sm:w-48',
+                    triggerClass: 'w-full px-3 py-1.5 text-xs border border-gray-200 rounded-xl focus:outline-none bg-white flex items-center justify-between gap-2 cursor-pointer transition-colors hover:border-indigo-300'
+                });
+            });
             filterApplicantRows();
         }
 
-        async function assignEvaluator(applicationId, rsfId) {
+        async function assignEvaluator(applicationId, rsfId, btn) {
             const sel = document.getElementById(`sel-${applicationId}`);
             const evaluatorId = sel ? sel.value : '';
             if (!evaluatorId) {
@@ -2117,7 +2805,6 @@ if (empty($allCurrencies)) {
                 return;
             }
 
-            const btn = sel.nextElementSibling;
             const origText = btn.innerHTML;
             btn.innerHTML = `<i class="fas fa-circle-notch spin"></i>`;
             btn.disabled = true;
@@ -2288,6 +2975,7 @@ if (empty($allCurrencies)) {
             document.getElementById('edit_employer_name').value = job.employer_name || '';
             document.getElementById('edit_worksite_country').value = job.worksite_country || '';
             document.getElementById('edit_classification').value = job.classification || '';
+            if (typeof editClassificationDD !== 'undefined') editClassificationDD.refresh();
             document.getElementById('edit_position_title').value = job.position_title || '';
             document.getElementById('edit_slots_available').value = job.slots_available || '';
             document.getElementById('edit_deadline').value = job.deadline || '';
@@ -2305,12 +2993,15 @@ if (empty($allCurrencies)) {
             updatePhpPreview('edit');
             const editCategoryId = categoryIdForSubcategory(job.subcategory_id);
             document.getElementById('edit_category_id').value = editCategoryId;
+            if (typeof editCategoryDD !== 'undefined') editCategoryDD.refresh();
             populateSubcategorySelect('edit_subcategory_id', editCategoryId, job.subcategory_id || '');
             document.querySelector('#editForm input[name="rsf_pdf"]').value = '';
             setRequirementRows('editRequirementsWrap', Array.isArray(docs) ? docs : []);
             setQuestionRows('editQuestionsWrap', Array.isArray(questions) ? questions : []);
             const quals = JSON.parse(row.getAttribute('data-quals') || '[]');
             setQualRows('editQualWrap', Array.isArray(quals) ? quals : []);
+            const skills = JSON.parse(row.getAttribute('data-skills') || '[]');
+            setSkillRows('editSkillsWrap', Array.isArray(skills) ? skills : []);
             openEditModal();
         }
 
@@ -2361,24 +3052,124 @@ if (empty($allCurrencies)) {
                 });
         }
 
-        /*  Client-side filter  */
-        function applyFilters() {
+        /*  Client-side filter + pagination  */
+        const JOBS_PER_PAGE = 10;
+        let jobsPage = 1;
+        let currentFilteredRows = [];
+        let showAllJobs = false;
+
+        function computeFilteredRows() {
             const search = document.getElementById('searchInput').value.toLowerCase().trim();
-            const classification = document.getElementById('filterClassification').value;
-            let visible = 0;
-            document.querySelectorAll('tr.job-row').forEach(row => {
+            const country = document.getElementById('filterCountry').value;
+            return Array.from(document.querySelectorAll('tr.job-row')).filter(row => {
                 const matchSearch = !search || (row.getAttribute('data-search') || '').includes(search);
-                const matchClass = !classification || (row.getAttribute('data-classification') || '') === classification;
-                const show = matchSearch && matchClass;
-                row.style.display = show ? '' : 'none';
-                if (show) visible++;
+                const matchCountry = !country || (row.getAttribute('data-country') || '') === country;
+                return matchSearch && matchCountry;
             });
-            const nr = document.getElementById('noResultsRow');
-            if (nr) nr.classList.toggle('hidden', visible > 0);
         }
 
+        function applyFilters() {
+            currentFilteredRows = computeFilteredRows();
+            jobsPage = 1;
+            renderJobsPage();
+        }
+
+        function renderJobsPage() {
+            document.querySelectorAll('tr.job-row').forEach(row => row.style.display = 'none');
+
+            const total = currentFilteredRows.length;
+            const totalPages = Math.max(1, Math.ceil(total / JOBS_PER_PAGE));
+            if (jobsPage > totalPages) jobsPage = totalPages;
+
+            const start = (jobsPage - 1) * JOBS_PER_PAGE;
+            const pageRows = showAllJobs ?
+                currentFilteredRows :
+                currentFilteredRows.slice(start, start + JOBS_PER_PAGE);
+            pageRows.forEach(row => row.style.display = '');
+
+            const nr = document.getElementById('noResultsRow');
+            if (nr) nr.classList.toggle('hidden', total > 0);
+
+            const countLine = document.getElementById('jobsCountLine');
+            if (countLine) {
+                if (total === 0) {
+                    countLine.textContent = '0 job orders found';
+                } else if (showAllJobs) {
+                    countLine.textContent = `Showing all ${total} job order${total !== 1 ? 's' : ''}`;
+                } else {
+                    const from = start + 1;
+                    const to = Math.min(start + JOBS_PER_PAGE, total);
+                    countLine.textContent = `Showing ${from}–${to} of ${total} job order${total !== 1 ? 's' : ''} · Page ${jobsPage} of ${totalPages}`;
+                }
+            }
+
+            renderJobsPagination(totalPages, jobsPage);
+        }
+
+        function toggleViewAllJobs() {
+            showAllJobs = !showAllJobs;
+            jobsPage = 1;
+            renderJobsPage();
+            document.querySelector('.jo-table-card')?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'start'
+            });
+        }
+
+        function goToJobsPage(p) {
+            if (p < 1) return;
+            jobsPage = p;
+            renderJobsPage();
+            document.querySelector('.jo-table-card')?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'start'
+            });
+        }
+
+        function renderJobsPagination(totalPages, page) {
+            let wrap = document.getElementById('jobsPaginationWrap');
+            const total = currentFilteredRows.length;
+
+            if (total <= JOBS_PER_PAGE) {
+                if (wrap) wrap.remove();
+                return;
+            }
+
+            let linksHtml = '';
+
+            if (showAllJobs) {
+                linksHtml += `<button type="button" onclick="toggleViewAllJobs()"
+            class="px-4 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition bg-blue-600 text-white">
+            <i class="fas fa-table-list mr-1.5"></i>Paginate</button>`;
+            } else {
+                linksHtml += `<button type="button" onclick="goToJobsPage(${Math.max(1, page - 1)})"
+            class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition ${page <= 1 ? 'pointer-events-none opacity-40' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}">
+            <i class="fas fa-chevron-left"></i></button>`;
+
+                for (let p = 1; p <= totalPages; p++) {
+                    linksHtml += `<button type="button" onclick="goToJobsPage(${p})"
+                class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition ${p === page ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}">${p}</button>`;
+                }
+
+                linksHtml += `<button type="button" onclick="goToJobsPage(${Math.min(totalPages, page + 1)})"
+            class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition ${page >= totalPages ? 'pointer-events-none opacity-40' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}">
+            <i class="fas fa-chevron-right"></i></button>`;
+
+                linksHtml += `<button type="button" onclick="toggleViewAllJobs()"
+            class="px-4 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition bg-gray-100 hover:bg-gray-200 text-gray-600 ml-1">
+            <i class="fas fa-list mr-1.5"></i>View All</button>`;
+            }
+
+            if (!wrap) {
+                wrap = document.createElement('div');
+                wrap.id = 'jobsPaginationWrap';
+                wrap.className = 'flex items-center justify-center gap-1.5 mt-5';
+                document.querySelector('.jo-table-card').insertAdjacentElement('afterend', wrap);
+            }
+            wrap.innerHTML = linksHtml;
+        }
         document.getElementById('searchInput').addEventListener('input', applyFilters);
-        document.getElementById('filterClassification').addEventListener('change', applyFilters);
+        document.getElementById('filterCountry').addEventListener('change', applyFilters);
         applyFilters();
 
         const QUAL_TYPE_LABELS = {
@@ -2453,6 +3244,12 @@ if (empty($allCurrencies)) {
                 type: 'select',
                 options: DEGREE_PROGRAMS
             },
+            required_license: {
+                label: 'Professional License',
+                unit: '',
+                type: 'select',
+                options: PROFESSIONAL_LICENSES
+            },
         };
 
         function buildTypeSelect(selectedType) {
@@ -2516,15 +3313,77 @@ if (empty($allCurrencies)) {
             (quals || []).forEach(q => appendQualRow(containerId, q.qualification_type, q.qualification_value));
         }
 
+        //  Required Skills (multi-select via repeatable rows) 
+        function buildSkillSelect(selectedId) {
+            let opts = '<option value="">Select skill…</option>';
+            let lastCategory = null;
+            SKILLS_LIST.forEach(s => {
+                const category = s.skill_category || 'Other';
+                if (category !== lastCategory) {
+                    if (lastCategory !== null) opts += '</optgroup>';
+                    opts += `<optgroup label="${category}">`;
+                    lastCategory = category;
+                }
+                opts += `<option value="${s.id}" ${String(selectedId) === String(s.id) ? 'selected' : ''}>${s.skill_name}</option>`;
+            });
+            if (lastCategory !== null) opts += '</optgroup>';
+            return `<select name="skill_id[]"
+        class="flex-1 px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-cyan-500">${opts}</select>`;
+        }
+
+        function buildImportanceSelect(selected) {
+            const opts = ['Required', 'Preferred']
+                .map(o => `<option ${o === selected ? 'selected' : ''}>${o}</option>`).join('');
+            return `<select name="skill_importance[]"
+        class="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-cyan-500">${opts}</select>`;
+        }
+
+        function buildProficiencySelect(selected) {
+            const opts = ['Beginner', 'Intermediate', 'Advanced', 'Expert']
+                .map(o => `<option ${o === selected ? 'selected' : ''}>${o}</option>`).join('');
+            return `<select name="skill_min_proficiency[]"
+        class="px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-cyan-500">${opts}</select>`;
+        }
+
+        function appendSkillRow(containerId, skillId = '', importance = 'Required', minProficiency = 'Beginner') {
+            const wrap = document.getElementById(containerId);
+            const div = document.createElement('div');
+            div.className = 'skill-row flex items-start gap-2';
+            div.innerHTML = `
+        ${buildSkillSelect(skillId)}
+        ${buildImportanceSelect(importance)}
+        ${buildProficiencySelect(minProficiency)}
+        <button type="button" onclick="this.closest('.skill-row').remove()"
+            class="mt-1 text-red-400 hover:text-red-600 px-2 py-2 rounded-xl hover:bg-red-50 flex-shrink-0">
+            <i class="fas fa-trash text-xs"></i>
+        </button>
+    `;
+            wrap.appendChild(div);
+        }
+
+        function addSkillRow(containerId) {
+            appendSkillRow(containerId, '', 'Required', 'Beginner');
+        }
+
+        function setSkillRows(containerId, skills) {
+            const wrap = document.getElementById(containerId);
+            if (!wrap) return;
+            wrap.innerHTML = '';
+            (skills || []).forEach(s => appendSkillRow(containerId, s.skill_id, s.importance, s.min_proficiency));
+        }
+
         function openAddModal() {
             const form = document.getElementById('addForm');
             if (form) form.reset();
             setRequirementRows('addRequirementsWrap', []);
             setQuestionRows('addQuestionsWrap', []);
             setQualRows('addQualWrap', []);
+            setSkillRows('addSkillsWrap', []);
             const addPreview = document.getElementById('add_salary_php_preview');
             if (addPreview) addPreview.textContent = '';
             document.getElementById('add_category_id').value = '';
+            if (typeof addCategoryDD !== 'undefined') addCategoryDD.refresh();
+            if (typeof addClassificationDD !== 'undefined') addClassificationDD.refresh();
             populateSubcategorySelect('add_subcategory_id', '', '');
             document.getElementById('addModal').classList.remove('hidden');
 
@@ -2616,7 +3475,165 @@ if (empty($allCurrencies)) {
             setupCurrencyInputs();
         });
     </script>
+
+    <script>
+        function enhanceAdminSelect(select, opts) {
+            opts = opts || {};
+            const includeEmpty = !!opts.includeEmpty;
+            const widthClass = opts.widthClass || 'w-full md:w-64';
+            const triggerClass = opts.triggerClass ||
+                'w-full px-3 py-2 sm:px-4 sm:py-2.5 md:px-5 md:py-3 text-xs sm:text-sm md:text-base border border-gray-200 rounded-xl md:rounded-2xl focus:outline-none bg-white flex items-center justify-between gap-2 cursor-pointer transition-colors hover:border-blue-300';
+
+            const placeholderOpt = select.querySelector('option[value=""]');
+            const placeholder = placeholderOpt ? placeholderOpt.textContent : 'Select…';
+
+            const wrapper = document.createElement('div');
+            wrapper.className = `relative ${widthClass}`;
+            select.parentNode.insertBefore(wrapper, select);
+            wrapper.appendChild(select);
+            select.classList.add('hidden');
+            select.tabIndex = -1;
+
+            const trigger = document.createElement('button');
+            trigger.type = 'button';
+            trigger.setAttribute('aria-haspopup', 'listbox');
+            trigger.setAttribute('aria-expanded', 'false');
+            trigger.className = triggerClass;
+            trigger.innerHTML = '<span class="trigger-label truncate text-gray-500"></span>' +
+                '<i class="fas fa-chevron-down text-[11px] text-gray-400 transition-transform flex-shrink-0"></i>';
+            wrapper.appendChild(trigger);
+
+            const panel = document.createElement('div');
+            panel.setAttribute('role', 'listbox');
+            panel.className = 'hidden absolute left-0 right-0 mt-1.5 bg-white border border-gray-200 rounded-xl md:rounded-2xl shadow-[0_10px_30px_rgba(16,24,40,.12)] z-[60] overflow-hidden py-1 max-h-[260px] overflow-y-auto';
+            wrapper.appendChild(panel);
+
+            function buildRow(optionEl) {
+                const row = document.createElement('div');
+                row.setAttribute('role', 'option');
+                row.className = 'flex items-center justify-between gap-2 py-2 px-4 text-xs sm:text-sm text-gray-700 cursor-pointer hover:bg-gray-50 transition-colors';
+                row.dataset.value = optionEl.value;
+                const label = document.createElement('span');
+                label.className = 'truncate';
+                label.textContent = optionEl.textContent;
+                row.appendChild(label);
+                row.addEventListener('click', () => {
+                    select.value = optionEl.value;
+                    closePanel();
+                    refresh();
+                    select.dispatchEvent(new Event('change', {
+                        bubbles: true
+                    }));
+                });
+                return row;
+            }
+
+            function renderList() {
+                panel.innerHTML = '';
+                Array.from(select.options).forEach(opt => {
+                    if (opt.value === '' && !includeEmpty) return;
+                    panel.appendChild(buildRow(opt));
+                });
+                markSelected();
+            }
+
+            function markSelected() {
+                panel.querySelectorAll('[role="option"]').forEach(row => {
+                    const selected = row.dataset.value === select.value;
+                    row.classList.toggle('bg-blue-50', selected);
+                    row.classList.toggle('text-blue-700', selected);
+                    row.classList.toggle('font-semibold', selected);
+                    let check = row.querySelector('.fa-check');
+                    if (selected && !check) {
+                        const icon = document.createElement('i');
+                        icon.className = 'fas fa-check text-[10px] text-blue-600 flex-shrink-0';
+                        row.appendChild(icon);
+                    } else if (!selected && check) {
+                        check.remove();
+                    }
+                });
+            }
+
+            function refresh() {
+                const opt = select.options[select.selectedIndex];
+                const label = trigger.querySelector('.trigger-label');
+                if (select.value === '' || !opt) {
+                    label.textContent = placeholder;
+                    label.classList.add('text-gray-500');
+                    label.classList.remove('text-gray-900', 'font-medium');
+                } else {
+                    label.textContent = opt.textContent;
+                    label.classList.remove('text-gray-500');
+                    label.classList.add('text-gray-900', 'font-medium');
+                }
+                markSelected();
+            }
+
+            function openPanel() {
+                document.querySelectorAll('[role="listbox"]').forEach(p => {
+                    if (p !== panel) p.classList.add('hidden');
+                });
+                renderList();
+                panel.classList.remove('hidden');
+                trigger.classList.add('border-blue-400');
+                trigger.setAttribute('aria-expanded', 'true');
+                trigger.querySelector('.fa-chevron-down').classList.add('rotate-180');
+            }
+
+            function closePanel() {
+                panel.classList.add('hidden');
+                trigger.classList.remove('border-blue-400');
+                trigger.setAttribute('aria-expanded', 'false');
+                trigger.querySelector('.fa-chevron-down').classList.remove('rotate-180');
+            }
+
+            trigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                panel.classList.contains('hidden') ? openPanel() : closePanel();
+            });
+            trigger.addEventListener('keydown', (e) => {
+                if (['Enter', ' ', 'ArrowDown'].includes(e.key)) {
+                    e.preventDefault();
+                    openPanel();
+                }
+            });
+            panel.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    closePanel();
+                    trigger.focus();
+                }
+            });
+            panel.addEventListener('click', (e) => e.stopPropagation());
+            document.addEventListener('click', closePanel);
+
+            refresh();
+            return {
+                refresh,
+                closePanel
+            };
+        }
+
+        // "All Countries" is a real, selectable reset option here — not a
+        // placeholder — so includeEmpty keeps it in the list.
+        enhanceAdminSelect(document.getElementById('filterCountry'), {
+            includeEmpty: true
+        });
+
+        //  RSF Add/Edit modal dropdowns — same floating-panel design 
+        const addCategoryDD = enhanceAdminSelect(document.getElementById('add_category_id'));
+        const editCategoryDD = enhanceAdminSelect(document.getElementById('edit_category_id'));
+        const addSubcategoryDD = enhanceAdminSelect(document.getElementById('add_subcategory_id'));
+        const editSubcategoryDD = enhanceAdminSelect(document.getElementById('edit_subcategory_id'));
+        const addClassificationDD = enhanceAdminSelect(document.querySelector('#addForm select[name="classification"]'));
+        const editClassificationDD = enhanceAdminSelect(document.getElementById('edit_classification'));
+        // Applicants modal — status filter, styled like "All Countries"
+        const applStatusFilterDD = enhanceAdminSelect(document.getElementById('appl-status-filter'), {
+            includeEmpty: true
+        });
+    </script>
     <script type="module" src="../js/main.js"></script>
+    <script src="../js/theme.js"></script>
+    <script src="../js/avatar-menu.js"></script>
 </body>
 
 </html>

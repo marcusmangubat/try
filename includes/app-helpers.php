@@ -283,13 +283,13 @@ function sendToCompliance($db, $application_id, $evaluator_id, $evaluator_email,
 }
 
 /**
- * Statuses where the case is presented to Admin for the compliance-style
- * handoff panel (Reopen to Evaluator / Evaluate Directly / Reassign):
- * - for_compliance: evaluator explicitly routed the case to Admin
- *   (handling_party = 'admin', so it's exclusively Admin's to act on).
- * - resubmitted: applicant resubmitted after a compliance request and the
- *   case sits back in the evaluator claim pool (handling_party IS NULL).
- *   Admin may still act on it directly instead of waiting for a claim.
+ * Statuses where the case is presented to Admin:
+ * - for_compliance: evaluator routed the case to Admin, but it is
+ *   INFORMATIONAL ONLY until the applicant resubmits — no admin action
+ *   (reopen / evaluate directly / reassign) is permitted in this state.
+ * - resubmitted: applicant has resubmitted after complying; the case is
+ *   now actionable by Admin (reopen to evaluator, evaluate directly, or
+ *   reassign).
  */
 const ADMIN_HANDOFF_STATUSES = ['for_compliance', 'resubmitted'];
 
@@ -308,14 +308,10 @@ function adminReopenToEvaluator($db, $application_id, $admin_email)
     if (!$application_id) return false;
 
     $stmt = $db->prepare("
-        SELECT status, current_evaluator_id FROM applications
-        WHERE id = ?
-          AND (
-                (status = 'for_compliance' AND handling_party = 'admin')
-             OR  status = 'resubmitted'
-          )
-        LIMIT 1
-    ");
+    SELECT status, current_evaluator_id FROM applications
+    WHERE id = ? AND status = 'resubmitted'
+    LIMIT 1
+");
     $stmt->bind_param("i", $application_id);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -325,14 +321,10 @@ function adminReopenToEvaluator($db, $application_id, $admin_email)
     $from_status = $row['status'];
 
     $stmt = $db->prepare("
-        UPDATE applications
-        SET status = 'under_evaluation', handling_party = 'evaluator', locked_at = NOW(), updated_at = NOW()
-        WHERE id = ?
-          AND (
-                (status = 'for_compliance' AND handling_party = 'admin')
-             OR  status = 'resubmitted'
-          )
-    ");
+    UPDATE applications
+    SET status = 'under_evaluation', handling_party = 'evaluator', locked_at = NOW(), updated_at = NOW()
+    WHERE id = ? AND status = 'resubmitted'
+");
     $stmt->bind_param("i", $application_id);
     $stmt->execute();
     $ok = $stmt->affected_rows === 1;
@@ -377,9 +369,7 @@ function adminEvaluateDirectly($db, $application_id, $admin_id, $admin_email, $d
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    $isForCompliance = $row && $row['status'] === 'for_compliance' && $row['handling_party'] === 'admin';
-    $isResubmitted   = $row && $row['status'] === 'resubmitted';
-    if (!$row || (!$isForCompliance && !$isResubmitted)) {
+    if (!$row || $row['status'] !== 'resubmitted') {
         return false;
     }
 
@@ -438,7 +428,7 @@ function adminReassignApplication($db, $application_id, $new_evaluator_id, $admi
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    if (!$row) return false;
+    if (!$row || $row['status'] !== 'resubmitted') return false;
     $from_status = $row['status'];
 
     $stmt = $db->prepare("
@@ -614,4 +604,135 @@ function notify_admins($db, $title, $message, $type = 'system', $application_id 
     }
 
     return $success;
+}
+
+/**
+ * Get an applicant's display name for a given application, for use in
+ * evaluator/admin-facing notification messages.
+ *
+ * @param mysqli $db
+ * @param int $application_id
+ * @return string
+ */
+function get_applicant_name($db, $application_id)
+{
+    $application_id = (int) $application_id;
+    $name = 'the applicant';
+    $stmt = $db->prepare("
+        SELECT CONCAT(c.first_name, ' ', c.last_name) AS applicant_name
+        FROM applications a
+        JOIN clients c ON a.client_id = c.cid
+        WHERE a.id = ?
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $application_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!empty($row['applicant_name'])) {
+        $name = trim($row['applicant_name']);
+    }
+    return $name;
+}
+
+/**
+ * Create an evaluator notification for system-wide events.
+ * Notifies ALL evaluators about important system events (e.g. a brand new
+ * application entering the pool, before anyone has claimed it). Use
+ * notify_evaluator_for_application() instead when a single evaluator
+ * already owns the case via an active assignment.
+ *
+ * @param mysqli $db
+ * @param string $title
+ * @param string $message
+ * @param string|null $type
+ * @param int|null $application_id Optional application context
+ * @return bool
+ */
+function notify_evaluators($db, $title, $message, $type = 'system', $application_id = null)
+{
+    $title = trim((string) $title);
+    $message = trim((string) $message);
+    $type = $type !== null ? trim((string) $type) : null;
+    if ($title === '' || $message === '') return false;
+
+    // Get all evaluator emails
+    $stmt = $db->prepare("SELECT email FROM evaluators");
+    if (!$stmt) return false;
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $evaluators = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    if (empty($evaluators)) return false;
+
+    $usertype = 'evaluator';
+    $application_id = $application_id ? (int) $application_id : null;
+
+    $success = true;
+    foreach ($evaluators as $evaluator) {
+        $user_email = (string) $evaluator['email'];
+        $stmt = $db->prepare("
+            INSERT INTO notifications (user_email, usertype, application_id, title, message, type, is_read)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        ");
+        if (!$stmt) {
+            $success = false;
+            continue;
+        }
+        $stmt->bind_param("ssisss", $user_email, $usertype, $application_id, $title, $message, $type);
+        $ok = $stmt->execute();
+        $stmt->close();
+        if (!$ok) $success = false;
+    }
+
+    return $success;
+}
+
+/** Pull previously-saved answers for a draft application, keyed by question_id. */
+function app_load_saved_answers(mysqli $db, int $app_id): array
+{
+    $map = [];
+    $stmt = $db->prepare("SELECT question_id, answer FROM application_answers WHERE application_id = ?");
+    $stmt->bind_param('i', $app_id);
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $map[(int) $r['question_id']] = $r['answer'];
+    }
+    $stmt->close();
+    return $map;
+}
+
+/** Pull previously-uploaded documents for a draft application, in the same
+ *  shape the wizard already uses in $_SESSION['wizard_uploads']. */
+function app_load_saved_uploads(mysqli $db, int $app_id): array
+{
+    $out = [];
+    $stmt = $db->prepare("SELECT document_type, required_doc_id, file_name, file_path FROM application_documents WHERE application_id = ?");
+    $stmt->bind_param('i', $app_id);
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $rid = (int) ($r['required_doc_id'] ?? 0);
+        $key = $rid > 0 ? 'doc_' . $rid : 'type_' . strtolower((string) $r['document_type']);
+        $out[$key] = [
+            'file_name'       => $r['file_name'],
+            'file_path'       => $r['file_path'],
+            'required_doc_id' => $rid,
+            'document_type'   => $r['document_type'],
+            'document_name'   => $r['document_type'],
+        ];
+    }
+    $stmt->close();
+    return $out;
+}
+
+/** True once every REQUIRED document slot has a saved upload. */
+function app_uploads_complete(array $uploads, array $requiredDocs): bool
+{
+    foreach ($requiredDocs as $doc) {
+        if (empty($doc['is_required'])) continue;
+        $key = ((int) ($doc['id'] ?? 0) > 0) ? 'doc_' . (int) $doc['id'] : 'type_' . strtolower((string) ($doc['document_type'] ?? ''));
+        if (empty($uploads[$key]['file_path'])) return false;
+    }
+    return true;
 }

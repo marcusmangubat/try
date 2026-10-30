@@ -38,8 +38,7 @@
     <link rel="stylesheet" href="../css/dashboard.css">
     <link rel="stylesheet" href="../css/darkmode.css">
     <?php include '../includes/theme-init.php'; ?>
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
-
+    <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <style>
       /* Skeleton */
       .skeleton {
@@ -320,7 +319,7 @@
     <!-- ── TOPBAR ──── -->
     <header class="topbar">
       <div class="topbar-brand">
-        <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
+        <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
         <div class="brand-divider"></div>
         <div class="brand-text">
           <h1>Department of Migrant Workers</h1>
@@ -337,7 +336,7 @@
         </button>
 
         <div class="tb-btn"><i class="fas fa-bell"></i></div>
-        <div class="topbar-avatar"><?= htmlspecialchars($initials) ?></div>
+        <?php include __DIR__ . '/avatar-menu.php'; ?>
       </div>
     </header>
 
@@ -575,9 +574,9 @@
         <!-- Staff list -->
         <div class="bg-white border border-bdr rounded-[14px] p-4">
           <div class="flex items-center gap-1.5 mb-3.5 text-[10.5px] font-bold tracking-[.07em] uppercase text-t2">
-            <span class="w-[7px] h-[7px] rounded-full bg-ok shrink-0"></span>Applications Handled per Evaluator
+            <span class="w-[7px] h-[7px] rounded-full bg-ok shrink-0"></span>Evaluator Performance &amp; Outcomes
           </div>
-          <div id="staff-list">
+          <div id="staff-list" class="overflow-y-auto pr-1">
             <div class="skeleton sk-row" style="width:100%;height:48px;border-radius:10px;margin-bottom:8px"></div>
             <div class="skeleton sk-row" style="width:100%;height:48px;border-radius:10px;margin-bottom:8px"></div>
             <div class="skeleton sk-row" style="width:100%;height:48px;border-radius:10px"></div>
@@ -1315,6 +1314,19 @@
         });
       }
 
+      /* Show only the first `limit` evaluator rows; the rest scroll. */
+      function capStaffList(limit = 4) {
+        const el = document.getElementById('staff-list');
+        if (!el) return;
+        const rows = el.querySelectorAll('.staff-row');
+        if (rows.length <= limit) {
+          el.style.maxHeight = '';
+          return;
+        }
+        let h = 0;
+        for (let i = 0; i < limit; i++) h += rows[i].offsetHeight;
+        el.style.maxHeight = h + 'px';
+      }
       /*  9. EVALUATORS  */
       async function loadEvaluators() {
         const d = await api('evaluators');
@@ -1323,32 +1335,61 @@
 
         const avatarColors = ['bg-emerald-100 text-ok', 'bg-amber-100 text-warn', 'bg-blue-100 text-brand-lt', 'bg-indigo-100 text-indigo'];
 
+        const chip = (icon, color, bg, value, title) =>
+          `<span title="${title}" class="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-[2px] rounded-md"
+           style="color:${color};background:${bg}"><i class="fas ${icon} text-[8px]"></i>${value}</span>`;
+
+        if (!d.staff.length) {
+          el.innerHTML = '<p class="text-[11px] text-t3 italic">No evaluators registered.</p>';
+        }
+
         d.staff.forEach((s, i) => {
           const cls = avatarColors[i % avatarColors.length];
+          const status = s.active ?
+            '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-ok">Active</span>' :
+            '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-t3">Inactive</span>';
+          const rate = s.approval_rate === null ? '—' : s.approval_rate + '%';
+
           el.innerHTML += `
-      <div class="flex items-center gap-2.5 py-2 border-b border-bdr last:border-0">
-        <div class="w-[34px] h-[34px] rounded-[10px] ${cls} flex items-center justify-center text-[11px] font-extrabold shrink-0">${s.initials}</div>
-        <div class="flex-1 min-w-0">
-          <div class="text-[12.5px] font-bold">${s.name}</div>
-          <div class="text-[10.5px] text-t3 font-medium mt-0.5">${s.email}</div>
-          <div class="h-1 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
-            <div class="h-full rounded-full" style="width:${s.pct}%;background:${s.color}"></div>
+      <div class="staff-row py-2.5 border-b border-bdr last:border-0">
+        <div class="flex items-center gap-2.5">
+          <div class="w-[34px] h-[34px] rounded-[10px] ${cls} flex items-center justify-center text-[11px] font-extrabold shrink-0">${escapeHtml(s.initials)}</div>
+          <div class="flex-1 min-w-0">
+            <div class="text-[12.5px] font-bold truncate">${escapeHtml(s.name)}</div>
+            <div class="text-[10.5px] text-t3 font-medium truncate">${escapeHtml(s.email)}</div>
           </div>
+          <div class="text-right shrink-0">${status}</div>
         </div>
-        <div class="text-right shrink-0">
-          <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-ok">Active</span>
-          <div class="text-[10.5px] font-bold text-t3 mt-1">${s.handled} handled</div>
+
+        <div class="flex items-center gap-2 mt-2">
+          <div class="flex-1 h-[5px] bg-slate-100 rounded-full overflow-hidden">
+            <div class="h-full rounded-full" style="width:${s.completion}%;background:${s.color}"></div>
+          </div>
+          <span class="text-[10px] font-bold text-t3 shrink-0">${s.completion}% decided · ${s.handled} handled</span>
+        </div>
+
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          ${chip('fa-check',       '#059669', 'rgba(5,150,105,.12)',  s.approved,    'Approved by this evaluator')}
+          ${chip('fa-xmark',       '#dc2626', 'rgba(220,38,38,.12)',  s.disapproved, 'Disapproved by this evaluator')}
+          ${chip('fa-inbox',       '#4f46e5', 'rgba(79,70,229,.12)',  s.queue + ' in queue', 'Currently in this evaluator\'s queue')}
+          ${chip('fa-triangle-exclamation', '#ea580c', 'rgba(234,88,12,.12)', s.with_admin + ' with admin', 'Currently with the admin or waiting on the applicant')}
+          ${chip('fa-user-shield', '#7c3aed', 'rgba(124,58,237,.12)', s.by_admin + ' by admin', 'Sent for compliance, then approved/disapproved by the admin')}
+          ${chip('fa-right-left',  '#64748b', 'rgba(100,116,139,.15)', s.reassigned + ' reassigned', 'Reassigned to another evaluator')}
+          ${chip('fa-percent',     '#0f766e', 'rgba(15,118,110,.12)', rate + ' approval', 'Approval rate (approved ÷ decided, evaluator\'s own decisions only)')}
+          ${chip('fa-stopwatch',   '#475569', 'rgba(100,116,139,.15)',
+                 s.avg_hours === null ? '—' : (s.avg_hours < 1/60 ? '&lt;1m' : formatDuration(s.avg_hours)),
+                 'Avg. time from assignment to final decision (includes time waiting for applicant compliance)')}
         </div>
       </div>`;
         });
-
+        capStaffList(4);
         const info = document.getElementById('staff-info');
         document.getElementById('staff-info-text').textContent =
-          `${d.staff.length} evaluator${d.staff.length!==1?'s':''} registered — performance data populates as evaluations complete.`;
+          `${d.staff.length} evaluator${d.staff.length !== 1 ? 's' : ''} · Approved + Disapproved + In queue + With admin + By admin + Reassigned = Handled. Approved/Disapproved count only this evaluator's own decisions; admin-finalized and reassigned applications are shown separately.`;
         info.classList.remove('hidden');
         info.classList.add('flex');
 
-        // Workload donut
+        /* Workload donut */
         if (chartWorkload) {
           chartWorkload.destroy();
           chartWorkload = null;
@@ -1381,9 +1422,9 @@
           leg.innerHTML = '';
           d.workload_names.forEach((l, i) => {
             leg.innerHTML += `<div class="flex items-center gap-2 py-1 border-b border-bdr last:border-0">
-          <span class="w-2 h-2 rounded-[3px] shrink-0" style="background:${d.workload_colors[i]}"></span>
-          <span class="text-[11.5px] font-semibold flex-1">${l}</span>
-          <span class="text-[11px] font-bold text-t3">${d.workload_data[i]}</span></div>`;
+        <span class="w-2 h-2 rounded-[3px] shrink-0" style="background:${d.workload_colors[i]}"></span>
+        <span class="text-[11.5px] font-semibold flex-1">${escapeHtml(l)}</span>
+        <span class="text-[11px] font-bold text-t3">${d.workload_data[i]}</span></div>`;
           });
         }
       }
@@ -1490,9 +1531,17 @@
       document.querySelector('.theme-toggle')?.addEventListener('click', () => {
         setTimeout(loadAll, 50);
       });
+
+      /* Re-measure the evaluator list so exactly 4 rows stay visible after a resize */
+      let staffResizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(staffResizeTimer);
+        staffResizeTimer = setTimeout(() => capStaffList(4), 150);
+      });
     </script>
     <script type="module" src="../js/main.js"></script>
     <script src="../js/theme.js"></script>
+    <script src="../js/avatar-menu.js"></script>
   </body>
 
   </html>

@@ -4,12 +4,8 @@
 session_start();
 require_once 'db.php';
 
-require 'phpmailer/src/PHPMailer.php';
-require 'phpmailer/src/SMTP.php';
-require 'phpmailer/src/Exception.php';
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
+require_once 'db.php';
+require_once 'includes/mailer.php';
 
 date_default_timezone_set('Asia/Manila');
 
@@ -108,6 +104,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Last name is required.";
         } elseif (empty($phone)) {
             $error = "Phone number is required.";
+        } elseif (!preg_match('/^09\d{9}$/', $phone)) {
+            $error = "Phone number must be exactly 11 digits and start with 09 (e.g., 09123456789).";
         } elseif (empty($address)) {
             $error = "Full address is required.";
         } elseif (empty($barangay) || empty($city_municipality) || empty($province)) {
@@ -162,39 +160,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['code_time']         = $now;
 
                 // Send verification email
-                $mail = new PHPMailer(true);
                 try {
-                    $mail->isSMTP();
-                    $mail->Host       = 'smtp.gmail.com';
-                    $mail->SMTPAuth   = true;
-                    $mail->Username   = 'mgmangubat@ccc.edu.ph';
-                    $mail->Password   = 'oenv xscw mokz rohw';
-                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                    $mail->Port       = 587;
-
-                    $mail->setFrom('no-reply@dmw.gov.ph', 'DMW AMS');
+                    $mail = create_mailer($database);
                     $mail->addAddress($email);
 
                     $mail->isHTML(true);
-                    $mail->Subject = 'DMW AMS - Email Verification Code';
+                    $mail->Subject = 'DMW AMS | Email Verification Code';
                     $mail->Body    = "
-                        <h2 style='color:#1e40af;'>Verify Your Email</h2>
+                        <h2 style='color:#0A1F44;'>Verify Your Email</h2>
                         <p>Hello,</p>
                         <p>Use this 6-digit code to complete your registration:</p>
-                        <h1 style='font-size:2.5rem; letter-spacing:0.4em; color:#1e40af;'><b>$code</b></h1>
+                        <h1 style='font-size:2.5rem; letter-spacing:0.4em; color:#0A1F44;'><b>$code</b></h1>
                         <p>This code expires in <strong>10 minutes</strong>.</p>
                         <p>If you didn't request this, please ignore this email.</p>
                         <br><p>Department of Migrant Workers – Regional Office IV-A</p>
                     ";
                     $mail->AltBody = "Your verification code is: $code\nExpires in 10 minutes.";
-
                     $mail->send();
 
                     $show_registration_form = false;
                     $show_verification_form = true;
-                    $success = "A verification code has been sent to <strong>$email</strong>.<br>Please check your inbox (and spam/junk folder).";
-                } catch (Exception $e) {
-                    $error = "Could not send verification email.<br>Error: " . htmlspecialchars($mail->ErrorInfo);
+                    $success = "A verification code has been sent to <strong>" . htmlspecialchars($email) . "</strong>.<br>Please check your inbox (and spam/junk folder).";
+                } catch (Throwable $e) {
+                    error_log('Verification email failed: ' . $e->getMessage());
+                    $error = "Could not send the verification email. Please try again later.";
                     unset($_SESSION['pending_signup'], $_SESSION['verification_code']);
                 }
             }
@@ -286,20 +275,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DMW RO IV-A – Create Account</title>
-
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Same palette as index.php / login.php
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        navy: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        blue: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        gray: {
+                            50: '#F5F7FA',
+                            100: '#EAEEF4',
+                            200: '#D8DFEA',
+                            300: '#BCC6D6',
+                            400: '#8E9BB1',
+                            500: '#64718A',
+                            600: '#4A5670',
+                            700: '#36415A',
+                            800: '#222C44',
+                            900: '#121B30'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="pictures/dmw_logo.png">
 
     <!-- Google reCAPTCHA -->
     <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 
     <style>
         :root {
-            --navy: #0b1f4b;
-            --blue: #1d4ed8;
-            --blue-lt: #3b82f6;
+            --primary: #0A1F44;
+            --primary-dark: #00205f;
+            --primary-light: #e6efff;
+            --accent: #00a0df;
+            --text: #1f2937;
+            --navy: #0A1F44;
+            --navy-700: #1B3563;
+            --blue: #2A4577;
+            --blue-lt: #44639A;
         }
 
         * {
@@ -307,16 +350,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         body {
-            font-family: 'DM Sans', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            color: var(--text);
             margin: 0;
             padding: 0;
         }
 
         .serif {
-            font-family: 'DM Serif Display', serif;
+            font-family: 'Playfair Display', serif;
         }
 
-        /* ─── BACKGROUND ─── */
+        /* ─── BACKGROUND (same overlay as index hero) ─── */
         .bg-image {
             background-image: url('pictures/dmw.jpg');
             background-size: cover;
@@ -329,10 +373,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .overlay {
-            background: linear-gradient(135deg, rgba(11, 31, 75, 0.90), rgba(22, 45, 106, 0.85));
+            background: linear-gradient(rgba(10, 31, 68, 0.78), rgba(10, 31, 68, 0.9));
             position: fixed;
             inset: 0;
             z-index: 10;
+        }
+
+        @media (max-width: 1024px),
+        (prefers-reduced-motion: reduce) {
+            .bg-image {
+                background-attachment: scroll;
+            }
         }
 
         /* ─── INPUTS & BUTTONS ─── */
@@ -342,29 +393,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .input-field:focus {
             border-color: var(--blue-lt);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+            box-shadow: 0 0 0 4px rgba(68, 99, 154, 0.18);
         }
 
         .btn-primary {
-            background: linear-gradient(90deg, var(--navy), var(--blue));
+            background: var(--navy);
             transition: all 0.3s ease;
         }
 
         .btn-primary:hover {
+            background: var(--navy-700);
             transform: translateY(-2px);
-            box-shadow: 0 16px 30px -8px rgb(11 31 75 / 0.5);
+            box-shadow: 0 16px 30px -8px rgb(10 31 68 / 0.5);
         }
 
         /* ══════════════════════════════════════════════
            MOBILE / PORTRAIT  (default, < lg)
-           Single-column card — original look
         ══════════════════════════════════════════════ */
         .page-wrapper {
             position: relative;
             z-index: 20;
             width: 100%;
             max-width: 32rem;
-            /* 512 px */
             padding: 1rem;
         }
 
@@ -372,7 +422,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             background: rgba(255, 255, 255, 0.97);
             backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.7);
-            box-shadow: 0 25px 70px -15px rgb(11 31 75 / 0.45);
+            box-shadow: 0 25px 70px -15px rgb(10 31 68 / 0.45);
             border-radius: 1.5rem;
             overflow: hidden;
         }
@@ -388,7 +438,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             max-height: 92vh;
             overflow-y: auto;
             scrollbar-width: thin;
-            scrollbar-color: rgba(11, 31, 75, 0.2) transparent;
+            scrollbar-color: rgba(10, 31, 68, 0.2) transparent;
         }
 
         .form-panel::-webkit-scrollbar {
@@ -400,7 +450,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .form-panel::-webkit-scrollbar-thumb {
-            background: rgba(11, 31, 75, 0.2);
+            background: rgba(10, 31, 68, 0.2);
             border-radius: 99px;
         }
 
@@ -415,7 +465,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         /* ══════════════════════════════════════════════
            DESKTOP / LANDSCAPE  (≥ 1024 px)
-           Two-column: brand panel left, form right
         ══════════════════════════════════════════════ */
         @media (min-width: 1024px) {
             .bg-image {
@@ -424,7 +473,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             .page-wrapper {
                 max-width: 72rem;
-                /* 1152 px */
                 padding: 0;
             }
 
@@ -443,13 +491,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 justify-content: space-between;
                 width: 38%;
                 flex-shrink: 0;
-                background: linear-gradient(160deg, var(--navy) 0%, #1a3a7c 60%, #1d4ed8 100%);
+                background: linear-gradient(160deg, #0A1F44 0%, #122A55 60%, #1B3563 100%);
                 padding: 3rem 2.5rem;
                 position: relative;
                 overflow: hidden;
             }
 
-            /* decorative circles */
             .brand-panel::before,
             .brand-panel::after {
                 content: '';
@@ -483,7 +530,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             /* ── Right form panel ── */
             .mobile-top-bar {
                 display: none;
-                /* hidden on desktop */
             }
 
             .form-panel {
@@ -495,7 +541,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         /* ══════════════════════════════════════════════
-           EXTRA-LARGE screens (≥ 1280 px) — more padding
+           EXTRA-LARGE screens (≥ 1280 px)
         ══════════════════════════════════════════════ */
         @media (min-width: 1280px) {
             .brand-panel {
@@ -527,36 +573,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <h1 class="serif text-white text-3xl leading-tight mb-2">
                         Department of<br>Migrant Workers
                     </h1>
-                    <p class="text-blue-200 text-sm tracking-widest uppercase mb-8">
+                    <p class="text-navy-200 text-sm tracking-widest uppercase mb-8">
                         Regional Office IV-A<br>CALABARZON
                     </p>
 
                     <div class="border-t border-white/20 pt-6 space-y-5">
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                                <i class="fa-solid fa-shield-halved text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-shield-halved text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Secure Registration</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Your data is encrypted and protected at all times.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Your data is encrypted and protected at all times.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                                <i class="fa-solid fa-envelope-circle-check text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-envelope-circle-check text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Email Verification</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">We verify your email to keep your account safe.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">We verify your email to keep your account safe.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                                <i class="fa-solid fa-file-lines text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-file-lines text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Easy Applications</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Track and manage your DMW applications online.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Track and manage your DMW applications online.</p>
                             </div>
                         </div>
                     </div>
@@ -564,7 +610,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <!-- Footer note -->
                 <div class="relative z-10 mt-8">
-                    <p class="text-blue-300 text-xs">© <?= date("Y") ?> Department of Migrant Workers</p>
+                    <p class="text-navy-300 text-xs">© <?= date("Y") ?> Department of Migrant Workers</p>
                 </div>
             </div>
 
@@ -577,12 +623,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         alt="DMW Logo" class="h-9 w-auto">
                     <div>
                         <h1 class="serif text-white text-base font-semibold leading-tight">Department of Migrant Workers</h1>
-                        <p class="text-blue-200 text-xs tracking-widest">Regional Office IV-A CALABARZON</p>
+                        <p class="text-navy-200 text-xs tracking-widest">Regional Office IV-A CALABARZON</p>
                     </div>
                 </div>
 
-                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Create Your Account</h2>
-                <p class="text-slate-500 text-sm mb-6">Register for the DMW Client Portal</p>
+                <h2 class="serif text-2xl font-bold text-[var(--navy)] mb-1">Create Your Account</h2>
+                <p class="text-gray-500 text-sm mb-6">Register for the DMW Client Portal</p>
 
                 <?php if ($error): ?>
                     <div class="mb-5 rounded-2xl bg-red-50 border border-red-200 px-5 py-3 text-red-700 text-sm">
@@ -602,34 +648,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         <!--  PERSONAL INFORMATION  -->
                         <div>
-                            <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">PERSONAL INFORMATION</h3>
+                            <h3 class="text-xs font-semibold tracking-widest text-gray-400 mb-4">PERSONAL INFORMATION</h3>
 
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">FIRST NAME <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">FIRST NAME <span class="text-red-500">*</span></label>
                                     <input type="text" name="first_name" required
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Juan">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">MIDDLE NAME</label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">MIDDLE NAME</label>
                                     <input type="text" name="middle_name"
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Santos (optional)">
                                 </div>
                             </div>
 
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">LAST NAME <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">LAST NAME <span class="text-red-500">*</span></label>
                                     <input type="text" name="last_name" required
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Dela Cruz">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">SUFFIX</label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">SUFFIX</label>
                                     <input list="suffixList" name="suffix"
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Jr., Sr., III">
                                     <datalist id="suffixList">
                                         <option value="Not Applicable">
@@ -649,37 +695,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         <!--  EMAIL  -->
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">ACTIVE EMAIL ADDRESS <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">ACTIVE EMAIL ADDRESS <span class="text-red-500">*</span></label>
                             <input type="email" name="email" id="email" required
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                 placeholder="juandelacruz@example.com">
                         </div>
 
                         <!--  ACCOUNT SECURITY  -->
-                        <div class="pt-4 border-t border-slate-200">
-                            <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">ACCOUNT SECURITY</h3>
+                        <div class="pt-4 border-t border-gray-200">
+                            <h3 class="text-xs font-semibold tracking-widest text-gray-400 mb-4">ACCOUNT SECURITY</h3>
 
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">PASSWORD <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">PASSWORD <span class="text-red-500">*</span></label>
                                     <div class="relative">
                                         <input type="password" name="password" id="password" required minlength="8"
-                                            class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-5 pr-12 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                            class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-5 pr-12 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                             placeholder="••••••••">
                                         <button type="button" id="togglePassword"
-                                            class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                                            class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
                                             <i class="fas fa-eye text-sm" id="eyeIcon"></i>
                                         </button>
                                     </div>
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">CONFIRM PASSWORD <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">CONFIRM PASSWORD <span class="text-red-500">*</span></label>
                                     <div class="relative">
                                         <input type="password" name="password_confirm" id="password_confirm" required
-                                            class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-5 pr-12 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                            class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-5 pr-12 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                             placeholder="••••••••">
                                         <button type="button" id="toggleConfirm"
-                                            class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                                            class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
                                             <i class="fas fa-eye text-sm" id="eyeConfirm"></i>
                                         </button>
                                     </div>
@@ -689,71 +735,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                             <!-- Password Requirements -->
                             <div id="password-requirements" class="mt-4 text-xs space-y-1.5 hidden">
-                                <div id="req-length" class="req-item flex items-center gap-2 text-slate-500">• At least 8 characters</div>
-                                <div id="req-upper" class="req-item flex items-center gap-2 text-slate-500">• At least one uppercase letter</div>
-                                <div id="req-lower" class="req-item flex items-center gap-2 text-slate-500">• At least one lowercase letter</div>
-                                <div id="req-number" class="req-item flex items-center gap-2 text-slate-500">• At least one number</div>
-                                <div id="req-special" class="req-item flex items-center gap-2 text-slate-500">• At least one special character</div>
+                                <div id="req-length" class="req-item flex items-center gap-2 text-gray-500">• At least 8 characters</div>
+                                <div id="req-upper" class="req-item flex items-center gap-2 text-gray-500">• At least one uppercase letter</div>
+                                <div id="req-lower" class="req-item flex items-center gap-2 text-gray-500">• At least one lowercase letter</div>
+                                <div id="req-number" class="req-item flex items-center gap-2 text-gray-500">• At least one number</div>
+                                <div id="req-special" class="req-item flex items-center gap-2 text-gray-500">• At least one special character</div>
                             </div>
                         </div>
 
                         <!--  CONTACT & ADDRESS  -->
-                        <div class="pt-4 border-t border-slate-200">
-                            <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">CONTACT & ADDRESS</h3>
+                        <div class="pt-4 border-t border-gray-200">
+                            <h3 class="text-xs font-semibold tracking-widest text-gray-400 mb-4">CONTACT & ADDRESS</h3>
 
                             <div class="mb-4">
-                                <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">PHONE NUMBER <span class="text-red-500">*</span></label>
-                                <input type="tel" name="phone" required
-                                    class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
-                                    placeholder="+63 912 345 6789">
+                                <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">PHONE NUMBER <span class="text-red-500">*</span></label>
+                                <input type="tel" name="phone" id="phone" required
+                                    inputmode="numeric" maxlength="11" minlength="11"
+                                    pattern="09[0-9]{9}"
+                                    title="Enter an 11-digit mobile number starting with 09 (e.g., 09123456789)"
+                                    autocomplete="tel"
+                                    class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
+                                    placeholder="09123456789">
+                                <p id="phone-msg" class="mt-1.5 text-xs min-h-[1rem] text-gray-400">Format: 09123456789 (11 digits, numbers only)</p>
                             </div>
 
                             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">PROVINCE <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">PROVINCE <span class="text-red-500">*</span></label>
                                     <input list="provinceList" id="province" name="province" required
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Laguna">
                                     <datalist id="provinceList"></datalist>
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">MUNICIPALITY <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">MUNICIPALITY <span class="text-red-500">*</span></label>
                                     <input list="cityList" id="city_municipality" name="city_municipality" required
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Santa Rosa City">
                                     <datalist id="cityList"></datalist>
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">BARANGAY <span class="text-red-500">*</span></label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">BARANGAY <span class="text-red-500">*</span></label>
                                     <input list="barangayList" id="barangay" name="barangay" required
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                         placeholder="Tagapo">
                                     <datalist id="barangayList"></datalist>
                                 </div>
                             </div>
 
                             <div>
-                                <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">COMPLETE ADDRESS <span class="text-red-500">*</span></label>
+                                <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">COMPLETE ADDRESS <span class="text-red-500">*</span></label>
                                 <textarea name="address" rows="3" required
-                                    class="input-field w-full bg-white border border-slate-300 rounded-3xl py-3.5 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none resize-y text-sm"
+                                    class="input-field w-full bg-white border border-gray-300 rounded-3xl py-3.5 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none resize-y text-sm"
                                     placeholder="House No., Street Name, Subdivision, etc."></textarea>
-                                <p class="mt-1.5 text-xs text-slate-400">Include house number, street, and any landmark if applicable.</p>
+                                <p class="mt-1.5 text-xs text-gray-400">Include house number, street, and any landmark if applicable.</p>
                             </div>
                         </div>
 
                         <!--  ADDITIONAL INFO  -->
-                        <div class="pt-4 border-t border-slate-200">
-                            <h3 class="text-xs font-semibold tracking-widest text-slate-400 mb-4">ADDITIONAL INFORMATION</h3>
+                        <div class="pt-4 border-t border-gray-200">
+                            <h3 class="text-xs font-semibold tracking-widest text-gray-400 mb-4">ADDITIONAL INFORMATION</h3>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">DATE OF BIRTH</label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">DATE OF BIRTH</label>
                                     <input type="date" name="dob"
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] focus:outline-none text-sm">
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] focus:outline-none text-sm">
                                 </div>
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">GENDER</label>
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">GENDER</label>
                                     <select name="gender"
-                                        class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] focus:outline-none text-sm">
+                                        class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] focus:outline-none text-sm">
                                         <option value="">Select Gender</option>
                                         <option value="Male">Male</option>
                                         <option value="Female">Female</option>
@@ -765,11 +816,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="pt-2">
                             <label class="flex items-start gap-3 cursor-pointer">
                                 <input type="checkbox" name="agree_policy" id="agree_policy" required
-                                    class="mt-1 h-4 w-4 rounded border-slate-300 text-[var(--blue)] focus:ring-[var(--blue-lt)]">
-                                <span class="text-sm text-slate-600">
+                                    class="mt-1 h-4 w-4 rounded border-gray-300 accent-[var(--navy)]">
+                                <span class="text-sm text-gray-600">
                                     I have read and agree to the
                                     <a href="https://dmw.gov.ph/data-privacy-notice" target="_blank" rel="noopener noreferrer"
-                                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] underline">
+                                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)] underline">
                                         DMW Data Privacy Notice
                                     </a>
                                     and Terms of Service. <span class="text-red-500">*</span>
@@ -783,7 +834,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
 
                         <button type="submit" name="create_account"
-                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider mt-2">
+                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider mt-2 shadow-lg shadow-blue-900/30">
                             CREATE ACCOUNT
                         </button>
 
@@ -794,26 +845,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <?php if ($show_verification_form): ?>
                     <form method="POST" class="space-y-6">
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">VERIFICATION CODE <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">VERIFICATION CODE <span class="text-red-500">*</span></label>
                             <input type="text" name="verification_code" required maxlength="6" pattern="\d{6}"
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-6 px-5 text-center text-3xl tracking-[0.5em] text-[var(--navy)] focus:outline-none"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-6 px-5 text-center text-3xl tracking-[0.5em] text-[var(--navy)] focus:outline-none"
                                 placeholder="000000">
                         </div>
 
                         <button type="submit" name="verify_code"
-                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider">
+                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider shadow-lg shadow-blue-900/30">
                             VERIFY & COMPLETE REGISTRATION
                         </button>
                     </form>
                 <?php endif; ?>
 
-                <div class="text-center mt-6 text-sm text-slate-600">
+                <div class="text-center mt-6 text-sm text-gray-600">
                     Already have an account?
-                    <a href="login.php" class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)]">Sign in</a>
+                    <a href="login.php" class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)]">Sign in</a>
                 </div>
 
                 <!-- Mobile copyright -->
-                <p class="lg:hidden text-center mt-6 text-xs text-slate-400">
+                <p class="lg:hidden text-center mt-6 text-xs text-gray-400">
                     © <?= date("Y") ?> Department of Migrant Workers • Regional Office IV-A
                 </p>
 
@@ -851,7 +902,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 for (const [key, ok] of Object.entries(checks)) {
                     reqElements[key].className = ok ?
                         'req-item flex items-center gap-2 text-green-600' :
-                        'req-item flex items-center gap-2 text-slate-500';
+                        'req-item flex items-center gap-2 text-gray-500';
                 }
                 requirementsBox.classList.remove('hidden');
             }
@@ -970,7 +1021,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 });
         });
     </script>
+    <!--  Phone number validation  -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const phoneInput = document.getElementById('phone');
+            const phoneMsg = document.getElementById('phone-msg');
+            if (!phoneInput) return;
 
+            const hint = 'Format: 09123456789 (11 digits, numbers only)';
+
+            function validatePhone() {
+                const v = phoneInput.value;
+
+                if (v === '') {
+                    phoneInput.setCustomValidity('');
+                    phoneMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-gray-400';
+                    phoneMsg.textContent = hint;
+                    return;
+                }
+
+                if (!/^09/.test(v.slice(0, 2)) && v.length >= 2) {
+                    phoneInput.setCustomValidity('Number must start with 09.');
+                    phoneMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-red-600';
+                    phoneMsg.textContent = '✗ Number must start with 09.';
+                } else if (v.length < 11) {
+                    phoneInput.setCustomValidity('Phone number must be 11 digits.');
+                    phoneMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-red-600';
+                    phoneMsg.textContent = '✗ ' + v.length + '/11 digits entered.';
+                } else {
+                    phoneInput.setCustomValidity('');
+                    phoneMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-green-600';
+                    phoneMsg.textContent = '✓ Valid phone number';
+                }
+            }
+
+            // Strip anything that is not a digit (typing, paste, autofill)
+            phoneInput.addEventListener('input', () => {
+                phoneInput.value = phoneInput.value.replace(/\D/g, '').slice(0, 11);
+                validatePhone();
+            });
+
+            // Block non-numeric keys (allow control keys and shortcuts)
+            phoneInput.addEventListener('keydown', (e) => {
+                const allowed = ['Backspace', 'Delete', 'Tab', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'];
+                if (allowed.includes(e.key) || e.ctrlKey || e.metaKey) return;
+                if (!/^\d$/.test(e.key)) e.preventDefault();
+            });
+
+            validatePhone();
+        });
+    </script>
 </body>
 
 </html>

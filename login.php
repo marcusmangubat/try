@@ -273,9 +273,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             }
                         } else {
 
+                            session_regenerate_id(true);
                             $_SESSION['user_email'] = $user['email'];
                             $_SESSION['user_type']  = $user['usertype'];
                             $_SESSION['login_success'] = true;
+                            $_SESSION['login_time'] = time();
 
                             $stmt_name = $database->prepare("
                                 SELECT CONCAT(first_name, ' ', last_name) AS full_name 
@@ -353,17 +355,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DMW RO IV-A – Sign In</title>
-
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Same palette as index.php
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        navy: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        blue: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        gray: {
+                            50: '#F5F7FA',
+                            100: '#EAEEF4',
+                            200: '#D8DFEA',
+                            300: '#BCC6D6',
+                            400: '#8E9BB1',
+                            500: '#64718A',
+                            600: '#4A5670',
+                            700: '#36415A',
+                            800: '#222C44',
+                            900: '#121B30'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
-
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="pictures/dmw_logo.png">
     <style>
         :root {
-            --navy: #0b1f4b;
-            --blue: #1d4ed8;
-            --blue-lt: #3b82f6;
+            --primary: #0A1F44;
+            --primary-dark: #00205f;
+            --primary-light: #e6efff;
+            --accent: #00a0df;
+            --text: #1f2937;
+            --navy: #0A1F44;
+            --navy-700: #1B3563;
+            --blue: #2A4577;
+            --blue-lt: #44639A;
         }
 
         * {
@@ -371,16 +426,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
         }
 
         body {
-            font-family: 'DM Sans', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            color: var(--text);
             margin: 0;
             padding: 0;
         }
 
         .serif {
-            font-family: 'DM Serif Display', serif;
+            font-family: 'Playfair Display', serif;
         }
 
-        /* ─── BACKGROUND ─── */
+        /* ─── BACKGROUND (same overlay as index hero) ─── */
         .bg-image {
             background-image: url('pictures/dmw.jpg');
             background-size: cover;
@@ -393,10 +449,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
         }
 
         .overlay {
-            background: linear-gradient(135deg, rgba(11, 31, 75, 0.90), rgba(22, 45, 106, 0.85));
+            background: linear-gradient(rgba(10, 31, 68, 0.78), rgba(10, 31, 68, 0.9));
             position: fixed;
             inset: 0;
             z-index: 10;
+        }
+
+        @media (max-width: 1024px),
+        (prefers-reduced-motion: reduce) {
+            .bg-image {
+                background-attachment: scroll;
+            }
         }
 
         /* ─── INPUTS & BUTTONS ─── */
@@ -406,17 +469,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
 
         .input-field:focus {
             border-color: var(--blue-lt);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+            box-shadow: 0 0 0 4px rgba(68, 99, 154, 0.18);
         }
 
         .btn-primary {
-            background: linear-gradient(90deg, var(--navy), var(--blue));
+            background: var(--navy);
             transition: all 0.3s ease;
         }
 
         .btn-primary:hover {
+            background: var(--navy-700);
             transform: translateY(-2px);
-            box-shadow: 0 16px 30px -8px rgb(11 31 75 / 0.5);
+            box-shadow: 0 16px 30px -8px rgb(10 31 68 / 0.5);
         }
 
         .btn-primary:disabled {
@@ -426,8 +490,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
             box-shadow: none;
         }
 
-        /*MOBILE / PORTRAIT (default, < lg)
-           Single-column card */
+        /* MOBILE / PORTRAIT (default, < lg) */
         .page-wrapper {
             position: relative;
             z-index: 20;
@@ -440,17 +503,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
             background: rgba(255, 255, 255, 0.97);
             backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.7);
-            box-shadow: 0 25px 70px -15px rgb(11 31 75 / 0.45);
+            box-shadow: 0 25px 70px -15px rgb(10 31 68 / 0.45);
             border-radius: 1.5rem;
             overflow: hidden;
         }
 
-        /* left brand panel — hidden on mobile */
         .brand-panel {
             display: none;
         }
 
-        /* mobile top bar */
         .mobile-top-bar {
             display: flex;
             background: var(--navy);
@@ -459,13 +520,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
             gap: 0.9rem;
         }
 
-        /* form panel */
         .form-panel {
             padding: 2rem;
         }
 
-        /*   DESKTOP / LANDSCAPE (≥ 1024 px)
-           Two-column: brand left, form right */
+        /* DESKTOP / LANDSCAPE (≥ 1024 px) */
         @media (min-width: 1024px) {
             .bg-image {
                 padding: 1.5rem;
@@ -473,7 +532,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
 
             .page-wrapper {
                 max-width: 64rem;
-                /* narrower than register since login is simpler */
                 padding: 0;
             }
 
@@ -484,14 +542,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
                 min-height: 70vh;
             }
 
-            /*  Left brand panel  */
             .brand-panel {
                 display: flex;
                 flex-direction: column;
                 justify-content: space-between;
                 width: 42%;
                 flex-shrink: 0;
-                background: linear-gradient(160deg, var(--navy) 0%, #1a3a7c 60%, #1d4ed8 100%);
+                background: linear-gradient(160deg, #0A1F44 0%, #122A55 60%, #1B3563 100%);
                 padding: 3rem 2.5rem;
                 position: relative;
                 overflow: hidden;
@@ -527,7 +584,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
                 background-size: 28px 28px;
             }
 
-            /* ── Right form panel ── */
             .mobile-top-bar {
                 display: none;
             }
@@ -565,48 +621,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
                 <div class="brand-dots"></div>
 
                 <div class="relative z-10">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="pictures/dmw_logo.png"
                         alt="DMW Logo" class="h-16 w-auto mb-6">
                     <h1 class="serif text-white text-3xl leading-tight mb-2">
                         Department of<br>Migrant Workers
                     </h1>
-                    <p class="text-blue-200 text-sm tracking-widest uppercase mb-8">
+                    <p class="text-navy-200 text-sm tracking-widest uppercase mb-8">
                         Regional Office IV-A<br>CALABARZON
                     </p>
 
                     <div class="border-t border-white/20 pt-6 space-y-5">
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                                <i class="fa-solid fa-user-shield text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-user-shield text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Secure Access</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Your session is protected and encrypted.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Your session is protected and encrypted.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                                <i class="fa-solid fa-clock-rotate-left text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-clock-rotate-left text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Track Applications</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Monitor the status of your DMW applications in real time.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Monitor the status of your DMW applications in real time.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-3">
                             <div class="mt-0.5 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                                <i class="fa-solid fa-bell text-blue-300 text-xs"></i>
+                                <i class="fa-solid fa-bell text-navy-200 text-xs"></i>
                             </div>
                             <div>
                                 <p class="text-white font-semibold text-sm">Get Notified</p>
-                                <p class="text-blue-200 text-xs leading-relaxed">Receive updates and alerts about your account activity.</p>
+                                <p class="text-navy-200 text-xs leading-relaxed">Receive updates and alerts about your account activity.</p>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="relative z-10 mt-8">
-                    <p class="text-blue-300 text-xs">© <?= date("Y") ?> Department of Migrant Workers</p>
+                    <p class="text-navy-300 text-xs">© <?= date("Y") ?> Department of Migrant Workers</p>
                 </div>
             </div>
 
@@ -615,19 +671,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
 
                 <!-- Mobile top bar (hidden on desktop) -->
                 <div class="mobile-top-bar -mx-8 -mt-8 mb-6 px-6 py-4">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="pictures/dmw_logo.png"
                         alt="DMW Logo" class="h-9 w-auto">
                     <div>
                         <h1 class="serif text-white text-base font-semibold leading-tight">Department of Migrant Workers</h1>
-                        <p class="text-blue-200 text-xs tracking-widest">Regional Office IV-A CALABARZON</p>
+                        <p class="text-navy-200 text-xs tracking-widest">Regional Office IV-A CALABARZON</p>
                     </div>
                 </div>
 
-                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Welcome!</h2>
-                <p class="text-slate-500 text-sm mb-8">Sign in to your Portal</p>
+                <h2 class="serif text-2xl font-bold text-[var(--navy)] mb-1">Welcome!</h2>
+                <p class="text-gray-500 text-sm mb-8">Sign in to your Portal</p>
 
                 <?php if ($info_message): ?>
-                    <div class="mb-6 rounded-2xl bg-blue-50 border border-blue-200 px-5 py-3 text-blue-800 text-sm">
+                    <div class="mb-6 rounded-2xl bg-navy-50 border border-navy-200 px-5 py-3 text-navy-800 text-sm">
                         <?= htmlspecialchars($info_message) ?>
                     </div>
                 <?php endif; ?>
@@ -645,34 +701,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
 
                     <!-- Email -->
                     <div>
-                        <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">
+                        <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">
                             EMAIL ADDRESS
                         </label>
                         <div class="relative">
-                            <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                            <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
                                 <i class="fas fa-envelope text-sm"></i>
                             </span>
                             <input type="email" name="email" id="email" required
                                 value="<?= htmlspecialchars($email_value) ?>"
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-11 pr-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                 placeholder="juandelacruz@example.com">
                         </div>
                     </div>
 
                     <!-- Password -->
                     <div>
-                        <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">
+                        <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">
                             PASSWORD
                         </label>
                         <div class="relative">
-                            <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                            <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
                                 <i class="fas fa-lock text-sm"></i>
                             </span>
                             <input type="password" name="password" id="password" required
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-3.5 pl-11 pr-12 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none text-sm"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 pl-11 pr-12 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none text-sm"
                                 placeholder="••••••••">
                             <button type="button" id="togglePassword"
-                                class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                                class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors">
                                 <i class="fas fa-eye text-sm" id="eyeIcon"></i>
                             </button>
                         </div>
@@ -685,42 +741,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
 
                     <!-- Remember me / Forgot password -->
                     <div class="flex items-center justify-between text-sm pt-1">
-                        <label class="flex items-center gap-2 cursor-pointer text-slate-600 select-none">
+                        <label class="flex items-center gap-2 cursor-pointer text-gray-600 select-none">
                             <input type="checkbox" name="remember"
-                                class="w-4 h-4 rounded border-slate-300 accent-[var(--blue)]">
+                                class="w-4 h-4 rounded border-gray-300 accent-[var(--navy)]">
                             <span class="font-medium">Remember me</span>
                         </label>
                         <a href="reset-password.php"
-                            class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] transition-colors text-xs">
+                            class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)] transition-colors text-xs">
                             Forgot password?
                         </a>
                     </div>
 
                     <button type="submit" <?= $isLockedOut ? 'disabled' : '' ?>
-                        class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider mt-2">
+                        class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-sm tracking-wider mt-2 shadow-lg shadow-blue-900/30">
                         SIGN IN
                     </button>
 
                 </form>
 
-                <div class="text-center mt-7 text-sm text-slate-600">
+                <div class="text-center mt-7 text-sm text-gray-600">
                     New applicant?
                     <a href="create-account.php"
-                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] transition-colors">
+                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)] transition-colors">
                         Create account
                     </a>
                 </div>
 
-                <div class="text-center mt-3 text-xs text-slate-500">
+                <div class="text-center mt-3 text-xs text-gray-500">
                     Account deactivated?
                     <button type="button" id="openReactivationModal"
-                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)] transition-colors underline bg-transparent border-none cursor-pointer">
+                        class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)] transition-colors underline bg-transparent border-none cursor-pointer">
                         Request reactivation
                     </button>
                 </div>
 
                 <!-- Mobile copyright -->
-                <p class="lg:hidden text-center mt-6 text-xs text-slate-400">
+                <p class="lg:hidden text-center mt-6 text-xs text-gray-400">
                     © <?= date("Y") ?> Department of Migrant Workers • Regional Office IV-A
                 </p>
 
@@ -744,10 +800,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
 
     <!--  REACTIVATION REQUEST MODAL  -->
     <div id="reactivationModal" style="display:<?= $show_reactivation_modal ? 'flex' : ($reactivation_success ? 'flex' : 'none') ?>;
-        position:fixed; inset:0; background:rgba(11,31,75,.6); backdrop-filter:blur(4px); z-index:500;
+        position:fixed; inset:0; background:rgba(10,31,68,.6); backdrop-filter:blur(4px); z-index:500;
         align-items:center; justify-content:center; padding:20px;">
         <div style="background:#fff; border-radius:22px; width:100%; max-width:440px; overflow:hidden; box-shadow:0 24px 64px rgba(0,0,0,.2);">
-            <div style="padding:22px 26px 18px; background:linear-gradient(135deg, var(--navy) 0%, #1e3a8a 100%); position:relative;">
+            <div style="padding:22px 26px 18px; background:linear-gradient(135deg, #0A1F44 0%, #1B3563 100%); position:relative;">
                 <h3 style="font-size:17px; font-weight:800; color:#fff; margin:0;">
                     <i class="fas fa-rotate-left" style="margin-right:8px; opacity:.8;"></i>Request Account Reactivation
                 </h3>
@@ -761,10 +817,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
             <?php if ($reactivation_success): ?>
                 <div style="padding:26px; text-align:center;">
                     <i class="fas fa-circle-check" style="font-size:32px; color:#059669; margin-bottom:10px;"></i>
-                    <p style="font-size:13.5px; color:#0f172a; font-weight:600; margin-bottom:6px;">Request Submitted</p>
-                    <p style="font-size:12.5px; color:#64748b;"><?= htmlspecialchars($reactivation_message) ?></p>
+                    <p style="font-size:13.5px; color:#121B30; font-weight:600; margin-bottom:6px;">Request Submitted</p>
+                    <p style="font-size:12.5px; color:#64718A;"><?= htmlspecialchars($reactivation_message) ?></p>
                     <button type="button" onclick="closeReactivationModal()"
-                        style="margin-top:16px; padding:10px 24px; border-radius:10px; background:var(--blue); color:#fff; border:none; font-weight:700; font-size:13px; cursor:pointer;">
+                        style="margin-top:16px; padding:10px 24px; border-radius:10px; background:#0A1F44; color:#fff; border:none; font-weight:700; font-size:13px; cursor:pointer;">
                         Close
                     </button>
                 </div>
@@ -772,37 +828,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($email_value)) {
                 <form method="POST" action="" style="padding:24px 26px;">
                     <input type="hidden" name="form_type" value="reactivation">
 
-                    <div style="margin-bottom:16px; padding:11px 14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:11px; font-size:12px; line-height:1.55; color:#1e40af;">
+                    <div style="margin-bottom:16px; padding:11px 14px; background:#F2F5FA; border:1px solid #C5D2E8; border-radius:11px; font-size:12px; line-height:1.55; color:#1B3563;">
                         <i class="fas fa-circle-info" style="margin-right:6px;"></i>
                         The administrator will review your request. You will be notified by email whether it is <strong>approved</strong> or <strong>declined</strong>. Until then, you will not be able to log in.
                     </div>
 
                     <div style="margin-bottom:16px;">
-                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; margin-bottom:7px;">Email Address</label>
+                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#8E9BB1; margin-bottom:7px;">Email Address</label>
                         <input type="email" name="reactivation_email" required
                             value="<?= htmlspecialchars($deactivated_email) ?>"
-                            style="width:100%; padding:11px 14px; border:1.5px solid #e2e8f0; border-radius:11px; font-family:'DM Sans',sans-serif; font-size:13px;">
+                            style="width:100%; padding:11px 14px; border:1.5px solid #D8DFEA; border-radius:11px; font-family:'Inter',sans-serif; font-size:13px;">
                     </div>
 
                     <div style="margin-bottom:16px;">
-                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; margin-bottom:7px;">Password</label>
+                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#8E9BB1; margin-bottom:7px;">Password</label>
                         <input type="password" name="reactivation_password" required
-                            style="width:100%; padding:11px 14px; border:1.5px solid #e2e8f0; border-radius:11px; font-family:'DM Sans',sans-serif; font-size:13px;">
-                        <p style="font-size:10.5px; color:#94a3b8; margin-top:5px;">Used to verify this is your account.</p>
+                            style="width:100%; padding:11px 14px; border:1.5px solid #D8DFEA; border-radius:11px; font-family:'Inter',sans-serif; font-size:13px;">
+                        <p style="font-size:10.5px; color:#8E9BB1; margin-top:5px;">Used to verify this is your account.</p>
                     </div>
 
                     <div style="margin-bottom:16px;">
-                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; margin-bottom:7px;">Reason for Reactivation</label>
+                        <label style="display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#8E9BB1; margin-bottom:7px;">Reason for Reactivation</label>
                         <textarea name="reactivation_reason" required rows="3"
-                            style="width:100%; padding:11px 14px; border:1.5px solid #e2e8f0; border-radius:11px; font-family:'DM Sans',sans-serif; font-size:13px; resize:vertical;"
+                            style="width:100%; padding:11px 14px; border:1.5px solid #D8DFEA; border-radius:11px; font-family:'Inter',sans-serif; font-size:13px; resize:vertical;"
                             placeholder="Tell the admin why you'd like your account reactivated (at least 10 characters)..."></textarea>
                     </div>
 
                     <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
                         <button type="button" onclick="closeReactivationModal()"
-                            style="padding:10px 20px; border-radius:10px; border:1.5px solid #e2e8f0; background:#f8fafc; color:#475569; font-weight:600; font-size:13px; cursor:pointer;">Cancel</button>
+                            style="padding:10px 20px; border-radius:10px; border:1.5px solid #D8DFEA; background:#F5F7FA; color:#4A5670; font-weight:600; font-size:13px; cursor:pointer;">Cancel</button>
                         <button type="submit"
-                            style="padding:10px 24px; border-radius:10px; background:linear-gradient(135deg, var(--blue), #4f46e5); color:#fff; border:none; font-weight:700; font-size:13px; cursor:pointer;">
+                            style="padding:10px 24px; border-radius:10px; background:linear-gradient(135deg, #0A1F44, #1B3563); color:#fff; border:none; font-weight:700; font-size:13px; cursor:pointer;">
                             <i class="fas fa-paper-plane"></i> Submit Request
                         </button>
                     </div>

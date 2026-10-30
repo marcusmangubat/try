@@ -663,93 +663,159 @@ function getDestinations(mysqli $db, string $start, string $end, array $f): arra
     return ['labels' => $labels, 'data' => $data, 'colors' => $colors, 'legend' => $legend];
 }
 
-/* 9. EVALUATOR PERFORMANCE & WORKLOAD, scoped to range */
+/* 9. EVALUATOR PERFORMANCE & WORKLOAD, scoped to range
+   Each (evaluator, application) pair in `assignments` lands in exactly ONE bucket.
+   The first matching WHEN wins. */
 function getEvaluators(mysqli $db, string $start, string $end, array $f): array
 {
     $wlColors = ['#059669', '#d97706', '#3b82f6', '#6366f1', '#dc2626', '#94a3b8'];
 
-    $extraTypes = '';
-    $extraParams = [];
-    $provinceJoin = '';
-    $countryJoin = '';
-    $handledCase = 'CASE WHEN a.id IS NOT NULL THEN asn.application_id END';
-
-    if ($f['province'] !== '') {
-        $provinceJoin = 'LEFT JOIN clients fc ON fc.cid = a.client_id AND fc.province = ?';
-        $extraTypes .= 's';
-        $extraParams[] = $f['province'];
-        $handledCase = 'CASE WHEN fc.cid IS NOT NULL THEN asn.application_id END';
+    /* A. Evaluator list */
+    $evaluators = [];
+    $res = $db->query(
+        "SELECT e.eid, e.full_name, e.email, COALESCE(w.is_active, 1) AS is_active
+         FROM evaluators e
+         LEFT JOIN webuser w ON w.email = e.email"
+    );
+    while ($r = $res->fetch_assoc()) {
+        $evaluators[(int) $r['eid']] = $r;
     }
 
-    if ($f['country'] !== '') {
-        $countryJoin = 'LEFT JOIN rsf_job_orders fj ON fj.id = a.rsf_id AND fj.worksite_country = ?';
-        $extraTypes .= 's';
-        $extraParams[] = $f['country'];
-        if ($f['province'] !== '') {
-            $handledCase = 'CASE WHEN fc.cid IS NOT NULL AND fj.id IS NOT NULL THEN asn.application_id END';
-        } else {
-            $handledCase = 'CASE WHEN fj.id IS NOT NULL THEN asn.application_id END';
-        }
-    }
-
+    /* B. Mutually exclusive buckets */
+    $buckets = [];
     $stmt = prepareBound(
         $db,
-        "SELECT e.eid, e.full_name, e.email,
-                COUNT(DISTINCT {$handledCase}) AS handled
-         FROM evaluators e
-         LEFT JOIN assignments asn ON asn.evaluator_id = e.eid AND asn.assigned_at BETWEEN ? AND ?
-        LEFT JOIN applications a ON a.id = asn.application_id AND a.status <> 'draft'
-         {$provinceJoin}
-         {$countryJoin}
-         GROUP BY e.eid
-         ORDER BY handled DESC",
-        'ss' . $extraTypes,
-        array_merge([$start, $end], $extraParams)
+        "SELECT x.evaluator_id,
+                SUM(x.bucket = 'approved')    AS approved,
+                SUM(x.bucket = 'disapproved') AS disapproved,
+                SUM(x.bucket = 'queue')       AS queue,
+                SUM(x.bucket = 'with_admin')  AS with_admin,
+                SUM(x.bucket = 'by_admin')    AS by_admin,
+                SUM(x.bucket = 'reassigned')  AS reassigned
+         FROM (
+             SELECT DISTINCT asn.evaluator_id, asn.application_id,
+                CASE
+                  WHEN a.status = 'approved' AND EXISTS (
+                         SELECT 1 FROM evaluations ev
+                         WHERE ev.application_id = a.id AND ev.evaluator_id = asn.evaluator_id
+                           AND ev.evaluation_type = 'initial' AND ev.decision = 'approved')
+                    THEN 'approved'
+                  WHEN a.status = 'disapproved' AND EXISTS (
+                         SELECT 1 FROM evaluations ev
+                         WHERE ev.application_id = a.id AND ev.evaluator_id = asn.evaluator_id
+                           AND ev.evaluation_type = 'initial' AND ev.decision = 'disapproved')
+                    THEN 'disapproved'
+                  WHEN NOT (a.current_evaluator_id <=> asn.evaluator_id)
+                    THEN 'reassigned'
+                  WHEN a.status IN ('approved','disapproved')
+                    THEN 'by_admin'
+                  WHEN a.handling_party = 'admin'
+                    THEN 'with_admin'
+                  ELSE 'queue'
+                END AS bucket
+             FROM assignments asn
+             JOIN applications a ON a.id = asn.application_id
+             {$f['join']}
+             WHERE asn.assigned_at BETWEEN ? AND ? {$f['where']}
+         ) x
+         GROUP BY x.evaluator_id",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
     );
     $stmt->execute();
     $res = $stmt->get_result();
-
-    $rows    = [];
-    $maxH    = 1;
-    $wlNames = [];
-    $wlData  = [];
-    $idx     = 0;
-
     while ($r = $res->fetch_assoc()) {
-        $h = (int) $r['handled'];
-        if ($h > $maxH) $maxH = $h;
-
-        $initials = implode('', array_map(
-            fn($p) => strtoupper($p[0] ?? ''),
-            array_filter(explode(' ', $r['full_name']))
-        ));
-        $initials = substr($initials, 0, 2);
-
-        $color  = $wlColors[$idx % count($wlColors)];
-        $rows[] = [
-            'name'     => $r['full_name'],
-            'email'    => $r['email'],
-            'initials' => $initials,
-            'handled'  => $h,
-            'pct'      => 0,
-            'color'    => $color,
-        ];
-        $nameParts = explode(' ', $r['full_name']);
-        $wlNames[] = ($nameParts[0] ?? '') . ' ' . (isset($nameParts[1][0]) ? $nameParts[1][0] . '.' : '');
-        $wlData[]  = $h;
-        $idx++;
+        $buckets[(int) $r['evaluator_id']] = $r;
     }
     $stmt->close();
 
-    foreach ($rows as &$row) {
-        $row['pct'] = $maxH > 0 ? round($row['handled'] / $maxH * 100) : 0;
+    /* C. Avg. time from first assignment to the evaluator's own decision (seconds precision) */
+    $turnaround = [];
+    $stmt = prepareBound(
+        $db,
+        "SELECT t.evaluator_id, AVG(t.secs) AS avg_secs
+         FROM (
+             SELECT ev.evaluator_id,
+                    TIMESTAMPDIFF(SECOND,
+                        (SELECT MIN(asn.assigned_at) FROM assignments asn
+                          WHERE asn.application_id = ev.application_id
+                            AND asn.evaluator_id   = ev.evaluator_id),
+                        ev.evaluated_at) AS secs
+             FROM evaluations ev
+             JOIN applications a ON a.id = ev.application_id
+             {$f['join']}
+             WHERE ev.evaluator_id IS NOT NULL
+               AND ev.evaluation_type = 'initial'
+               AND ev.decision IN ('approved','disapproved')
+               AND ev.evaluated_at BETWEEN ? AND ? {$f['where']}
+         ) t
+         WHERE t.secs IS NOT NULL AND t.secs >= 0
+         GROUP BY t.evaluator_id",
+        'ss' . $f['types'],
+        array_merge([$start, $end], $f['params'])
+    );
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) {
+        $turnaround[(int) $r['evaluator_id']] = round(((float) $r['avg_secs']) / 3600, 4);
+    }
+    $stmt->close();
+
+    /* Assemble */
+    $list = [];
+    foreach ($evaluators as $eid => $r) {
+        $b          = $buckets[$eid] ?? [];
+        $approved   = (int) ($b['approved'] ?? 0);
+        $disap      = (int) ($b['disapproved'] ?? 0);
+        $queue      = (int) ($b['queue'] ?? 0);
+        $withAdmin  = (int) ($b['with_admin'] ?? 0);
+        $byAdmin    = (int) ($b['by_admin'] ?? 0);
+        $reassigned = (int) ($b['reassigned'] ?? 0);
+        $handled    = $approved + $disap + $queue + $withAdmin + $byAdmin + $reassigned;
+        $decided    = $approved + $disap;
+
+        $initials = substr(implode('', array_map(
+            fn($p) => strtoupper($p[0] ?? ''),
+            array_filter(explode(' ', $r['full_name']))
+        )), 0, 2);
+
+        $list[] = [
+            'name'          => $r['full_name'],
+            'email'         => $r['email'],
+            'initials'      => $initials,
+            'active'        => (int) $r['is_active'] === 1,
+            'handled'       => $handled,
+            'approved'      => $approved,
+            'disapproved'   => $disap,
+            'queue'         => $queue,
+            'with_admin'    => $withAdmin,
+            'by_admin'      => $byAdmin,
+            'reassigned'    => $reassigned,
+            'completion'    => $handled > 0 ? (int) round($decided / $handled * 100) : 0,
+            'approval_rate' => $decided > 0 ? (int) round($approved / $decided * 100) : null,
+            'avg_hours'     => $turnaround[$eid] ?? null,
+        ];
     }
 
+    usort($list, fn($a, $b) => [$b['handled'], $a['name']] <=> [$a['handled'], $b['name']]);
+
+    $wlNames = [];
+    $wlData  = [];
+    $wlCols  = [];
+    foreach ($list as $i => &$row) {
+        $row['color'] = $wlColors[$i % count($wlColors)];
+        $wlCols[]     = $row['color'];
+        $parts        = explode(' ', $row['name']);
+        $wlNames[]    = ($parts[0] ?? '') . ' ' . (isset($parts[1][0]) ? $parts[1][0] . '.' : '');
+        $wlData[]     = $row['handled'];
+    }
+    unset($row);
+
     return [
-        'staff'           => $rows,
+        'staff'           => $list,
         'workload_names'  => $wlNames,
         'workload_data'   => $wlData,
-        'workload_colors' => array_slice($wlColors, 0, count($wlNames)),
+        'workload_colors' => $wlCols,
     ];
 }
 

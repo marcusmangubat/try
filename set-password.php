@@ -102,7 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $database->commit();
 
             $success = "Your password has been set successfully!<br>
-                        You can now <a href='login.php' class='text-blue-600 underline hover:text-blue-800'>log in</a>.";
+                        You can now <a href='login.php' class='text-navy-700 underline hover:text-navy-900'>log in</a>.";
         } catch (Exception $e) {
             $database->rollback();
             $error = "An error occurred while creating your account. Please try again or contact support.";
@@ -121,23 +121,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Set Your Password – DMW RO IV-A</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Same palette as index.php / login.php
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        navy: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        blue: {
+                            50: '#F2F5FA',
+                            100: '#E3EAF5',
+                            200: '#C5D2E8',
+                            300: '#9DB1D3',
+                            400: '#6C88B8',
+                            500: '#44639A',
+                            600: '#2A4577',
+                            700: '#1B3563',
+                            800: '#122A55',
+                            900: '#0A1F44',
+                            950: '#061330'
+                        },
+                        gray: {
+                            50: '#F5F7FA',
+                            100: '#EAEEF4',
+                            200: '#D8DFEA',
+                            300: '#BCC6D6',
+                            400: '#8E9BB1',
+                            500: '#64718A',
+                            600: '#4A5670',
+                            700: '#36415A',
+                            800: '#222C44',
+                            900: '#121B30'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="pictures/dmw_logo.png">
 
     <style>
         :root {
-            --navy: #0b1f4b;
-            --blue: #1d4ed8;
-            --blue-lt: #3b82f6;
+            --primary: #0A1F44;
+            --primary-dark: #00205f;
+            --primary-light: #e6efff;
+            --accent: #00a0df;
+            --text: #1f2937;
+            --navy: #0A1F44;
+            --navy-700: #1B3563;
+            --blue: #2A4577;
+            --blue-lt: #44639A;
         }
 
         body {
-            font-family: 'DM Sans', system-ui, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            color: var(--text);
         }
 
         .serif {
-            font-family: 'DM Serif Display', serif;
+            font-family: 'Playfair Display', serif;
         }
 
         .bg-image {
@@ -148,8 +204,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             min-height: 100vh;
         }
 
+        @media (max-width: 1024px),
+        (prefers-reduced-motion: reduce) {
+            .bg-image {
+                background-attachment: scroll;
+            }
+        }
+
         .overlay {
-            background: linear-gradient(135deg, rgba(11, 31, 75, 0.88), rgba(22, 45, 106, 0.82));
+            background: linear-gradient(rgba(10, 31, 68, 0.78), rgba(10, 31, 68, 0.9));
             position: fixed;
             top: 0;
             left: 0;
@@ -162,7 +225,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             background: rgba(255, 255, 255, 0.97);
             backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.7);
-            box-shadow: 0 25px 70px -15px rgb(11 31 75 / 0.45);
+            box-shadow: 0 25px 70px -15px rgb(10 31 68 / 0.45);
             position: relative;
             z-index: 20;
         }
@@ -173,17 +236,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .input-field:focus {
             border-color: var(--blue-lt);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+            box-shadow: 0 0 0 4px rgba(68, 99, 154, 0.18);
         }
 
         .btn-primary {
-            background: linear-gradient(90deg, var(--navy), var(--blue));
+            background: var(--navy);
             transition: all 0.3s ease;
         }
 
         .btn-primary:hover {
+            background: var(--navy-700);
             transform: translateY(-3px);
-            box-shadow: 0 20px 35px -10px rgb(11 31 75 / 0.5);
+            box-shadow: 0 20px 35px -10px rgb(10 31 68 / 0.5);
         }
     </style>
 </head>
@@ -200,20 +264,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <!-- Top Navy Bar with Logo (Left Side) -->
             <div class="bg-[var(--navy)] px-8 py-5 flex items-center gap-4">
-                <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                <img src="pictures/dmw_logo.png"
                     alt="DMW Logo"
                     class="h-10 w-auto">
                 <div>
                     <h1 class="serif text-white text-xl font-semibold tracking-tight">Department of Migrant Workers Regional Office IV-A CALABARZON</h1>
-                    <p class="text-blue-200 text-xs tracking-widest font-medium"></p>
+                    <p class="text-navy-200 text-xs tracking-widest font-medium"></p>
                 </div>
             </div>
 
             <!-- Form Content -->
             <div class="p-8 sm:p-10">
 
-                <h2 class="serif text-2xl font-semibold text-[var(--navy)] mb-1">Set Your Password</h2>
-                <p class="text-slate-600 mb-6">
+                <h2 class="serif text-2xl font-bold text-[var(--navy)] mb-1">Set Your Password</h2>
+                <p class="text-gray-600 mb-6">
                     Welcome, <strong><?= htmlspecialchars($invitation['full_name'] ?: $invitation['email']) ?></strong>!
                 </p>
 
@@ -233,48 +297,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <form method="POST" class="space-y-6">
 
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">NEW PASSWORD <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">NEW PASSWORD <span class="text-red-500">*</span></label>
                             <input type="password" name="password" id="password" required minlength="8"
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-4 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-4 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none"
                                 placeholder="••••••••">
 
                             <!-- Password Strength Checklist -->
                             <div id="password-requirements" class="mt-4 text-xs space-y-2">
-                                <div id="req-length" class="flex items-center gap-2 text-slate-500">
+                                <div id="req-length" class="flex items-center gap-2 text-gray-500">
                                     <span class="w-4">•</span> At least 8 characters
                                 </div>
-                                <div id="req-upper" class="flex items-center gap-2 text-slate-500">
+                                <div id="req-upper" class="flex items-center gap-2 text-gray-500">
                                     <span class="w-4">•</span> At least one uppercase letter
                                 </div>
-                                <div id="req-lower" class="flex items-center gap-2 text-slate-500">
+                                <div id="req-lower" class="flex items-center gap-2 text-gray-500">
                                     <span class="w-4">•</span> At least one lowercase letter
                                 </div>
-                                <div id="req-number" class="flex items-center gap-2 text-slate-500">
+                                <div id="req-number" class="flex items-center gap-2 text-gray-500">
                                     <span class="w-4">•</span> At least one number
                                 </div>
-                                <div id="req-special" class="flex items-center gap-2 text-slate-500">
+                                <div id="req-special" class="flex items-center gap-2 text-gray-500">
                                     <span class="w-4">•</span> At least one special character
                                 </div>
                             </div>
                         </div>
 
                         <div>
-                            <label class="block text-xs font-semibold tracking-widest text-slate-500 mb-2">CONFIRM PASSWORD <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">CONFIRM PASSWORD <span class="text-red-500">*</span></label>
                             <input type="password" name="confirm_password" id="confirm_password" required
-                                class="input-field w-full bg-white border border-slate-300 rounded-2xl py-4 px-5 text-[var(--navy)] placeholder:text-slate-400 focus:outline-none"
+                                class="input-field w-full bg-white border border-gray-300 rounded-2xl py-4 px-5 text-[var(--navy)] placeholder:text-gray-400 focus:outline-none"
                                 placeholder="••••••••">
                             <div id="password-match" class="mt-2 text-sm font-medium min-h-[1.25rem]"></div>
                         </div>
 
                         <button type="submit"
-                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-base tracking-wider">
+                            class="btn-primary w-full py-4 rounded-2xl text-white font-semibold text-base tracking-wider shadow-lg shadow-blue-900/30">
                             SET PASSWORD & ACTIVATE ACCOUNT
                         </button>
                     </form>
                 <?php endif; ?>
 
-                <div class="text-center mt-8 text-sm text-slate-600">
-                    <a href="login.php" class="font-semibold text-[var(--blue-lt)] hover:text-[var(--blue)]">Back to Login</a>
+                <div class="text-center mt-8 text-sm text-gray-600">
+                    <a href="login.php" class="font-semibold text-[var(--blue-lt)] hover:text-[var(--navy)]">Back to Login</a>
                 </div>
 
             </div>
@@ -311,11 +375,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 const hasNumber = /[0-9]/.test(value);
                 const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(value);
 
-                reqElements.length.className = hasLength ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-slate-500';
-                reqElements.upper.className = hasUpper ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-slate-500';
-                reqElements.lower.className = hasLower ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-slate-500';
-                reqElements.number.className = hasNumber ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-slate-500';
-                reqElements.special.className = hasSpecial ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-slate-500';
+                reqElements.length.className = hasLength ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-gray-500';
+                reqElements.upper.className = hasUpper ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-gray-500';
+                reqElements.lower.className = hasLower ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-gray-500';
+                reqElements.number.className = hasNumber ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-gray-500';
+                reqElements.special.className = hasSpecial ? 'flex items-center gap-2 text-green-600' : 'flex items-center gap-2 text-gray-500';
 
                 requirementsBox.classList.remove('hidden');
             }

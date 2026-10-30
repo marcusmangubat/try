@@ -13,9 +13,33 @@ if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evalu
 
 $evaluator_email = $_SESSION['user_email'];
 
-/* ══════════════════════════════════════════════════════════════════════════════
-   AJAX HANDLERS
-══════════════════════════════════════════════════════════════════════════════ */
+/* LOAD EVALUATOR PROFILE (moved above AJAX handlers — deactivate_account needs eid/name) */
+
+$evaluator_name  = 'Evaluator';
+$evaluator_id    = null;
+$evaluator_phone = '';
+$evaluator_since = null;
+
+$stmt_ev = $database->prepare("
+    SELECT eid, full_name, phone, created_at
+    FROM evaluators
+    WHERE email = ?
+    LIMIT 1
+");
+$stmt_ev->bind_param("s", $evaluator_email);
+$stmt_ev->execute();
+$ev_result = $stmt_ev->get_result();
+
+if ($ev_result->num_rows === 1) {
+    $row             = $ev_result->fetch_assoc();
+    $evaluator_id    = (int)$row['eid'];
+    $evaluator_name  = $row['full_name'] ?? 'Evaluator';
+    $evaluator_phone = $row['phone'] ?? '';
+    $evaluator_since = $row['created_at'] ?? null;
+}
+$stmt_ev->close();
+
+/* AJAX HANDLER */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header('Content-Type: application/json');
@@ -30,8 +54,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             echo json_encode(['ok' => false, 'error' => 'Full name is required.']);
             exit;
         }
-        if ($phone !== '' && !preg_match('/^[0-9+\-\s()]{7,20}$/', $phone)) {
-            echo json_encode(['ok' => false, 'error' => 'Please enter a valid phone number.']);
+        if (!preg_match('/^09\d{9}$/', $phone)) {
+            echo json_encode(['ok' => false, 'error' => 'Please enter a valid 11-digit phone number starting with 09.']);
             exit;
         }
 
@@ -109,41 +133,124 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         exit;
     }
 
+    // ── Deactivate own account (self-service) ──
+    if ($action === 'deactivate_account') {
+        $reason_preset = trim($_POST['reason_preset'] ?? '');
+        $reason_other  = trim($_POST['reason_other'] ?? '');
+        $password      = $_POST['password'] ?? '';
+
+        $self_deactivation_reasons = [
+            'Taking a break / temporary leave',
+            'No longer serving as evaluator',
+            'Privacy or security concern',
+            'Other',
+        ];
+
+        if (!in_array($reason_preset, $self_deactivation_reasons, true)) {
+            echo json_encode(['ok' => false, 'error' => 'Please select a valid reason.']);
+            exit;
+        }
+        if ($reason_preset === 'Other' && mb_strlen($reason_other) < 5) {
+            echo json_encode(['ok' => false, 'error' => 'Please specify a reason (at least 5 characters).']);
+            exit;
+        }
+        if ($password === '') {
+            echo json_encode(['ok' => false, 'error' => 'Please enter your password to confirm.']);
+            exit;
+        }
+
+        $stmt = $database->prepare("SELECT password FROM webuser WHERE email = ? AND usertype = 'evaluator' LIMIT 1");
+        $stmt->bind_param("s", $evaluator_email);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (!$row || !password_verify($password, $row['password'])) {
+            echo json_encode(['ok' => false, 'error' => 'Incorrect password.']);
+            exit;
+        }
+
+        // Block if there are active assignments/applications (mirrors admin's evaluator check)
+        if ($evaluator_id) {
+            $stmt = $database->prepare("SELECT COUNT(*) AS c FROM assignments WHERE evaluator_id = ? AND status = 'active'");
+            $stmt->bind_param("i", $evaluator_id);
+            $stmt->execute();
+            $active_assign = (int)($stmt->get_result()->fetch_assoc()['c'] ?? 0);
+            $stmt->close();
+
+            $stmt = $database->prepare("SELECT COUNT(*) AS c FROM applications WHERE current_evaluator_id = ? AND handling_party = 'evaluator'");
+            $stmt->bind_param("i", $evaluator_id);
+            $stmt->execute();
+            $active_apps = (int)($stmt->get_result()->fetch_assoc()['c'] ?? 0);
+            $stmt->close();
+
+            if ($active_assign > 0 || $active_apps > 0) {
+                echo json_encode(['ok' => false, 'error' => 'You have active assignments or applications. Please complete them or ask an administrator to reassign them before deactivating your account.']);
+                exit;
+            }
+        }
+
+        $final_reason = $reason_preset === 'Other' ? $reason_other : $reason_preset;
+
+        $database->begin_transaction();
+        try {
+            $stmt = $database->prepare("UPDATE webuser 
+                SET is_active = 0, deactivated_at = NOW(), deactivated_by = NULL, deactivation_reason = ?, remember_token = NULL, remember_expires = NULL 
+                WHERE email = ?");
+            $stmt->bind_param("ss", $final_reason, $evaluator_email);
+            $stmt->execute();
+            $stmt->close();
+
+            $stmt = $database->prepare("INSERT INTO account_status_history 
+                (email, usertype, action, reason, performed_by, previous_status, new_status) 
+                VALUES (?, 'evaluator', 'Account Deactivated', ?, ?, 'active', 'deactivated')");
+            $stmt->bind_param("sss", $evaluator_email, $final_reason, $evaluator_email);
+            $stmt->execute();
+            $stmt->close();
+
+            // Notify all admins
+            $admin_stmt = $database->prepare("SELECT email FROM admins");
+            $admin_stmt->execute();
+            $admins = $admin_stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $admin_stmt->close();
+
+            $notif_title = "Evaluator Self-Deactivated";
+            $notif_msg   = htmlspecialchars($evaluator_name) . " (" . $evaluator_email . ") deactivated their own account. Reason: " . $final_reason;
+            foreach ($admins as $adm) {
+                $nstmt = $database->prepare("INSERT INTO notifications (user_email, usertype, title, message, type) VALUES (?, 'admin', ?, ?, 'account_status')");
+                $nstmt->bind_param("sss", $adm['email'], $notif_title, $notif_msg);
+                $nstmt->execute();
+                $nstmt->close();
+            }
+
+            $database->commit();
+        } catch (\Throwable $e) {
+            $database->rollback();
+            echo json_encode(['ok' => false, 'error' => 'Failed to deactivate account. Please try again.']);
+            exit;
+        }
+
+        echo json_encode(['ok' => true, 'message' => 'Your account has been deactivated. You will be logged out.']);
+        exit;
+    }
     echo json_encode(['ok' => false, 'error' => 'Unknown action.']);
     exit;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════════
-   LOAD EVALUATOR PROFILE
-══════════════════════════════════════════════════════════════════════════════ */
-
-$evaluator_name  = 'Evaluator';
-$evaluator_id    = null;
-$evaluator_phone = '';
-$evaluator_since = null;
-
-$stmt_ev = $database->prepare("
-    SELECT eid, full_name, phone, created_at
-    FROM evaluators
-    WHERE email = ?
-    LIMIT 1
-");
-$stmt_ev->bind_param("s", $evaluator_email);
-$stmt_ev->execute();
-$ev_result = $stmt_ev->get_result();
-
-if ($ev_result->num_rows === 1) {
-    $row             = $ev_result->fetch_assoc();
-    $evaluator_id    = (int)$row['eid'];
-    $evaluator_name  = $row['full_name'] ?? 'Evaluator';
-    $evaluator_phone = $row['phone'] ?? '';
-    $evaluator_since = $row['created_at'] ?? null;
+$my_assigned_count = 0;
+if ($evaluator_id) {
+    $stmt_cnt = $database->prepare("
+        SELECT COUNT(*) as cnt 
+        FROM applications 
+        WHERE current_evaluator_id = ? 
+          AND handling_party = 'evaluator'
+    ");
+    $stmt_cnt->bind_param("i", $evaluator_id);
+    $stmt_cnt->execute();
+    $my_assigned_count = (int)$stmt_cnt->get_result()->fetch_assoc()['cnt'];
+    $stmt_cnt->close();
 }
-$stmt_ev->close();
-
-/* ══════════════════════════════════════════════════════════════════════════════
-   PERFORMANCE STATS
-══════════════════════════════════════════════════════════════════════════════ */
+/* PERFORMANCE STATS */
 
 $perf = [
     'evaluated_total' => 0,
@@ -197,7 +304,7 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Profile &amp; Settings – DMW Regional Office IV-A</title>
-    <link rel="icon" type="image/png" href="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png">
+    <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -205,8 +312,9 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-
     <link rel="stylesheet" href="../css/dashboard.css">
+    <link rel="stylesheet" href="../css/darkmode.css">
+    <?php include '../includes/theme-init.php'; ?>
 
     <style>
         .topbar-brand img {
@@ -314,7 +422,51 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             gap: 6px;
         }
 
-        /* ── Card wrapper for forms (mirrors index.php's .card) ── */
+        /* Custom animated dropdown for the deactivate-account modal */
+        .dmw-select-wrap {
+            position: relative;
+            margin: 0 0 12px;
+        }
+
+        .dmw-select {
+            width: 100%;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            padding: 10px 36px 10px 12px;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 8px;
+            font-family: 'DM Sans', sans-serif;
+            font-size: 13px;
+            color: #1e293b;
+            background: #fff;
+            cursor: pointer;
+            transition: border-color .18s, box-shadow .18s;
+        }
+
+        .dmw-select:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, .15);
+        }
+
+        .dmw-select-arrow {
+            position: absolute;
+            top: 50%;
+            right: 12px;
+            transform: translateY(-50%);
+            font-size: 11px;
+            color: #94a3b8;
+            pointer-events: none;
+            transition: transform .2s ease, color .18s ease;
+        }
+
+        .dmw-select-wrap:focus-within .dmw-select-arrow {
+            transform: translateY(-50%) rotate(180deg);
+            color: #3b82f6;
+        }
+
+        /*  Card wrapper for forms (mirrors index.php's .card)  */
         .card {
             background: var(--card);
             border: 1.5px solid var(--border);
@@ -383,7 +535,7 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             font-family: 'DM Sans', sans-serif;
             font-size: 13px;
             color: var(--text1);
-            background: #fff;
+            background: var(--card);
             transition: border-color .18s;
             box-sizing: border-box;
         }
@@ -500,17 +652,82 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                 align-items: start;
             }
         }
+
+        /* Password requirements checklist (mirrors create-account.php) */
+        .password-requirements {
+            margin-top: 8px;
+            font-size: 11px;
+            line-height: 1.8;
+        }
+
+        .password-requirements.hidden {
+            display: none;
+        }
+
+        .req-item {
+            color: var(--text3);
+            transition: color .15s;
+        }
+
+        .req-item.valid {
+            color: #059669;
+        }
+
+        .password-match-msg {
+            font-size: 11.5px;
+            font-weight: 700;
+            margin-top: 6px;
+            min-height: 15px;
+        }
+
+        .password-match-msg.match {
+            color: #059669;
+        }
+
+        .password-match-msg.no-match {
+            color: #b91c1c;
+        }
+
+        [data-theme="dark"] .req-item.valid {
+            color: #34d399;
+        }
+
+        [data-theme="dark"] .password-match-msg.match {
+            color: #34d399;
+        }
+
+        [data-theme="dark"] .password-match-msg.no-match {
+            color: #f87171;
+        }
+
+        [data-theme="dark"] .form-err {
+            color: #f87171;
+        }
+
+        [data-theme="dark"] .card[style*="border-color:#fecaca"] {
+            border-color: rgba(220, 38, 38, .35) !important;
+        }
+
+        [data-theme="dark"] #deactivate-account-btn {
+            background: rgba(220, 38, 38, .15) !important;
+            border-color: rgba(220, 38, 38, .35) !important;
+            color: #f87171 !important;
+        }
     </style>
+    <script>
+        (function() {
+            const t = localStorage.getItem('dmw_theme') || 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
 </head>
 
 <body>
 
-    <!-- ══════════════════════════════════════════
-         TOPBAR
-    ══════════════════════════════════════════ -->
+    <!--  TOPBAR -->
     <header class="topbar">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW">
+            <img src="../pictures/dmw_logo.png" alt="DMW">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -519,17 +736,22 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
+
+            <!-- Dark mode toggle -->
+            <button type="button" class="theme-toggle" title="Toggle dark mode">
+                <i class="fas fa-moon"></i>
+                <i class="fas fa-sun"></i>
+            </button>
+
             <div class="tb-btn">
                 <i class="fas fa-bell"></i>
                 <span class="notif-dot"></span>
             </div>
-            <div class="topbar-avatar" id="tb-avatar"><?= htmlspecialchars($initials) ?></div>
+            <?php include __DIR__ . '/avatar-menu.php'; ?>
         </div>
     </header>
 
-    <!-- ══════════════════════════════════════════
-         SUBBAR
-    ══════════════════════════════════════════ -->
+    <!-- SUBBAR -->
     <div class="subbar">
         <div class="subbar-top">
             <div class="subbar-greeting">
@@ -607,7 +829,10 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                             <div class="form-group">
                                 <label class="form-label" for="phone">Phone Number</label>
                                 <input type="text" id="phone" name="phone" class="form-input"
-                                    value="<?= htmlspecialchars($evaluator_phone) ?>" placeholder="e.g. 09171234567">
+                                    value="<?= htmlspecialchars($evaluator_phone) ?>" placeholder="e.g. 09171234567"
+                                    maxlength="11" inputmode="numeric" pattern="\d{11}"
+                                    oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11)"
+                                    required>
                             </div>
                             <div class="form-group">
                                 <label class="form-label" for="email_ro">Email Address</label>
@@ -648,11 +873,18 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                         <div class="form-group">
                             <label class="form-label" for="new_password">New Password</label>
                             <input type="password" id="new_password" name="new_password" class="form-input" required autocomplete="new-password">
-                            <div class="form-hint">At least 8 characters.</div>
+                            <div id="password-requirements" class="password-requirements hidden">
+                                <div id="req-length" class="req-item">• At least 8 characters</div>
+                                <div id="req-upper" class="req-item">• At least one uppercase letter</div>
+                                <div id="req-lower" class="req-item">• At least one lowercase letter</div>
+                                <div id="req-number" class="req-item">• At least one number</div>
+                                <div id="req-special" class="req-item">• At least one special character</div>
+                            </div>
                         </div>
                         <div class="form-group">
                             <label class="form-label" for="confirm_password">Confirm New Password</label>
                             <input type="password" id="confirm_password" name="confirm_password" class="form-input" required autocomplete="new-password">
+                            <div id="password-match" class="password-match-msg"></div>
                         </div>
 
                         <div id="password-err" class="form-err"></div>
@@ -664,14 +896,32 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                         </div>
                     </form>
                 </div>
+                <!-- Danger zone -->
+                <p class="sec-label fade-in d5">Danger Zone</p>
+                <div class="card fade-in d5" style="border-color:#fecaca;">
+                    <div class="card-head">
+                        <span class="card-title">
+                            <span class="ctdot" style="background:#dc2626"></span>
+                            Deactivate Account
+                        </span>
+                    </div>
+                    <p style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:14px;">
+                        Deactivating your account will immediately log you out and prevent you from logging back in.
+                        You'll need to submit a reactivation request (or ask an admin) to regain access later.
+                    </p>
+                    <div class="form-actions">
+                        <button type="button" class="btn" id="deactivate-account-btn"
+                            style="background:#fef2f2;border-color:#fecaca;color:#dc2626;">
+                            <i class="fas fa-user-slash"></i> Deactivate My Account
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
 
     </div><!-- /main -->
 
-    <!-- ══════════════════════════════════════════
-         FLOATING DOCK  (exact index.php structure)
-    ══════════════════════════════════════════ -->
+    <!-- FLOATING DOCK  (exact index.php structure -->
     <div class="dock-wrap">
         <nav class="dock">
 
@@ -683,13 +933,15 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             <a href="applications.php" class="dk">
                 <i class="fas fa-list"></i>
                 <span class="dk-lbl">Tasks</span>
+                <?php if ($my_assigned_count > 0): ?>
+                    <span class="dk-badge"><?= $my_assigned_count > 99 ? '99+' : $my_assigned_count ?></span>
+                <?php endif; ?>
             </a>
-
             <div class="dk-div"></div>
 
-            <a href="profile.php" class="dk active">
-                <i class="fas fa-user-gear"></i>
-                <span class="dk-lbl">Profile</span>
+            <a href="evaluator-reports.php" class="dk" data-tip="Applicant Reports">
+                <i class="fas fa-file-contract"></i>
+                <span class="dk-lbl">Applicants</span>
             </a>
 
             <a href="reports.php" class="dk">
@@ -698,6 +950,11 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             </a>
 
             <div class="dk-div"></div>
+
+            <a href="settings.php" class="dk active">
+                <i class="fas fa-gear"></i>
+                <span class="dk-lbl">Settings</span>
+            </a>
 
             <div class="dk" onclick="logout('Evaluator')">
                 <i class="fas fa-arrow-right-from-bracket" style="color:#f87171"></i>
@@ -708,13 +965,32 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
     </div>
 
     <script>
-        document.getElementById('live-date').textContent =
-            new Date().toLocaleDateString('en-PH', {
+        /*  Live date + time  */
+        function updateLiveDateTime() {
+            const el = document.getElementById('live-date');
+            if (!el) return;
+
+            const now = new Date();
+
+            const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
+
+            const timePart = now.toLocaleTimeString('en-PH', {
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            }).toLowerCase();
+
+            el.textContent = `${datePart} | ${timePart}`;
+        }
+
+        updateLiveDateTime();
+        setInterval(updateLiveDateTime, 1000); // refresh every second
 
         function showErr(id, msg) {
             const el = document.getElementById(id);
@@ -728,7 +1004,7 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             }
         }
 
-        /* ── Update profile ── */
+        /*  Update profile  */
         document.getElementById('profile-form').addEventListener('submit', function(ev) {
             ev.preventDefault();
             showErr('profile-err', '');
@@ -738,7 +1014,7 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             const fd = new FormData(this);
             fd.append('action', 'update_profile');
 
-            fetch('profile.php', {
+            fetch('settings.php', {
                     method: 'POST',
                     body: fd
                 })
@@ -751,7 +1027,10 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                     }
                     document.getElementById('profile-name-display').textContent = data.full_name;
                     document.getElementById('profile-avatar').textContent = data.initials;
-                    document.getElementById('tb-avatar').textContent = data.initials;
+                    const tbAvatar = document.getElementById('avatarMenuBtn');
+                    if (tbAvatar) tbAvatar.textContent = data.initials;
+                    const menuName = document.getElementById('avatarMenuName');
+                    if (menuName) menuName.textContent = data.full_name;
                     Swal.fire({
                         icon: 'success',
                         title: 'Profile updated',
@@ -767,7 +1046,7 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                 });
         });
 
-        /* ── Change password ── */
+        /* Change password  */
         document.getElementById('password-form').addEventListener('submit', function(ev) {
             ev.preventDefault();
             showErr('password-err', '');
@@ -785,7 +1064,7 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
             const fd = new FormData(this);
             fd.append('action', 'change_password');
 
-            fetch('profile.php', {
+            fetch('settings.php', {
                     method: 'POST',
                     body: fd
                 })
@@ -811,8 +1090,188 @@ $member_since_label = $evaluator_since ? date('F Y', strtotime($evaluator_since)
                     showErr('password-err', 'Network error. Please try again.');
                 });
         });
+
+        /*  Self-service deactivation  */
+        document.getElementById('deactivate-account-btn').addEventListener('click', function() {
+            const reasons = [
+                'Taking a break / temporary leave',
+                'No longer serving as evaluator',
+                'Privacy or security concern',
+                'Other'
+            ];
+            const optionsHtml = reasons.map(r => `<option value="${r}">${r}</option>`).join('');
+
+            Swal.fire({
+                title: 'Deactivate Your Account',
+                html: `
+            <div style="text-align:left;font-size:13px;">
+                <label style="display:block;font-weight:700;font-size:11.5px;margin-bottom:6px;color:#475569;">Reason</label>
+                <div class="dmw-select-wrap">
+                    <select id="swal-reason" class="dmw-select">
+                        <option value="">— Select a reason —</option>
+                        ${optionsHtml}
+                    </select>
+                    <i class="fas fa-chevron-down dmw-select-arrow"></i>
+                </div>
+                <div id="swal-other-wrap" style="display:none;">
+                    <label style="display:block;font-weight:700;font-size:11.5px;margin-bottom:6px;color:#475569;">Please specify</label>
+                    <input id="swal-other" class="swal2-input" style="margin:0 0 12px;width:100%;" placeholder="Enter specific reason...">
+                </div>
+                <label style="display:block;font-weight:700;font-size:11.5px;margin-bottom:6px;color:#475569;">Confirm Password</label>
+                <input id="swal-password" type="password" class="swal2-input" style="margin:0;width:100%;" placeholder="Enter your password">
+            </div>
+        `,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Deactivate Account',
+                confirmButtonColor: '#dc2626',
+                cancelButtonText: 'Cancel',
+                focusConfirm: false,
+                didOpen: () => {
+                    const select = document.getElementById('swal-reason');
+                    select.addEventListener('change', function() {
+                        document.getElementById('swal-other-wrap').style.display = this.value === 'Other' ? 'block' : 'none';
+                    });
+                },
+                preConfirm: () => {
+                    const reason = document.getElementById('swal-reason').value;
+                    const other = document.getElementById('swal-other').value.trim();
+                    const password = document.getElementById('swal-password').value;
+
+                    if (!reason) {
+                        Swal.showValidationMessage('Please select a reason.');
+                        return false;
+                    }
+                    if (reason === 'Other' && other.length < 5) {
+                        Swal.showValidationMessage('Please specify a reason (at least 5 characters).');
+                        return false;
+                    }
+                    if (!password) {
+                        Swal.showValidationMessage('Please enter your password to confirm.');
+                        return false;
+                    }
+                    return {
+                        reason,
+                        other,
+                        password
+                    };
+                }
+            }).then((result) => {
+                if (!result.isConfirmed) return;
+
+                const fd = new FormData();
+                fd.append('action', 'deactivate_account');
+                fd.append('reason_preset', result.value.reason);
+                fd.append('reason_other', result.value.other);
+                fd.append('password', result.value.password);
+
+                Swal.fire({
+                    title: 'Deactivating...',
+                    allowOutsideClick: false,
+                    didOpen: () => Swal.showLoading()
+                });
+
+                fetch('settings.php', {
+                        method: 'POST',
+                        body: fd
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data.ok) {
+                            Swal.fire('Unable to deactivate', data.error || 'Something went wrong.', 'error');
+                            return;
+                        }
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Account Deactivated',
+                            text: data.message,
+                            confirmButtonColor: '#3b82f6'
+                        }).then(() => {
+                            window.location.href = '../login.php';
+                        });
+                    })
+                    .catch(() => {
+                        Swal.fire('Network error', 'Please try again.', 'error');
+                    });
+            });
+        });
+    </script>
+    <script>
+        /*  Password strength & match indicators (mirrors create-account.php)  */
+        (function() {
+            const pwdInput = document.getElementById('new_password');
+            const confirmInput = document.getElementById('confirm_password');
+            const requirementsBox = document.getElementById('password-requirements');
+            const matchMsg = document.getElementById('password-match');
+
+            if (!pwdInput || !confirmInput) return;
+
+            const reqElements = {
+                length: document.getElementById('req-length'),
+                upper: document.getElementById('req-upper'),
+                lower: document.getElementById('req-lower'),
+                number: document.getElementById('req-number'),
+                special: document.getElementById('req-special')
+            };
+
+            function updateRequirements(value) {
+                const checks = {
+                    length: value.length >= 8,
+                    upper: /[A-Z]/.test(value),
+                    lower: /[a-z]/.test(value),
+                    number: /[0-9]/.test(value),
+                    special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(value)
+                };
+                for (const [key, ok] of Object.entries(checks)) {
+                    reqElements[key].className = ok ? 'req-item valid' : 'req-item';
+                }
+                requirementsBox.classList.remove('hidden');
+            }
+
+            function checkMatch() {
+                if (!confirmInput.value) {
+                    matchMsg.textContent = '';
+                    matchMsg.className = 'password-match-msg';
+                    return;
+                }
+                if (pwdInput.value === confirmInput.value) {
+                    matchMsg.textContent = '✓ Passwords match';
+                    matchMsg.className = 'password-match-msg match';
+                } else {
+                    matchMsg.textContent = '✗ Passwords do not match';
+                    matchMsg.className = 'password-match-msg no-match';
+                }
+            }
+
+            pwdInput.addEventListener('focus', () => requirementsBox.classList.remove('hidden'));
+            confirmInput.addEventListener('focus', () => requirementsBox.classList.remove('hidden'));
+
+            [pwdInput, confirmInput].forEach(input => {
+                input.addEventListener('blur', () => {
+                    setTimeout(() => {
+                        if (document.activeElement !== pwdInput && document.activeElement !== confirmInput) {
+                            requirementsBox.classList.add('hidden');
+                        }
+                    }, 100);
+                });
+            });
+
+            pwdInput.addEventListener('input', () => {
+                updateRequirements(pwdInput.value);
+                checkMatch();
+            });
+            confirmInput.addEventListener('input', checkMatch);
+        })();
     </script>
     <script type="module" src="../js/main.js"></script>
+    <script>
+        window.DMW_USER_EMAIL = <?= json_encode($evaluator_email) ?>;
+        window.DMW_NOTIF_API = '../api/poll_notifications.php';
+        window.DMW_APP_VIEW_URL = 'view-application.php?id=';
+    </script>
+    <script src="../js/live-notifications.js"></script>
+    <script src="../js/theme.js"></script>
+    <script src="../js/avatar-menu.js"></script>
 
 </body>
 
