@@ -80,8 +80,8 @@ $initials = strtoupper(
         }
 
         #job-list {
-            max-height: 310px;
-            /* three job-item cards; extra rows scroll */
+            position: relative;
+            max-height: 420px;
             overflow-y: auto;
             padding-right: 4px;
         }
@@ -1444,6 +1444,30 @@ $initials = strtoupper(
             ['#dc2626', '#f87171'],
         ];
 
+        /* Limit the list to exactly 4 visible job cards; the rest scroll */
+        const JOB_LIST_VISIBLE = 4;
+
+        function fitJobList() {
+            const el = document.getElementById('job-list');
+            if (!el) return;
+            const items = el.querySelectorAll('.job-item');
+
+            if (items.length <= JOB_LIST_VISIBLE) {
+                el.style.maxHeight = 'none';
+                el.style.overflowY = 'visible';
+                return;
+            }
+            const last = items[JOB_LIST_VISIBLE - 1];
+            el.style.maxHeight = (last.offsetTop + last.offsetHeight) + 'px';
+            el.style.overflowY = 'auto';
+        }
+
+        let _jobFitTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(_jobFitTimer);
+            _jobFitTimer = setTimeout(fitJobList, 150);
+        });
+
         async function loadJobOrders() {
             const jobs = await api('job_orders', getFilters());
             const el = document.getElementById('job-list');
@@ -1480,6 +1504,7 @@ $initials = strtoupper(
             </div>
         </div>`;
             });
+            fitJobList();
         }
 
         /*  5. Destination doughnut  */
