@@ -858,7 +858,6 @@ if ($show_pref_modal) {
 }
 
 // Avatar initials from session name
-// Avatar initials from session name
 $full_name = $_SESSION['full_name'] ?? 'Client';
 $parts     = explode(' ', trim($full_name));
 $initials  = count($parts) >= 2

@@ -102,6 +102,33 @@ function dmw_cert_logo_src(): string
 }
 
 /**
+ * Right-side header logo (Bagong Pilipinas) as a base64 data URI.
+ * Returns '' when the file is missing so the header still renders.
+ */
+function dmw_cert_bagong_pilipinas_src(): string
+{
+    $path = __DIR__ . '/../pictures/Bagong_Pilipinas_logo.png';
+    if (is_file($path) && is_readable($path)) {
+        return 'data:image/png;base64,' . base64_encode(file_get_contents($path));
+    }
+    return '';
+}
+
+/**
+ * @font-face rule for the blackletter agency title.
+ * Returns '' when the font file is missing (a serif fallback is used).
+ */
+function dmw_cert_title_font_css(): string
+{
+    $path = realpath(__DIR__ . '/../fonts/OldEnglish.ttf');
+    if ($path === false || !is_readable($path)) {
+        return '';
+    }
+    $path = str_replace('\\', '/', $path);
+    return "@font-face { font-family: 'OldEnglish'; font-style: normal; font-weight: normal; src: url('{$path}') format('truetype'); }";
+}
+
+/**
  * Builds the full certificate HTML (used for PDF rendering only — this is
  * not meant to be emailed directly as the email body; the email body uses
  * the templates in includes/mailer.php and simply carries this as a PDF
@@ -110,6 +137,11 @@ function dmw_cert_logo_src(): string
 function dmw_certificate_html(array $data): string
 {
     $logoSrc = dmw_cert_logo_src();
+    $rightLogoSrc = dmw_cert_bagong_pilipinas_src();
+    $rightLogoImg = $rightLogoSrc !== '' ? "<img src='{$rightLogoSrc}' width='78'>" : '';
+    $titleFontCss = dmw_cert_title_font_css();
+    $titleFont    = $titleFontCss !== '' ? "'OldEnglish', 'DejaVu Serif', serif" : "'DejaVu Serif', serif";
+    $titleSize    = $titleFontCss !== '' ? '26px' : '16px';
     $data['applicant_name'] = dmw_clean_person_name($data['applicant_name'] ?? '');
     $dateIssued     = dmw_cert_now('F d, Y g:i a');
     $evaluatedBy    = $data['evaluator_name'] ?: ($data['admin_name'] ? $data['admin_name'] . ' (Admin)' : '—');
@@ -129,13 +161,19 @@ function dmw_certificate_html(array $data): string
 <head>
 <meta charset='utf-8'>
 <style>
-    @page { margin: 112px 34px 28px 34px; }
+    {$titleFontCss}
+    @page { margin: 132px 34px 28px 34px; }
     body { font-family: DejaVu Sans, sans-serif; font-size: 10.5px; color: #1f2937; }
-    .header-table { width: 100%; border-bottom: 3px solid #0b1f4b; padding-bottom: 8px; margin-bottom: 10px; }
+    .fixed-header { position: fixed; top: -112px; left: 0; right: 0; }
+    .header-table { width: 100%; border-collapse: collapse; }
     .header-table td { vertical-align: middle; }
-    .fixed-header { position: fixed; top: -92px; left: 0; right: 0; }
-    .agency-name { font-size: 15px; font-weight: bold; color: #0b1f4b; margin: 0; }
-    .agency-sub { font-size: 8.5px; color: #4b5563; margin: 2px 0 0; }
+    .hdr-logo-l { width: 92px; text-align: left; }
+    .hdr-logo-r { width: 92px; text-align: right; }
+    .hdr-center { text-align: center; padding: 0 6px; }
+    .hdr-republic { font-family: 'Times', serif; font-size: 12.5px; color: #000; margin: 0; }
+    .hdr-agency { font-family: {$titleFont}; font-size: {$titleSize}; font-weight: normal; color: #000; margin: 1px 0 3px; white-space: nowrap; }
+    .hdr-address { font-family: 'Times', serif; font-size: 9px; color: #111; line-height: 1.35; margin: 0; padding-bottom: 3px; border-bottom: 1px solid #000; }
+    .hdr-contact { font-size: 7px; color: #374151; margin: 3px 0 0; }
     .doc-title { text-align: center; margin: 14px 0 2px; font-size: 15px; font-weight: bold; color: #0b1f4b; text-transform: uppercase; }
     .doc-subtitle { text-align: center; font-size: 10px; color: #6b7280; margin-bottom: 14px; }
     .ref-table { width: 100%; margin-bottom: 10px; font-size: 10px; }
@@ -168,17 +206,20 @@ function dmw_certificate_html(array $data): string
 <div class='fixed-header'>
 <table class='header-table'>
     <tr>
-        <td style='width:52px;'>
-            <img src='{$logoSrc}' width='48'>
+        <td class='hdr-logo-l'>
+            <img src='{$logoSrc}' width='84'>
         </td>
-       <td>
-            <p style='font-size:8px;color:#6b7280;margin:0;'>Republic of the Philippines</p>
-            <p class='agency-name'>DEPARTMENT OF MIGRANT WORKERS</p>
-            <p class='agency-sub'>
+        <td class='hdr-center'>
+            <p class='hdr-republic'>Republic of the Philippines</p>
+            <p class='hdr-agency'>Department of Migrant Workers</p>
+            <p class='hdr-address'>
                 Regional Office IV-A (CALABARZON)<br>
-                Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027<br>
-                Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph
+                Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027
             </p>
+            <p class='hdr-contact'>Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph</p>
+        </td>
+        <td class='hdr-logo-r'>
+            {$rightLogoImg}
         </td>
     </tr>
 </table>
@@ -304,7 +345,7 @@ function dmw_render_certificate_pdf(array $data): Dompdf
 {
     $options = new Options();
     $options->set('isRemoteEnabled', true); // needed to fetch the logo + QR images
-
+    $options->set('chroot', realpath(__DIR__ . '/..'));
     $dompdf = new Dompdf($options);
     $dompdf->loadHtml(dmw_certificate_html($data));
     $dompdf->setPaper('A4', 'portrait');

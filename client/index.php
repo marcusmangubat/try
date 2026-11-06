@@ -203,15 +203,25 @@ if ($show_profile_modal) {
     }
 }
 
-// Avatar initials
-$client_initials = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $client_name), 0, 2)) ?: 'U';
+// Avatar initials from session name (first + last initial)
+$full_name = $_SESSION['full_name'] ?? 'Client';
+$parts     = preg_split('/\s+/', trim($full_name));
+$initials  = count($parts) >= 2
+    ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
+    : strtoupper(substr($full_name, 0, 2));
+
+// Profile picture (fetched earlier into $pic_row)
+$has_picture = !empty($pic_row['profile_picture'] ?? null);
+$picture_url = $has_picture ? '../' . $pic_row['profile_picture'] : null;
+
+// Aliases so the shared avatar-menu markup works on this page
+$client_name     = $full_name;
+$client_initials = $initials ?: 'U';
 
 // Greeting
 $hour     = (int)date('G');
 $greeting = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
-$first    = explode(' ', trim($client_name))[0] ?: $client_name;
-$has_picture = !empty($pic_row['profile_picture'] ?? null);
-$picture_url = $has_picture ? '../' . $pic_row['profile_picture'] : null;
+$first    = $parts[0] ?: $client_name;
 ?>
 <!DOCTYPE html>
 <html lang="en">
