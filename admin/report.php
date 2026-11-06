@@ -883,7 +883,7 @@ $qCountry  = trim($_GET['country'] ?? '');
         <div id="printReport">
 
             <div class="pr-page-header">
-                <img id="printLogo" src="../pictures/dmw_tahanan_ng_ofw.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
+                <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                 <div>
                     <div class="pr-republic">Republic of the Philippines</div>
                     <div class="pr-agency">DEPARTMENT OF MIGRANT WORKERS</div>

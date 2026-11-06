@@ -568,7 +568,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <!-- Logo + name -->
                 <div class="relative z-10">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="https://dmw.gov.ph/images/dmw_logo.png"
                         alt="DMW Logo" class="h-16 w-auto mb-6">
                     <h1 class="serif text-white text-3xl leading-tight mb-2">
                         Department of<br>Migrant Workers
@@ -619,7 +619,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <!-- Mobile top bar (hidden on desktop) -->
                 <div class="mobile-top-bar -mx-8 -mt-8 mb-6 px-6 py-4">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
+                    <img src="https://dmw.gov.ph/images/dmw_logo.png"
                         alt="DMW Logo" class="h-9 w-auto">
                     <div>
                         <h1 class="serif text-white text-base font-semibold leading-tight">Department of Migrant Workers</h1>

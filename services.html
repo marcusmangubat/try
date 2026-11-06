@@ -21,6 +21,7 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap"
         rel="stylesheet">
+    <link rel="icon" type="image/png" href="pictures/dmw_logo.png">
 
     <style>
         :root {
@@ -208,9 +209,9 @@
             <div class="flex items-center gap-x-3 sm:gap-x-6 min-w-0">
                 <!-- Logo + Text -->
                 <div class="flex items-center gap-x-3 sm:gap-x-4 min-w-0">
-                    <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png"
-                        alt="Department of Migrant Workers Logo" class="h-10 sm:h-12 w-auto object-contain shrink-0">
-                    <div class="hidden sm:block">
+                    <img src="pictures/dmw_logo.png" alt="Department of Migrant Workers Logo"
+                        class="h-10 sm:h-12 w-auto object-contain shrink-0">
+                    <div class="hidden sm:block notranslate" translate="no">
                         <div class="nav-brand-text text-lg font-bold leading-none text-[#0A1F44]">Department of</div>
                         <div class="nav-brand-text text-lg font-bold leading-none text-[#0A1F44]">Migrant Workers</div>
                         <div class="text-[9px] text-gray-500 tracking-widest mt-1">REPUBLIC OF THE PHILIPPINES</div>
@@ -362,12 +363,17 @@
 
     <!-- Simple Footer -->
     <footer class="site-footer bg-[var(--primary)] text-white py-8 text-center text-sm">
-        © 2026 Department of Migrant Workers. All Rights Reserved.<br>
+        © <span id="footer-year">2026</span> Department of Migrant Workers. All Rights Reserved.<br>
         Hotline: 1348 (local) | +63 2 8722-1144 (international)
     </footer>
 
     <!-- Theme toggle (shares the "dmw_theme" setting with index.php) -->
     <script>
+        (function () {
+            var el = document.getElementById('footer-year');
+            if (el) el.textContent = new Date().getFullYear();
+        })();
+
         (function () {
             const root = document.documentElement;
             const btn = document.getElementById('theme-toggle');
@@ -398,10 +404,7 @@
         (function () {
             const DICT = {
                 // Header
-                "Back to Home": "Bumalik sa Tahanan",
-                "Department of": "Kagawaran ng",
-                "Migrant Workers": "Manggagawang Migrante",
-                "Department of Migrant Workers Logo": "Logo ng Kagawaran ng Manggagawang Migrante",
+                "Back to Home": "Bumalik sa Pangunahing Pahina",
                 "REPUBLIC OF THE PHILIPPINES": "REPUBLIKA NG PILIPINAS",
                 "Language": "Wika",
 
@@ -445,7 +448,7 @@
                 "Go to Official DMW Portal": "Pumunta sa Opisyal na DMW Portal",
 
                 // Footer
-                "© 2026 Department of Migrant Workers. All Rights Reserved.": "© 2026 Kagawaran ng Manggagawang Migrante. Nakareserba ang Lahat ng Karapatan.",
+                "Department of Migrant Workers. All Rights Reserved.": "Department of Migrant Workers. Nakareserba ang Lahat ng Karapatan.",
                 "Hotline: 1348 (local) | +63 2 8722-1144 (international)": "Hotline: 1348 (lokal) | +63 2 8722-1144 (internasyonal)"
             };
 

@@ -606,8 +606,8 @@ ksort($countries);
                 <div class="flex items-center gap-x-2 sm:gap-x-4 shrink-0">
                     <a href="login.php" onclick="showPortalModal()"
                         class="bg-[#0A1F44] hover:bg-navy-700 text-white px-3 py-2 sm:px-8 sm:py-3 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-semibold transition-all active:scale-95 shadow-lg shadow-blue-900/30 whitespace-nowrap">
-                        <span class="hidden sm:inline">Applicant Portal</span>
-                        <span class="sm:hidden">Portal</span>
+                        <span class="hidden sm:inline">Login</span>
+                        <span class="sm:hidden">Login</span>
                     </a>
 
                     <!-- Mobile Menu Button -->
@@ -643,7 +643,7 @@ ksort($countries);
                 <a href="#services-section" class="font-medium">Services</a>
                 <a href="#contact" class="font-medium">Contact</a>
                 <a href="login.php"
-                    class="bg-[#0A1F44] text-white py-4 text-center rounded-2xl font-semibold">Applicant Portal</a>
+                    class="bg-[#0A1F44] text-white py-4 text-center rounded-2xl font-semibold">Login</a>
             </div>
         </div>
     </nav>
@@ -1255,20 +1255,20 @@ ksort($countries);
                 <div class="lg:col-span-2">
                     <div class="uppercase text-xs tracking-widest text-blue-300 mb-4 sm:mb-6">Quick Links</div>
                     <div class="space-y-3 sm:space-y-4 text-blue-100 text-sm sm:text-base">
-                        <a href="login.php" class="block hover:text-white">OFW Portal</a>
-                        <a href="#" class="block hover:text-white">OEC Application</a>
-                        <a href="#" class="block hover:text-white">OFW ID</a>
-                        <a href="#" class="block hover:text-white">Hotline: 1348</a>
+                        <a href="login.php" class="block hover:text-white">Login to Portal</a>
+                        <a id="footer-link-oec" href="https://onlineservices.dmw.gov.ph/OnlineServices/POEAOnline.aspx" target="_blank" rel="noopener noreferrer" title="OEC Application" class="block hover:text-white">OEC Application</a>
+                        <a id="footer-link-ofw-id" href="https://portal.dmw.gov.ph/" target="_blank" rel="noopener noreferrer" title="OFW ID / OFW Pass" class="block hover:text-white">OFW ID</a>
+                        <a id="footer-link-hotline" href="tel:1348" title="DMW Hotline 1348" class="block hover:text-white">Hotline: 1348</a>
                     </div>
                 </div>
 
                 <div class="lg:col-span-2">
                     <div class="uppercase text-xs tracking-widest text-blue-300 mb-4 sm:mb-6">Resources</div>
                     <div class="space-y-3 sm:space-y-4 text-blue-100 text-sm sm:text-base">
-                        <a href="#" class="block hover:text-white">Laws &amp; Policies</a>
-                        <a href="#" class="block hover:text-white">Download Forms</a>
-                        <a href="#" class="block hover:text-white">Statistics</a>
-                        <a href="#" class="block hover:text-white">Research</a>
+                        <a id="footer-link-laws-policies" href="https://dmw.gov.ph/resources/issuances" target="_blank" rel="noopener noreferrer" title="DMW Issuances" class="block hover:text-white">Laws &amp; Policies</a>
+                        <a id="footer-link-forms" href="https://onlineservices.dmw.gov.ph/" target="_blank" rel="noopener noreferrer" title="DMW Online Services" class="block hover:text-white">Download Forms</a>
+                        <a href="https://dmw.gov.ph/archives/v1/statistics" target="_blank" rel="noopener noreferrer" class="block hover:text-white">Statistics</a>
+                        <a id="footer-link-research" href="https://psa.gov.ph/statistics/survey/labor-and-employment/survey-overseas-filipinos" target="_blank" rel="noopener noreferrer" title="PSA Survey on Overseas Filipinos" class="block hover:text-white">Research</a>
                     </div>
                 </div>
 
@@ -1295,10 +1295,10 @@ ksort($countries);
             <!-- Bottom -->
             <div
                 class="border-t border-blue-800 mt-12 sm:mt-20 py-6 sm:py-8 text-xs text-blue-300 flex flex-col md:flex-row justify-between items-center gap-y-4 text-center md:text-left">
-                <div>© 2026 Department of Migrant Workers. All Rights Reserved.</div>
+                <div>© <?= date('Y') ?> Department of Migrant Workers. All Rights Reserved.</div>
                 <div class="flex flex-wrap justify-center gap-x-6 sm:gap-x-8">
-                    <a href="#" class="hover:text-white">Privacy Policy</a>
-                    <a href="#" class="hover:text-white">Terms of Use</a>
+                    <a href="https://dmw.gov.ph/archives/v1/resources/dsms/DMW/Issuances/2022/DMW_Data_Privacy_Notice.pdf" target="_blank" rel="noopener noreferrer" class="hover:text-white">Privacy Policy</a>
+                    <a href="#how-it-works" class="hover:text-white">Terms of Use</a>
                     <a href="#" class="hover:text-white">Accessibility</a>
                 </div>
             </div>
@@ -1637,10 +1637,6 @@ ksort($countries);
             const DICT = {
                 // Top bar & nav
                 "Mon - Fri: 8:00 AM - 5:00 PM": "Lun - Biy: 8:00 NU - 5:00 NH",
-                "Department of": "Kagawaran ng",
-                "Migrant Workers": "Manggagawang Migrante",
-                "Department of Migrant Workers": "Kagawaran ng Manggagawang Migrante",
-                "Department of Migrant Workers Logo": "Logo ng Kagawaran ng Manggagawang Migrante",
                 "REPUBLIC OF THE PHILIPPINES": "REPUBLIKA NG PILIPINAS",
                 "Home": "Tahanan",
                 "About": "Tungkol sa Amin",
@@ -1723,7 +1719,7 @@ ksort($countries);
                 "Over ₱10M AKSYON Fund Aid Delivered to 200 OFWs in Pasay": "Mahigit ₱10M na Tulong mula sa AKSYON Fund, Naihatid sa 200 OFW sa Pasay",
                 "OFWs and their families received assistance during the \"Handog ng Pangulo: Serbisyong Sapat Para sa Lahat\" event at the Pasay City Astrodome.": "Tumanggap ng tulong ang mga OFW at kanilang pamilya sa programang \"Handog ng Pangulo: Serbisyong Sapat Para sa Lahat\" sa Pasay City Astrodome.",
                 "Read More →": "Basahin Pa →",
-                "Source: Department of Migrant Workers.": "Pinagmulan: Kagawaran ng Manggagawang Migrante.",
+                "Source: Department of Migrant Workers.": "Pinagmulan: Department of Migrant Workers.",
                 "Visit the official News Releases page": "Bisitahin ang opisyal na pahina ng News Releases",
                 "for the full articles and the latest updates.": "para sa buong artikulo at pinakabagong balita.",
 
@@ -1731,7 +1727,7 @@ ksort($countries);
                 "WHAT WE OFFER": "ALOK NAMIN",
                 "Comprehensive": "Komprehensibong",
                 "Services for OFWs": "Serbisyo para sa mga OFW",
-                "From pre-departure preparation to safe return and reintegration, the Department of Migrant Workers stands with every OFW at every step.": "Mula sa paghahanda bago umalis hanggang sa ligtas na pag-uwi at reintegrasyon, kasama ng Kagawaran ng Manggagawang Migrante ang bawat OFW sa bawat hakbang.",
+                "From pre-departure preparation to safe return and reintegration, the Department of Migrant Workers stands with every OFW at every step.": "Mula sa paghahanda bago umalis hanggang sa ligtas na pag-uwi at reintegrasyon, kasama ng Department of Migrant Workers ang bawat OFW sa bawat hakbang.",
                 "Response Time": "Oras ng Pagtugon",
                 "Partner Countries": "Mga Katuwang na Bansa",
                 "Pre-Employment": "Bago ang Pagtatrabaho",
@@ -1767,7 +1763,7 @@ ksort($countries);
                 "HOTLINES": "MGA HOTLINE",
                 "Domestic: 1348": "Lokal: 1348",
                 "International: +63 2 8722 1144": "Internasyonal: +63 2 8722 1144",
-                "© 2026 Department of Migrant Workers. All Rights Reserved.": "© 2026 Kagawaran ng Manggagawang Migrante. Nakareserba ang Lahat ng Karapatan.",
+
                 "Privacy Policy": "Patakaran sa Privacy",
                 "Terms of Use": "Mga Tuntunin sa Paggamit",
                 "Accessibility": "Pagiging Naa-access"
@@ -1794,6 +1790,7 @@ ksort($countries);
                 [/^(\d+) days left to apply$/, m => m[1] + ' araw na lang para mag-apply'],
                 [/^(.*) \/ month$/, m => m[1] + ' / buwan'],
                 [/^All Jobsites(?: \((\d+)\))?$/, m => 'Lahat ng Lugar ng Trabaho' + (m[1] !== undefined ? ' (' + m[1] + ')' : '')],
+                [/^© (\d{4}) Department of Migrant Workers\. All Rights Reserved\.$/, m => '© ' + m[1] + ' Department of Migrant Workers. Nakareserba ang Lahat ng Karapatan.'],
                 [new RegExp('^(' + Object.keys(MONTHS).join('|') + ') (\\d{1,2}), (\\d{4})$'), m => MONTHS[m[1]] + ' ' + m[2] + ', ' + m[3]]
             ];
 

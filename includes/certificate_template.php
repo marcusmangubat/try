@@ -74,6 +74,34 @@ function dmw_clean_person_name(?string $name): string
 }
 
 /**
+ * Returns the DMW logo as a base64 data URI so Dompdf can embed it
+ * without relying on file paths or remote fetching.
+ * Falls back to the public DMW logo URL if the local file is missing.
+ */
+function dmw_cert_logo_src(): string
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $candidates = [
+        __DIR__ . '/../pictures/dmw_logo.png',
+    ];
+
+    foreach ($candidates as $path) {
+        if (is_file($path) && is_readable($path)) {
+            $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            $mime = $ext === 'png' ? 'image/png' : 'image/jpeg';
+            return $cached = 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($path));
+        }
+    }
+
+    // Fallback (works because isRemoteEnabled is true)
+    return $cached = 'https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png';
+}
+
+/**
  * Builds the full certificate HTML (used for PDF rendering only — this is
  * not meant to be emailed directly as the email body; the email body uses
  * the templates in includes/mailer.php and simply carries this as a PDF
@@ -81,6 +109,7 @@ function dmw_clean_person_name(?string $name): string
  */
 function dmw_certificate_html(array $data): string
 {
+    $logoSrc = dmw_cert_logo_src();
     $data['applicant_name'] = dmw_clean_person_name($data['applicant_name'] ?? '');
     $dateIssued     = dmw_cert_now('F d, Y g:i a');
     $evaluatedBy    = $data['evaluator_name'] ?: ($data['admin_name'] ? $data['admin_name'] . ' (Admin)' : '—');
@@ -140,7 +169,7 @@ function dmw_certificate_html(array $data): string
 <table class='header-table'>
     <tr>
         <td style='width:52px;'>
-            <img src='https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png' width='48'>
+            <img src='{$logoSrc}' width='48'>
         </td>
        <td>
             <p style='font-size:8px;color:#6b7280;margin:0;'>Republic of the Philippines</p>

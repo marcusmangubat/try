@@ -365,7 +365,7 @@ $generatedAt = date('F j, Y g:i A');
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="stylesheet" href="../css/dashboard.css">
@@ -1602,7 +1602,7 @@ $generatedAt = date('F j, Y g:i A');
 
         <div id="printReport">
             <div class="pr-page-header">
-                <img id="printLogo" src="../pictures/dmw_tahanan_ng_ofw.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
+                <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                 <div>
                     <div class="pr-republic">Republic of the Philippines</div>
                     <div class="pr-agency">DEPARTMENT OF MIGRANT WORKERS</div>
@@ -1935,32 +1935,534 @@ $generatedAt = date('F j, Y g:i A');
             return name.replace(/[\\\/\?\*\[\]:]/g, ' ').substring(0, 31);
         }
 
-        function exportCurrent() {
-            const id = activeSectionId();
-            const tables = tablesInSection(id);
-            if (!tables.length) return;
+        /* ───────── Styled Excel export (ExcelJS) ───────── */
+        const REPORT_META = <?= json_encode([
+                                'filters'     => $filterRecap,
+                                'generatedAt' => $generatedAt,
+                                'preparedBy'  => $evaluator_name,
+                            ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 
-            const wb = XLSX.utils.book_new();
-            tables.forEach((tbl, i) => {
-                const ws = XLSX.utils.table_to_sheet(tbl);
-                const name = safeSheetName(tables.length > 1 ? `${REPORT_TITLES[id]} ${i + 1}` : REPORT_TITLES[id]);
-                XLSX.utils.book_append_sheet(wb, ws, name || `Sheet${i + 1}`);
-            });
-            XLSX.writeFile(wb, `${EVALUATOR_FILE_SLUG}_${REPORT_TITLES[id].replace(/\s+/g, '_')}.xlsx`);
+        const XL_LOGO_URL = '../pictures/dmw_logo.png';
+
+        const XL = {
+            navy: 'FF0B1F4B',
+            white: 'FFFFFFFF',
+            zebra: 'FFF8FAFC',
+            border: 'FFD1D5DB',
+            grey: 'FF6B7280',
+            text: 'FF1F2937',
+            totalBg: 'FFE9EDF7'
+        };
+        // [background, text] colors, keyed by lower-cased cell text
+        const XL_GOOD = ['FFD1FAE5', 'FF047857'];
+        const XL_BAD = ['FFFEE2E2', 'FFB91C1C'];
+        const XL_WARN = ['FFFEF3C7', 'FFB45309'];
+        const XL_INFO = ['FFE0E7FF', 'FF3730A3'];
+        const XL_BADGE_TEXT = {
+            'approved': XL_GOOD,
+            'completed': XL_GOOD,
+            'disapproved': XL_BAD,
+            'pending': XL_WARN,
+            'active': XL_WARN,
+            'under evaluation': XL_INFO,
+            'reassigned': XL_INFO,
+            'for compliance': ['FFFFEDD5', 'FFC2410C'],
+            'resubmitted': ['FFFCE7F3', 'FF9D174D']
+        };
+        // Columns that get badge colors / are numeric / are percentages (matched by header text)
+        const XL_BADGE_HEADERS = ['assignment status', 'application status', 'decision'];
+        const XL_NUMERIC_HEADERS = ['count', 'required', 'submitted', 'approved', 'disapproved', 'total'];
+        const XL_PERCENT_HEADERS = ['completion'];
+
+        const XL_TABLE_TITLES = {
+            'tbl-current-status': 'Current Status',
+            'tbl-assignment-detail': 'Assignment Detail',
+            'tbl-decision-history': 'Decision History',
+            'tbl-monthly-decisions': 'Monthly Decisions',
+            'tbl-doccompliance': 'Document Compliance'
+        };
+        const XL_SECTION_SHORT = {
+            'rep-workload': 'Workload',
+            'rep-decisions': 'Decisions',
+            'rep-rate': 'Rate',
+            'rep-doccompliance': 'Doc Compliance'
+        };
+
+        const xlThin = () => ({
+            style: 'thin',
+            color: {
+                argb: XL.border
+            }
+        });
+        const xlBorders = () => ({
+            top: xlThin(),
+            left: xlThin(),
+            bottom: xlThin(),
+            right: xlThin()
+        });
+        const xlFill = argb => ({
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: {
+                argb
+            }
+        });
+        const xlClean = s => String(s || '').replace(/\s+/g, ' ').trim();
+
+        function xlUniqueName(wb, base) {
+            let name = safeSheetName(base) || 'Sheet';
+            let n = 2;
+            while (wb.getWorksheet(name)) {
+                const suffix = ' ' + n++;
+                name = safeSheetName(base).substring(0, 31 - suffix.length) + suffix;
+            }
+            return name;
         }
 
-        function exportAll() {
-            const wb = XLSX.utils.book_new();
-            document.querySelectorAll('.report-section').forEach(section => {
-                const tables = tablesInSection(section.id);
-                tables.forEach((tbl, i) => {
-                    const ws = XLSX.utils.table_to_sheet(tbl);
-                    const baseName = REPORT_TITLES[section.id] || section.id;
-                    const name = safeSheetName(tables.length > 1 ? `${baseName} ${i + 1}` : baseName);
-                    XLSX.utils.book_append_sheet(wb, ws, name || section.id);
+        function xlLetterhead(ws, logo, N) {
+            const lines = [
+                ['Republic of the Philippines', 9, false, XL.grey, 14],
+                ['DEPARTMENT OF MIGRANT WORKERS', 15, true, XL.navy, 24],
+                ['Regional Office IV-A (CALABARZON)', 9.5, false, XL.grey, 14],
+                ['Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027  |  calamba@dmw.gov.ph  |  dmw.gov.ph', 8, false, XL.grey, 14]
+            ];
+            lines.forEach(([text, size, bold, color, h], i) => {
+                const r = ws.getRow(i + 1);
+                r.height = h;
+                const c = r.getCell(1);
+                c.value = text;
+                c.font = {
+                    name: 'Calibri',
+                    size,
+                    bold,
+                    color: {
+                        argb: color
+                    }
+                };
+                c.alignment = {
+                    vertical: 'middle',
+                    horizontal: 'left',
+                    indent: 9
+                };
+            });
+            for (let c = 1; c <= N; c++) {
+                ws.getRow(4).getCell(c).border = {
+                    bottom: {
+                        style: 'thick',
+                        color: {
+                            argb: XL.navy
+                        }
+                    }
+                };
+            }
+            if (logo) ws.addImage(logo.id, {
+                tl: {
+                    col: 0.15,
+                    row: 0.25
+                },
+                ext: {
+                    width: 66 * logo.ratio,
+                    height: 66
+                }
+            });
+        }
+
+        function xlMergedLine(ws, rowNo, lastCol, text, font, h) {
+            ws.mergeCells(rowNo, 1, rowNo, lastCol);
+            const c = ws.getCell(rowNo, 1);
+            c.value = text;
+            c.font = font;
+            c.alignment = {
+                horizontal: 'center',
+                vertical: 'middle',
+                wrapText: true
+            };
+            ws.getRow(rowNo).height = h;
+        }
+
+        function xlPageSetup(ws, landscape) {
+            ws.pageSetup = {
+                orientation: landscape ? 'landscape' : 'portrait',
+                paperSize: 9,
+                fitToPage: true,
+                fitToWidth: 1,
+                fitToHeight: 0,
+                margins: {
+                    left: .4,
+                    right: .4,
+                    top: .5,
+                    bottom: .6,
+                    header: .3,
+                    footer: .3
+                }
+            };
+            ws.headerFooter.oddFooter = '&L&8DMW RO IV-A - For Official Use Only&R&8Page &P of &N';
+        }
+
+        async function xlLoadLogo(wb) {
+            try {
+                const dataUrl = await toDataURL(XL_LOGO_URL); // existing helper in this file
+                const img = await loadImage(dataUrl); // existing helper in this file
+                return {
+                    id: wb.addImage({
+                        base64: dataUrl.split(',')[1],
+                        extension: 'png'
+                    }),
+                    ratio: img.naturalWidth / img.naturalHeight
+                };
+            } catch (err) {
+                console.warn('Logo could not be embedded in the Excel file.', err);
+                return null;
+            }
+        }
+
+        /* Reads a rendered <table> into { headers, rows, empty } */
+        function xlReadTable(tbl) {
+            const headers = Array.from(tbl.querySelectorAll('thead th')).map(th => xlClean(th.textContent));
+            const rows = [];
+            let empty = false;
+            tbl.querySelectorAll('tbody tr').forEach(tr => {
+                if (tr.classList.contains('empty-row')) {
+                    empty = true;
+                    return;
+                }
+                rows.push(Array.from(tr.children).map(td => xlClean(td.textContent)));
+            });
+            return {
+                headers,
+                rows,
+                empty: empty && !rows.length
+            };
+        }
+
+        function xlAddTableSheet(wb, logo, tbl, sheetName, reportTitle) {
+            const {
+                headers,
+                rows,
+                empty
+            } = xlReadTable(tbl);
+            const N = headers.length;
+            const M = Math.min(N, 8);
+            const narrow = M < 4;
+
+            const ws = wb.addWorksheet(xlUniqueName(wb, sheetName), {
+                properties: {
+                    tabColor: {
+                        argb: XL.navy
+                    }
+                },
+                views: [{
+                    showGridLines: false
+                }]
+            });
+            xlPageSetup(ws, N > 3);
+            xlLetterhead(ws, logo, N);
+            xlMergedLine(ws, 5, M, reportTitle.toUpperCase(), {
+                name: 'Calibri',
+                size: 15,
+                bold: true,
+                color: {
+                    argb: XL.navy
+                }
+            }, 26);
+            xlMergedLine(ws, 6, M,
+                `Filters: ${REPORT_META.filters}\nGenerated: ${REPORT_META.generatedAt}   |   Prepared by: ${REPORT_META.preparedBy}   |   Total records: ${rows.length}`, {
+                    name: 'Calibri',
+                    size: 9,
+                    italic: true,
+                    color: {
+                        argb: XL.grey
+                    }
+                }, narrow ? 54 : 30);
+
+            const HR = 8;
+            const hr = ws.getRow(HR);
+            hr.height = 30;
+            headers.forEach((h, i) => {
+                const c = hr.getCell(i + 1);
+                c.value = h;
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    bold: true,
+                    color: {
+                        argb: XL.white
+                    }
+                };
+                c.fill = xlFill(XL.navy);
+                c.alignment = {
+                    horizontal: 'center',
+                    vertical: 'middle',
+                    wrapText: true
+                };
+                c.border = xlBorders();
+            });
+
+            const widths = headers.map(h => h.length + 4);
+            rows.forEach((cells, idx) => {
+                const row = ws.getRow(HR + 1 + idx);
+                row.height = 20;
+                cells.forEach((txtRaw, i) => {
+                    const hKey = (headers[i] || '').toLowerCase();
+                    const c = row.getCell(i + 1);
+                    const txt = txtRaw === '' ? '—' : txtRaw;
+                    let isNum = false;
+
+                    if (XL_PERCENT_HEADERS.includes(hKey) && /^\d+(\.\d+)?%$/.test(txt)) {
+                        c.value = parseFloat(txt) / 100;
+                        c.numFmt = '0%';
+                        isNum = true;
+                    } else if (XL_NUMERIC_HEADERS.includes(hKey) && /^\d+$/.test(txt)) {
+                        c.value = parseInt(txt, 10);
+                        c.numFmt = '0';
+                        isNum = true;
+                    } else {
+                        c.value = txt; // plain string → can never run as a formula
+                        widths[i] = Math.max(widths[i], Math.min(40, txt.length + 3));
+                    }
+
+                    c.font = {
+                        name: 'Calibri',
+                        size: 10,
+                        color: {
+                            argb: XL.text
+                        }
+                    };
+                    c.alignment = {
+                        vertical: 'middle',
+                        horizontal: isNum ? 'center' : 'left',
+                        wrapText: false
+                    };
+                    c.border = xlBorders();
+                    if (idx % 2 === 1) c.fill = xlFill(XL.zebra);
+
+                    // Status / decision badge colors
+                    if (XL_BADGE_HEADERS.includes(hKey) && XL_BADGE_TEXT[txt.toLowerCase()]) {
+                        const [bg, fg] = XL_BADGE_TEXT[txt.toLowerCase()];
+                        c.fill = xlFill(bg);
+                        c.font = {
+                            name: 'Calibri',
+                            size: 10,
+                            bold: true,
+                            color: {
+                                argb: fg
+                            }
+                        };
+                        c.alignment = {
+                            vertical: 'middle',
+                            horizontal: 'center'
+                        };
+                    }
+                    // Completion: green ≥ 80%, amber ≥ 50%, red below
+                    if (XL_PERCENT_HEADERS.includes(hKey) && isNum) {
+                        const v = c.value;
+                        const [bg, fg] = v >= 0.8 ? XL_GOOD : (v >= 0.5 ? XL_WARN : XL_BAD);
+                        c.fill = xlFill(bg);
+                        c.font = {
+                            name: 'Calibri',
+                            size: 10,
+                            bold: true,
+                            color: {
+                                argb: fg
+                            }
+                        };
+                    }
                 });
             });
-            XLSX.writeFile(wb, `${EVALUATOR_FILE_SLUG}_My_Reports.xlsx`);
+            widths.forEach((w, i) => ws.getColumn(i + 1).width = Math.max(11, w));
+            ws.getColumn(1).width = Math.max(ws.getColumn(1).width, 26);
+
+            if (!rows.length) {
+                ws.mergeCells(HR + 1, 1, HR + 1, M);
+                const c = ws.getCell(HR + 1, 1);
+                c.value = empty ? 'No records found for the selected filter.' : 'No data.';
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    italic: true,
+                    color: {
+                        argb: XL.grey
+                    }
+                };
+                c.alignment = {
+                    horizontal: 'center'
+                };
+            } else {
+                ws.autoFilter = {
+                    from: {
+                        row: HR,
+                        column: 1
+                    },
+                    to: {
+                        row: HR + rows.length,
+                        column: N
+                    }
+                };
+            }
+            ws.views = [{
+                state: 'frozen',
+                xSplit: 1,
+                ySplit: HR,
+                showGridLines: false
+            }];
+
+            const lastRow = HR + Math.max(rows.length, 1) + 2;
+            ws.mergeCells(lastRow, 1, lastRow, M);
+            const f = ws.getCell(lastRow, 1);
+            f.value = 'System-generated report  •  DMW Application Management System  •  Regional Office IV-A (CALABARZON)  •  For Official Use Only';
+            f.font = {
+                name: 'Calibri',
+                size: 8,
+                italic: true,
+                color: {
+                    argb: XL.grey
+                }
+            };
+            f.alignment = {
+                horizontal: 'center',
+                vertical: 'middle',
+                wrapText: true
+            };
+            ws.getRow(lastRow).height = narrow ? 36 : 16;
+            ws.pageSetup.printArea = `A1:${ws.getColumn(N).letter}${lastRow}`;
+            ws.pageSetup.printTitlesRow = `${HR}:${HR}`;
+        }
+
+        /* "Summary" sheet built from the section's on-screen summary cards */
+        function xlAddSummarySheet(wb, logo, sectionId) {
+            const panel = document.querySelector(`#${sectionId} .summary-panel`);
+            if (!panel) return;
+            const items = Array.from(panel.querySelectorAll('.summary-cell')).map(cell => ({
+                label: xlClean(cell.querySelector('.sc-lbl')?.textContent),
+                value: xlClean(cell.querySelector('.sc-num')?.textContent)
+            })).filter(i => i.label);
+            if (!items.length) return;
+
+            const ss = wb.addWorksheet(xlUniqueName(wb, 'Summary - ' + XL_SECTION_SHORT[sectionId]), {
+                properties: {
+                    tabColor: {
+                        argb: 'FF3B82F6'
+                    }
+                },
+                views: [{
+                    showGridLines: false
+                }]
+            });
+            xlPageSetup(ss, false);
+            ss.getColumn(1).width = 36;
+            ss.getColumn(2).width = 18;
+            xlLetterhead(ss, logo, 2);
+            xlMergedLine(ss, 5, 2, (REPORT_TITLES[sectionId] + ' — SUMMARY').toUpperCase(), {
+                name: 'Calibri',
+                size: 14,
+                bold: true,
+                color: {
+                    argb: XL.navy
+                }
+            }, 26);
+            xlMergedLine(ss, 6, 2, `Filters: ${REPORT_META.filters}\nGenerated: ${REPORT_META.generatedAt}`, {
+                name: 'Calibri',
+                size: 9,
+                italic: true,
+                color: {
+                    argb: XL.grey
+                }
+            }, 40);
+
+            const sh = ss.getRow(8);
+            sh.height = 24;
+            ['Metric', 'Value'].forEach((h, i) => {
+                const c = sh.getCell(i + 1);
+                c.value = h;
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    bold: true,
+                    color: {
+                        argb: XL.white
+                    }
+                };
+                c.fill = xlFill(XL.navy);
+                c.alignment = {
+                    horizontal: 'center',
+                    vertical: 'middle'
+                };
+                c.border = xlBorders();
+            });
+            items.forEach((it, i) => {
+                const r = ss.getRow(9 + i);
+                r.height = 20;
+                const a = r.getCell(1),
+                    b = r.getCell(2);
+                a.value = it.label;
+                const isPct = /^\d+(\.\d+)?%$/.test(it.value);
+                if (isPct) {
+                    b.value = parseFloat(it.value) / 100;
+                    b.numFmt = '0.0%';
+                } else if (/^\d+(\.\d+)?$/.test(it.value)) b.value = parseFloat(it.value);
+                else b.value = it.value || '—';
+                [a, b].forEach((c, j) => {
+                    c.font = {
+                        name: 'Calibri',
+                        size: 10,
+                        bold: j === 1,
+                        color: {
+                            argb: XL.text
+                        }
+                    };
+                    c.alignment = {
+                        vertical: 'middle',
+                        horizontal: j === 0 ? 'left' : 'center',
+                        indent: j === 0 ? 1 : 0
+                    };
+                    c.border = xlBorders();
+                    c.fill = xlFill(i % 2 === 1 ? XL.zebra : XL.white);
+                });
+            });
+        }
+
+        async function xlSave(wb, filename) {
+            const buf = await wb.xlsx.writeBuffer();
+            const blob = new Blob([buf], {
+                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }
+
+        async function xlBuildWorkbook(sectionIds) {
+            const wb = new ExcelJS.Workbook();
+            wb.creator = REPORT_META.preparedBy;
+            wb.company = 'DMW Regional Office IV-A';
+            wb.created = new Date();
+            const logo = await xlLoadLogo(wb);
+
+            sectionIds.forEach(id => {
+                xlAddSummarySheet(wb, logo, id);
+                tablesInSection(id).forEach(tbl => {
+                    const title = XL_TABLE_TITLES[tbl.id] || REPORT_TITLES[id];
+                    xlAddTableSheet(wb, logo, tbl, title, `${REPORT_TITLES[id]} — ${title}`);
+                });
+            });
+            return wb;
+        }
+
+        async function exportCurrent() {
+            const id = activeSectionId();
+            if (!tablesInSection(id).length) return;
+            const wb = await xlBuildWorkbook([id]);
+            await xlSave(wb, `${EVALUATOR_FILE_SLUG}_${REPORT_TITLES[id].replace(/\s+/g, '_')}.xlsx`);
+        }
+
+        async function exportAll() {
+            const ids = Array.from(document.querySelectorAll('.report-section')).map(s => s.id);
+            const wb = await xlBuildWorkbook(ids);
+            await xlSave(wb, `${EVALUATOR_FILE_SLUG}_My_Reports.xlsx`);
         }
 
         async function toDataURL(url) {

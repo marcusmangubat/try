@@ -327,7 +327,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <!--  TOP BAR  -->
     <header class="topbar">
         <div class="topbar-brand">
-            <img src="https://dmw.gov.ph/images/dmw_tahanan_ng_ofw_colored.png" alt="DMW" class="h-9">
+            <img src="https://dmw.gov.ph/images/dmw_logo.png" alt="DMW" class="h-9">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>

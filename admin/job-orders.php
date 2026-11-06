@@ -2,6 +2,7 @@
 session_start();
 require_once '../db.php';
 require_once '../includes/activity_logger.php';
+require_once '../includes/country_currency.php';
 if (!isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
     header("Location: ../login.php");
     exit();
@@ -337,6 +338,97 @@ function generateNextRsfNumber(mysqli $database): string
     return sprintf('DMW-RSF-%s%04d-%s', $yy, $nextSeq, $yyyy);
 }
 
+/**
+ * Position-specific rows from the Add form (title, subcategory, slots, salary).
+ * @return array<int, array<string,mixed>>
+ */
+function parsePostedPositions(mysqli $database, string $cur): array
+{
+    $titles = $_POST['pos_title'] ?? [];
+    if (!is_array($titles)) return [];
+
+    $subs    = $_POST['pos_subcategory_id'] ?? [];
+    $slots   = $_POST['pos_slots'] ?? [];
+    $mins    = $_POST['pos_salary_min'] ?? [];
+    $maxs    = $_POST['pos_salary_max'] ?? [];
+    $genders = $_POST['pos_gender'] ?? [];
+
+    $positions = [];
+    foreach ($titles as $k => $rawTitle) {
+        $title = trim((string) $rawTitle);
+        if ($title === '') continue;
+
+        $slot = (int) ($slots[$k] ?? 0);
+        if ($slot < 1) throw new RuntimeException("Slots for \"$title\" must be at least 1.");
+
+        $gender = trim((string) ($genders[$k] ?? ''));
+        if (!in_array($gender, ['', 'Male', 'Female'], true)) {
+            throw new RuntimeException("Invalid gender for \"$title\".");
+        }
+
+        $min = (($mins[$k] ?? '') !== '') ? (float) $mins[$k] : null;
+        $max = (($maxs[$k] ?? '') !== '') ? (float) $maxs[$k] : null;
+        if (($min !== null && $min < 0) || ($max !== null && $max < 0))
+            throw new RuntimeException("Salary for \"$title\" cannot be negative.");
+        if ($min !== null && $max !== null && $min > $max)
+            throw new RuntimeException("Salary Min cannot exceed Salary Max for \"$title\".");
+
+        if ($cur !== 'PHP' && ($min !== null || $max !== null) && getExchangeRate($database, $cur) === null)
+            throw new RuntimeException("No cached exchange rate for \"$cur\". Click \"Refresh Rates\" first.");
+
+        $positions[] = [
+            'position_title'  => $title,
+            'subcategory_id'  => !empty($subs[$k]) ? (int) $subs[$k] : null,
+            'slots_available' => $slot,
+            'salary_min'      => $min,
+            'salary_max'      => $max,
+            'salary_currency' => $cur,
+            'salary_min_php'  => convertToPhp($database, $min, $cur),
+            'salary_max_php'  => convertToPhp($database, $max, $cur),
+            'gender'          => $gender,
+        ];
+    }
+    return $positions;
+}
+
+/** Copy the shared requirement set onto one RSF. Must run inside a transaction. */
+function saveRsfChildren(mysqli $db, int $rsfId, array $requirements, array $questions, array $quals, array $skills): void
+{
+    if ($requirements) {
+        $s = $db->prepare("INSERT INTO rsf_required_documents (rsf_id, document_type, document_name, is_required, description) VALUES (?, ?, ?, ?, ?)");
+        foreach ($requirements as $r) {
+            $s->bind_param('issis', $rsfId, $r['document_type'], $r['document_name'], $r['is_required'], $r['description']);
+            if (!$s->execute()) throw new RuntimeException('Failed to save requirements: ' . $s->error);
+        }
+        $s->close();
+    }
+    if ($questions) {
+        $s = $db->prepare("INSERT INTO questions (question_text, is_required, order_no, rsf_id) VALUES (?, ?, ?, ?)");
+        foreach ($questions as $q) {
+            $o = $q['order_no'];
+            $s->bind_param('siii', $q['question_text'], $q['is_required'], $o, $rsfId);
+            if (!$s->execute()) throw new RuntimeException('Failed to save questions: ' . $s->error);
+        }
+        $s->close();
+    }
+    if ($quals) {
+        $s = $db->prepare("INSERT INTO rsf_qualifications (rsf_id, qualification_type, qualification_value) VALUES (?, ?, ?)");
+        foreach ($quals as $q) {
+            $s->bind_param('iss', $rsfId, $q['qualification_type'], $q['qualification_value']);
+            if (!$s->execute()) throw new RuntimeException('Failed to save qualifications: ' . $s->error);
+        }
+        $s->close();
+    }
+    if ($skills) {
+        $s = $db->prepare("INSERT INTO rsf_required_skills (rsf_id, skill_id, importance, min_proficiency) VALUES (?, ?, ?, ?)");
+        foreach ($skills as $k) {
+            $s->bind_param('iiss', $rsfId, $k['skill_id'], $k['importance'], $k['min_proficiency']);
+            if (!$s->execute()) throw new RuntimeException('Failed to save skills: ' . $s->error);
+        }
+        $s->close();
+    }
+}
+
 // Handle POST requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if (ob_get_length()) ob_clean();
@@ -411,6 +503,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } catch (Throwable $e) {
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
+        exit;
+    }
+
+    // Resolve worksite country → canonical name + currency (used for live hints)
+    if ($_POST['action'] === 'resolve_currency') {
+        $r = resolveWorksite(trim($_POST['country'] ?? ''));
+        echo json_encode($r
+            ? ['status' => 'success', 'country' => $r['country'], 'currency' => $r['currency']]
+            : ['status' => 'error', 'message' => 'Country not recognized.']);
         exit;
     }
 
@@ -513,148 +614,126 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     //  EXISTING: Add  
     if ($_POST['action'] === 'add') {
         $txStarted = false;
+        $pdf_path = null;
         try {
-            $rsf_number      = generateNextRsfNumber($database);
-            $employer_name   = trim($_POST['employer_name'] ?? '');
+            // Shared fields (entered once)
+            $employer_name    = trim($_POST['employer_name'] ?? '');
             $worksite_country = trim($_POST['worksite_country'] ?? '');
-            $classification  = trim($_POST['classification'] ?? '');
-            $position_title  = trim($_POST['position_title'] ?? '');
-            $subcategory_id  = !empty($_POST['subcategory_id']) ? (int) $_POST['subcategory_id'] : null;
-            $slots_available = (int)($_POST['slots_available'] ?? 0);
-            $qualifications  = trim($_POST['qualifications'] ?? '');
-            $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
-            $pdf_path = null;
+            $classification   = trim($_POST['classification'] ?? '');
+            $qualifications   = trim($_POST['qualifications'] ?? '');
+            $deadline         = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
+
+            if ($employer_name === '' || $worksite_country === '' || $deadline === null) {
+                echo json_encode(['status' => 'error', 'message' => 'Employer, country and deadline are required.']);
+                exit;
+            }
+
+            $resolved = resolveWorksite($worksite_country);
+            if (!$resolved) {
+                echo json_encode(['status' => 'error', 'message' => "Cannot determine the currency for \"$worksite_country\". Please choose a country from the suggestions list."]);
+                exit;
+            }
+            $worksite_country = $resolved['country'];
+
+            $positions = parsePostedPositions($database, $resolved['currency']);
+            if (!$positions) {
+                echo json_encode(['status' => 'error', 'message' => 'Add at least one position.']);
+                exit;
+            }
             $requirements = parsePostedRequirements();
-            $questions = parsePostedQuestions();
-            $qualifications_structured = parsePostedQualifications();
-            $skills_structured = parsePostedSkills();
+            $questions    = parsePostedQuestions();
+            $quals        = parsePostedQualifications();
+            $skills       = parsePostedSkills();
 
-            // ── Salary (validated) ──
-            $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
-            $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
-            $salary_currency = strtoupper(trim($_POST['salary_currency'] ?? '')) ?: 'PHP';
-
-            if ($salary_min !== null && $salary_min < 0) {
-                echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be negative.']);
-                exit;
-            }
-            if ($salary_max !== null && $salary_max < 0) {
-                echo json_encode(['status' => 'error', 'message' => 'Salary Max cannot be negative.']);
-                exit;
-            }
-            if ($salary_min !== null && $salary_max !== null && $salary_min > $salary_max) {
-                echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be greater than Salary Max.']);
-                exit;
-            }
-            if ($salary_currency !== 'PHP' && ($salary_min !== null || $salary_max !== null)) {
-                if (getExchangeRate($database, $salary_currency) === null) {
-                    echo json_encode([
-                        'status'  => 'error',
-                        'message' => "No cached exchange rate for \"$salary_currency\" yet. Click \"Refresh Rates\" first, or choose a different currency."
-                    ]);
-                    exit;
-                }
-            }
-
-            $salary_min_php = convertToPhp($database, $salary_min, $salary_currency);
-            $salary_max_php = convertToPhp($database, $salary_max, $salary_currency);
+            // One PDF, referenced by every position
             if (isset($_FILES['rsf_pdf']) && $_FILES['rsf_pdf']['error'] === UPLOAD_ERR_OK) {
-                $upload_dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'rsf_pdfs' . DIRECTORY_SEPARATOR;
-                if (!is_dir($upload_dir)) mkdir($upload_dir, 0755, true);
-                $file_ext = strtolower(pathinfo($_FILES['rsf_pdf']['name'], PATHINFO_EXTENSION));
-                if (in_array($file_ext, ['pdf'])) {
-                    $new_filename = preg_replace('/[^a-zA-Z0-9_-]/', '_', $rsf_number) . '_' . time() . '.' . $file_ext;
-                    $target_file = $upload_dir . $new_filename;
-                    if (move_uploaded_file($_FILES['rsf_pdf']['tmp_name'], $target_file)) {
-                        $pdf_path = 'uploads/rsf_pdfs/' . $new_filename;
+                $ext = strtolower(pathinfo($_FILES['rsf_pdf']['name'], PATHINFO_EXTENSION));
+                if ($ext === 'pdf') {
+                    $dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'rsf_pdfs' . DIRECTORY_SEPARATOR;
+                    if (!is_dir($dir)) mkdir($dir, 0755, true);
+                    $fname = 'RSF_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.pdf';
+                    if (move_uploaded_file($_FILES['rsf_pdf']['tmp_name'], $dir . $fname)) {
+                        $pdf_path = 'uploads/rsf_pdfs/' . $fname;
                     }
                 }
             }
 
             $database->begin_transaction();
             $txStarted = true;
-            $stmt = $database->prepare("INSERT INTO rsf_job_orders 
-            (rsf_number, employer_name, worksite_country, classification, position_title, 
-            subcategory_id, slots_available, qualifications, salary_min, salary_max, 
-            salary_currency, salary_min_php, salary_max_php, deadline, pdf_path) 
+
+            $stmt = $database->prepare("INSERT INTO rsf_job_orders
+            (rsf_number, employer_name, worksite_country, classification, position_title,
+             subcategory_id, slots_available, qualifications, salary_min, salary_max,
+             salary_currency, salary_min_php, salary_max_php, deadline, pdf_path)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            if (!$stmt) {
-                echo json_encode(['status' => 'error', 'message' => 'Database prepare failed: ' . $database->error]);
-                exit;
-            }
-            $stmt->bind_param('sssssiisddsddss', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $salary_min_php, $salary_max_php, $deadline, $pdf_path);
-            $executed = $stmt->execute();
-            if (!$executed && $database->errno === 1062) {
-                // Extremely rare race: another insert grabbed this number first, regenerate once.
-                $rsf_number = generateNextRsfNumber($database);
-                $stmt->bind_param('sssssiisddsddss', $rsf_number, $employer_name, $worksite_country, $classification, $position_title, $subcategory_id, $slots_available, $qualifications, $salary_min, $salary_max, $salary_currency, $salary_min_php, $salary_max_php, $deadline, $pdf_path);
-                $executed = $stmt->execute();
-            }
-            if ($executed) {
+            if (!$stmt) throw new RuntimeException('Database prepare failed: ' . $database->error);
+
+            $created = [];
+            foreach ($positions as $p) {
+                $rsf_number     = generateNextRsfNumber($database); // sees rows inserted earlier in this transaction
+                $position_title = $p['position_title'];
+                $subcategory_id = $p['subcategory_id'];
+                $slots          = $p['slots_available'];
+                $s_min          = $p['salary_min'];
+                $s_max          = $p['salary_max'];
+                $s_cur          = $p['salary_currency'];
+                $s_min_php      = $p['salary_min_php'];
+                $s_max_php      = $p['salary_max_php'];
+
+                $stmt->bind_param(
+                    'sssssiisddsddss',
+                    $rsf_number,
+                    $employer_name,
+                    $worksite_country,
+                    $classification,
+                    $position_title,
+                    $subcategory_id,
+                    $slots,
+                    $qualifications,
+                    $s_min,
+                    $s_max,
+                    $s_cur,
+                    $s_min_php,
+                    $s_max_php,
+                    $deadline,
+                    $pdf_path
+                );
+                if (!$stmt->execute()) {
+                    throw new RuntimeException("Failed to save \"$position_title\": " . $stmt->error);
+                }
                 $newId = (int) $database->insert_id;
-                if ($requirements !== []) {
-                    $reqStmt = $database->prepare("INSERT INTO rsf_required_documents (rsf_id, document_type, document_name, is_required, description) VALUES (?, ?, ?, ?, ?)");
-                    foreach ($requirements as $req) {
-                        $reqStmt->bind_param('issis', $newId, $req['document_type'], $req['document_name'], $req['is_required'], $req['description']);
-                        if (!$reqStmt->execute()) {
-                            throw new RuntimeException('Failed to save requirements: ' . $reqStmt->error);
-                        }
-                    }
-                    $reqStmt->close();
+                // Per-position gender overrides any shared gender qualifier
+                $posQuals = $quals;
+                if ($p['gender'] !== '') {
+                    $posQuals = array_values(array_filter($quals, fn($q) => $q['qualification_type'] !== 'gender'));
+                    $posQuals[] = ['qualification_type' => 'gender', 'qualification_value' => $p['gender']];
                 }
-                if ($questions !== []) {
-                    $qStmt = $database->prepare("INSERT INTO questions (question_text, is_required, order_no, rsf_id) VALUES (?, ?, ?, ?)");
-                    foreach ($questions as $q) {
-                        $qOrder = $q['order_no'];
-                        $qStmt->bind_param('siii', $q['question_text'], $q['is_required'], $qOrder, $newId);
-                        if (!$qStmt->execute()) {
-                            throw new RuntimeException('Failed to save questions: ' . $qStmt->error);
-                        }
-                    }
-                    $qStmt->close();
-                }
-                $qualDelStmt = $database->prepare("DELETE FROM rsf_qualifications WHERE rsf_id = ?");
-                $qualDelStmt->bind_param('i', $newId);
-                $qualDelStmt->execute();
-                $qualDelStmt->close();
-                if ($qualifications_structured !== []) {
-                    $qualStmt = $database->prepare("INSERT INTO rsf_qualifications (rsf_id, qualification_type, qualification_value) VALUES (?, ?, ?)");
-                    foreach ($qualifications_structured as $qual) {
-                        $qualStmt->bind_param('iss', $newId, $qual['qualification_type'], $qual['qualification_value']);
-                        if (!$qualStmt->execute())
-                            throw new RuntimeException('Failed to save qualifications: ' . $qualStmt->error);
-                    }
-                    $qualStmt->close();
-                }
-                if ($skills_structured !== []) {
-                    $skillStmt = $database->prepare("INSERT INTO rsf_required_skills (rsf_id, skill_id, importance, min_proficiency) VALUES (?, ?, ?, ?)");
-                    foreach ($skills_structured as $sk) {
-                        $skillStmt->bind_param('iiss', $newId, $sk['skill_id'], $sk['importance'], $sk['min_proficiency']);
-                        if (!$skillStmt->execute())
-                            throw new RuntimeException('Failed to save skills: ' . $skillStmt->error);
-                    }
-                    $skillStmt->close();
-                }
-                $database->commit();
+                saveRsfChildren($database, $newId, $requirements, $questions, $posQuals, $skills);
+                $created[] = ['rsf' => $rsf_number, 'title' => $position_title];
+            }
+            $stmt->close();
+            $database->commit();
+
+            foreach ($created as $c) {
                 log_activity(
                     $database,
                     $admin_email,
                     'admin',
                     'job_order',
                     'add',
-                    "Added job order {$rsf_number}: {$position_title} at {$employer_name} ({$worksite_country})"
+                    "Added job order {$c['rsf']}: {$c['title']} at {$employer_name} ({$worksite_country})"
                 );
-                echo json_encode([
-                    'status' => 'success',
-                    'message' => "RSF Job Order created successfully! ({$rsf_number})",
-                ]);
-            } else {
-                $database->rollback();
-                echo json_encode(['status' => 'error', 'message' => 'Failed to save record. ' . $stmt->error]);
             }
+            $list = implode(', ', array_map(fn($c) => "{$c['rsf']} ({$c['title']})", $created));
+            echo json_encode([
+                'status'  => 'success',
+                'message' => count($created) . ' job order(s) created: ' . $list,
+            ]);
         } catch (Throwable $e) {
-            if ($txStarted) {
-                $database->rollback();
+            if ($txStarted) $database->rollback();
+            if ($pdf_path) {
+                $abs = dirname(__DIR__) . DIRECTORY_SEPARATOR . $pdf_path;
+                if (is_file($abs)) @unlink($abs);
             }
             echo json_encode(['status' => 'error', 'message' => 'Error: ' . $e->getMessage()]);
         }
@@ -702,6 +781,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $slots_available = (int)($_POST['slots_available'] ?? 0);
             $qualifications  = trim($_POST['qualifications'] ?? '');
             $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
+            $resolved = resolveWorksite($worksite_country);
+            if (!$resolved) {
+                echo json_encode(['status' => 'error', 'message' => "Cannot determine the currency for \"$worksite_country\". Please choose a country from the suggestions list."]);
+                exit;
+            }
+            $worksite_country = $resolved['country'];
             $requirements = parsePostedRequirements();
             $questions = parsePostedQuestions();
             $qualifications_structured = parsePostedQualifications();
@@ -710,7 +795,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             // ── Salary (validated) ──
             $salary_min      = ($_POST['salary_min'] ?? '') !== '' ? (float) $_POST['salary_min'] : null;
             $salary_max      = ($_POST['salary_max'] ?? '') !== '' ? (float) $_POST['salary_max'] : null;
-            $salary_currency = strtoupper(trim($_POST['salary_currency'] ?? '')) ?: 'PHP';
+            $salary_currency = $resolved['currency'];
 
             if ($salary_min !== null && $salary_min < 0) {
                 echo json_encode(['status' => 'error', 'message' => 'Salary Min cannot be negative.']);
@@ -1023,17 +1108,7 @@ if ($rateStmt) {
     }
 }
 
-// Fetch all currencies for searchable dropdown
-$allCurrencies = [];
-$currencyStmt = $database->query("SELECT currency_code FROM exchange_rates ORDER BY currency_code ASC");
-if ($currencyStmt) {
-    while ($row = $currencyStmt->fetch_assoc()) {
-        $allCurrencies[] = $row['currency_code'];
-    }
-}
-if (empty($allCurrencies)) {
-    $allCurrencies = ['PHP'];
-}
+
 ?>
 
 <!DOCTYPE html>
@@ -1865,92 +1940,48 @@ if (empty($allCurrencies)) {
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Worksite Country <span class="text-red-500">*</span></label>
-                    <input type="text" name="worksite_country" placeholder="e.g. Saudi Arabia, UAE, Qatar, Canada"
+                    <input type="text" name="worksite_country" id="add_worksite_country" required list="worksiteCountryList"
+                        onchange="onWorksiteCountryChange('add')" placeholder="Start typing, e.g. Saudi Arabia"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                    <?php $worksiteCountries = array_keys(COUNTRY_CURRENCY);
+                    sort($worksiteCountries); ?>
+                    <datalist id="worksiteCountryList">
+                        <?php foreach ($worksiteCountries as $cn): ?>
+                            <option value="<?= htmlspecialchars($cn) ?>"></option>
+                        <?php endforeach; ?>
+                    </datalist>
+                    <p id="add_currency_hint" class="text-xs text-gray-400 mt-1">Salary currency is set automatically from the country.</p>
                 </div>
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Classification & Position -->
-                <!--<div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
-                <select name="classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                    <option value="">Select Classification</option>
-                    <option value="Government">Government</option>
-                    <option value="Private">Private</option>
-                </select>
-            </div>-->
+                <!-- Section: Classification & Deadline -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
                     <select name="classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                         <option value="Government" selected>Government</option>
                     </select>
                 </div>
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Position Title <span class="text-red-500">*</span></label>
-                    <input type="text" name="position_title" required placeholder="e.g. Registered Nurse, Heavy Equipment Operator"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                </div>
-
-                <hr class="md:col-span-2 border-gray-200 my-1">
-
-                <!-- Section: Job Category / Subcategory -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Job Category</label>
-                    <select id="add_category_id" onchange="onCategoryChange('add')"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="">Select category…</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Job Subcategory</label>
-                    <select name="subcategory_id" id="add_subcategory_id"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="">Select category first…</option>
-                    </select>
-                    <p class="text-xs text-gray-400 mt-1">Used for applicant preference matching.</p>
-                </div>
-
-                <hr class="md:col-span-2 border-gray-200 my-1">
-
-                <!-- Section: Salary -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Salary Min</label>
-                    <input type="number" name="salary_min" id="add_salary_min" step="0.01" min="0" placeholder="e.g. 20000"
-                        oninput="updatePhpPreview('add')"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Salary Max</label>
-                    <input type="number" name="salary_max" id="add_salary_max" step="0.01" min="0" placeholder="e.g. 25000"
-                        oninput="updatePhpPreview('add')"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Salary Currency</label>
-                    <input type="text"
-                        name="salary_currency"
-                        id="edit_salary_currency"
-                        list="currencyListEdit"
-                        placeholder="Type to search (e.g. USD)"
-                        onchange="updatePhpPreview('edit')"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                    <datalist id="currencyListEdit"></datalist>
-                    <p id="edit_salary_php_preview" class="text-xs text-gray-400 mt-1"></p>
-                </div>
-
-                <hr class="md:col-span-2 border-gray-200 my-1">
-
-                <!-- Section: Slots & Deadline -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Slots Available <span class="text-red-500">*</span></label>
-                    <input type="number" name="slots_available" required min="1" placeholder="e.g. 50"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Deadline <span class="text-red-500">*</span></label>
                     <input type="date" name="deadline" required
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
+                </div>
+
+                <hr class="md:col-span-2 border-gray-200 my-1">
+
+                <!-- Positions: each becomes its own RSF number; shared sections below apply to all -->
+                <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div>
+                            <label class="block text-sm font-semibold text-gray-800">Positions</label>
+                            <p class="text-xs text-gray-500 mt-0.5">Each position gets its own RSF number. Qualifications, skills, documents and questions below apply to all of them.</p>
+                        </div>
+                        <button type="button" onclick="addPositionRow()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-xl">
+                            <i class="fas fa-plus"></i> Add position
+                        </button>
+                    </div>
+                    <div id="addPositionsWrap" class="space-y-3"></div>
                 </div>
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
@@ -1978,6 +2009,12 @@ if (empty($allCurrencies)) {
                         </button>
                     </div>
                     <div id="addQualWrap" class="space-y-2"></div>
+                    <div id="addPosQualPreview" class="hidden mt-3 pt-3 border-t border-dashed border-gray-200">
+                        <p class="text-xs font-semibold text-gray-700 mb-2">
+                            <i class="fas fa-wand-magic-sparkles text-amber-600"></i> Auto-added per position
+                        </p>
+                        <div id="addPosQualList" class="space-y-1.5"></div>
+                    </div>
                 </div>
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
@@ -2069,7 +2106,8 @@ if (empty($allCurrencies)) {
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Worksite Country</label>
-                    <input type="text" name="worksite_country" id="edit_worksite_country"
+                    <input type="text" name="worksite_country" id="edit_worksite_country" required list="worksiteCountryList"
+                        onchange="onWorksiteCountryChange('edit')"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
 
@@ -2126,14 +2164,9 @@ if (empty($allCurrencies)) {
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Currency</label>
-                    <input type="text"
-                        name="salary_currency"
-                        id="edit_salary_currency"
-                        list="currencyListEdit"
-                        placeholder="Type to search (e.g. USD)"
-                        onchange="updatePhpPreview('edit')"
-                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
-                    <datalist id="currencyListEdit"></datalist>
+                    <input type="text" id="edit_salary_currency" readonly disabled value="—"
+                        class="w-full px-5 py-3 border border-gray-200 rounded-2xl bg-gray-50 text-gray-500 cursor-not-allowed">
+                    <p class="text-xs text-gray-400 mt-1">Set automatically from the worksite country.</p>
                     <p id="edit_salary_php_preview" class="text-xs text-gray-400 mt-1"></p>
                 </div>
 
@@ -2319,28 +2352,60 @@ if (empty($allCurrencies)) {
         // 1 unit of currency = X PHP, cached daily by the rate-refresh cron job.
         const EXCHANGE_RATES = <?= json_encode($exchangeRates) ?>;
 
+        const CURRENCY_BY_FORM = {
+            add: null,
+            edit: null
+        };
+
         function updatePhpPreview(prefix) {
             const min = parseFloat(document.getElementById(`${prefix}_salary_min`)?.value);
             const max = parseFloat(document.getElementById(`${prefix}_salary_max`)?.value);
-            const currency = document.getElementById(`${prefix}_salary_currency`)?.value;
+            const currency = CURRENCY_BY_FORM[prefix];
             const preview = document.getElementById(`${prefix}_salary_php_preview`);
             if (!preview) return;
-
-            if (currency === 'PHP') {
+            if (!currency || currency === 'PHP') {
                 preview.textContent = '';
                 return;
             }
 
             const rate = EXCHANGE_RATES[currency];
             if (rate === undefined) {
-                preview.textContent = 'No cached exchange rate yet for ' + currency + ' — will convert on next daily rate refresh.';
+                preview.textContent = 'No cached exchange rate yet for ' + currency + ' — click Refresh Rates.';
                 return;
             }
-
             const parts = [];
             if (!isNaN(min)) parts.push('₱' + Math.round(min * rate).toLocaleString());
             if (!isNaN(max)) parts.push('₱' + Math.round(max * rate).toLocaleString());
             preview.textContent = parts.length ? `≈ ${parts.join(' – ')} (today's rate)` : '';
+        }
+
+        async function onWorksiteCountryChange(prefix) {
+            const input = document.getElementById(`${prefix}_worksite_country`);
+            const hint = document.getElementById(`${prefix}_currency_hint`); // add form only
+            const curField = document.getElementById(`${prefix}_salary_currency`); // edit form only
+            CURRENCY_BY_FORM[prefix] = null;
+            try {
+                const fd = new FormData();
+                fd.append('action', 'resolve_currency');
+                fd.append('country', input.value);
+                const d = await (await fetch('job-orders.php', {
+                    method: 'POST',
+                    body: fd
+                })).json();
+                if (d.status === 'success') {
+                    input.value = d.country;
+                    CURRENCY_BY_FORM[prefix] = d.currency;
+                    if (hint) hint.textContent = `Salary currency: ${d.currency} (set by worksite country)`;
+                    if (curField) curField.value = d.currency;
+                } else {
+                    if (hint) hint.textContent = 'Country not recognized — pick one from the suggestions list.';
+                    if (curField) curField.value = '—';
+                }
+            } catch (e) {
+                /* server re-validates on save */
+            }
+            if (prefix === 'add') document.querySelectorAll('#addPositionsWrap .position-row').forEach(r => updatePosPhp(r));
+            else updatePhpPreview('edit');
         }
 
         function populateCategorySelect(selectId) {
@@ -2384,7 +2449,7 @@ if (empty($allCurrencies)) {
         }
 
         // Populate the (static) category dropdowns once on page load
-        populateCategorySelect('add_category_id');
+
         populateCategorySelect('edit_category_id');
 
         /*  Live date + time  */
@@ -2875,6 +2940,16 @@ if (empty($allCurrencies)) {
         /*  Add Form */
         document.getElementById('addForm').addEventListener('submit', async function(e) {
             e.preventDefault();
+            const hasPosition = Array.from(this.querySelectorAll('[name="pos_title[]"]')).some(i => i.value.trim() !== '');
+            if (!hasPosition) {
+                Swal.fire({
+                    title: 'Add a position',
+                    text: 'Enter at least one position title.',
+                    icon: 'warning',
+                    confirmButtonColor: '#1e40af'
+                });
+                return;
+            }
             const formData = new FormData(this);
             const submitBtn = this.querySelector('button[type="submit"]');
             const origTxt = submitBtn.innerHTML;
@@ -2983,14 +3058,10 @@ if (empty($allCurrencies)) {
             document.getElementById('edit_salary_min').value = job.salary_min || '';
             document.getElementById('edit_salary_max').value = job.salary_max || '';
 
-            // Pre-fill current currency in the searchable input
-            const editCurrencyInput = document.getElementById('edit_salary_currency');
-            if (editCurrencyInput) {
-                editCurrencyInput.value = (job.salary_currency || 'PHP').toUpperCase();
-            }
+            CURRENCY_BY_FORM.edit = job.salary_currency || null;
+            document.getElementById('edit_salary_currency').value = job.salary_currency || '—';
+            onWorksiteCountryChange('edit');
 
-            updatePhpPreview('edit');
-            updatePhpPreview('edit');
             const editCategoryId = categoryIdForSubcategory(job.subcategory_id);
             document.getElementById('edit_category_id').value = editCategoryId;
             if (typeof editCategoryDD !== 'undefined') editCategoryDD.refresh();
@@ -3302,9 +3373,152 @@ if (empty($allCurrencies)) {
             wrap.appendChild(div);
         }
 
+        function positionRowHTML() {
+            const catOpts = JOB_CATEGORIES.map(c => `<option value="${c.id}">${escHtml(c.category_name)}</option>`).join('');
+            const inp = 'w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:border-blue-500';
+            const lbl = 'block text-xs font-medium text-gray-600 mb-1';
+            return `
+    <div class="position-row border border-gray-200 rounded-2xl bg-gray-50 p-4">
+        <div class="flex items-center justify-between mb-3">
+            <span class="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-gray-500">
+                <span class="pos-index-num w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-[11px]">1</span>
+                Position
+            </span>
+            <button type="button" onclick="removePositionRow(this)"
+                class="pos-remove text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-2.5 py-1.5 rounded-lg">
+                <i class="fas fa-trash mr-1"></i>Remove
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+            <div class="md:col-span-6">
+                <label class="${lbl}">Position title <span class="text-red-500">*</span></label>
+                <input type="text" name="pos_title[]" placeholder="e.g. Registered Nurse"
+                    oninput="renderPosQualPreview()" class="${inp}">
+            </div>
+            <div class="md:col-span-3">
+                <label class="${lbl}">Gender</label>
+                <select name="pos_gender[]" onchange="renderPosQualPreview()" class="${inp}">
+                    <option value="">Any / shared</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                </select>
+            </div>
+            <div class="md:col-span-3">
+                <label class="${lbl}">Slots <span class="text-red-500">*</span></label>
+                <input type="number" name="pos_slots[]" min="1" placeholder="e.g. 10" class="${inp}">
+            </div>
+
+            <div class="md:col-span-6">
+                <label class="${lbl}">Category</label>
+                <select onchange="onPosCategoryChange(this)" class="${inp}">
+                    <option value="">Select category…</option>${catOpts}
+                </select>
+            </div>
+            <div class="md:col-span-6">
+                <label class="${lbl}">Subcategory</label>
+                <select name="pos_subcategory_id[]" class="pos-subcategory ${inp}">
+                    <option value="">Select category first…</option>
+                </select>
+            </div>
+
+            <div class="md:col-span-6">
+                <label class="${lbl}">Salary min <span class="pos-cur text-gray-400"></span></label>
+                <input type="number" name="pos_salary_min[]" min="0" step="0.01" oninput="updatePosPhp(this)" class="${inp}">
+            </div>
+            <div class="md:col-span-6">
+                <label class="${lbl}">Salary max <span class="pos-cur text-gray-400"></span></label>
+                <input type="number" name="pos_salary_max[]" min="0" step="0.01" oninput="updatePosPhp(this)" class="${inp}">
+            </div>
+        </div>
+        <p class="pos-php-preview text-xs text-gray-400 mt-2"></p>
+    </div>`;
+        }
+
+        function addPositionRow() {
+            document.getElementById('addPositionsWrap').insertAdjacentHTML('beforeend', positionRowHTML());
+        }
+
+        function removePositionRow(btn) {
+            const wrap = document.getElementById('addPositionsWrap');
+            if (wrap.querySelectorAll('.position-row').length <= 1) return; // keep at least one
+            btn.closest('.position-row').remove();
+            renderPosQualPreview();
+        }
+
+        function setPositionRows() {
+            document.getElementById('addPositionsWrap').innerHTML = '';
+            addPositionRow();
+            renderPosQualPreview();
+        }
+
+        function renderPosQualPreview() {
+            const box = document.getElementById('addPosQualPreview');
+            const list = document.getElementById('addPosQualList');
+            if (!box || !list) return;
+
+            const rows = Array.from(document.querySelectorAll('#addPositionsWrap .position-row'));
+            const items = rows.map((r, i) => {
+                const title = r.querySelector('[name="pos_title[]"]').value.trim() || `Position ${i + 1}`;
+                const gender = r.querySelector('[name="pos_gender[]"]').value;
+                return gender ? {
+                    title,
+                    gender
+                } : null;
+            }).filter(Boolean);
+
+            if (!items.length) {
+                box.classList.add('hidden');
+                list.innerHTML = '';
+                return;
+            }
+
+            list.innerHTML = items.map(it => `
+        <div class="flex items-center gap-2 text-xs bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+            <span class="font-semibold text-gray-800">${escHtml(it.title)}</span>
+            <i class="fas fa-arrow-right text-[9px] text-gray-400"></i>
+            <span class="text-amber-700 font-medium">Gender: ${escHtml(it.gender)}</span>
+        </div>`).join('');
+            box.classList.remove('hidden');
+        }
+
+        function onPosCategoryChange(sel) {
+            const subSel = sel.closest('.position-row').querySelector('.pos-subcategory');
+            const items = JOB_SUBCATEGORIES.filter(s => String(s.category_id) === sel.value);
+            subSel.innerHTML = items.length ?
+                '<option value="">Select subcategory…</option>' + items.map(s => `<option value="${s.id}">${escHtml(s.subcategory_name)}</option>`).join('') :
+                '<option value="">Select category first…</option>';
+        }
+
+        function updatePosPhp(el) {
+            const row = el.classList?.contains('position-row') ? el : el.closest('.position-row');
+            const min = parseFloat(row.querySelector('[name="pos_salary_min[]"]').value);
+            const max = parseFloat(row.querySelector('[name="pos_salary_max[]"]').value);
+            const cur = CURRENCY_BY_FORM.add;
+            const out = row.querySelector('.pos-php-preview');
+            if (!cur) {
+                out.textContent = 'Select the worksite country to set the salary currency.';
+                return;
+            }
+            if (cur === 'PHP') {
+                out.textContent = '';
+                return;
+            }
+            const rate = EXCHANGE_RATES[cur];
+            if (rate === undefined) {
+                out.textContent = 'No cached rate for ' + cur + ' — click Refresh Rates.';
+                return;
+            }
+            const parts = [];
+            if (!isNaN(min)) parts.push('₱' + Math.round(min * rate).toLocaleString());
+            if (!isNaN(max)) parts.push('₱' + Math.round(max * rate).toLocaleString());
+            out.textContent = parts.length ? `${cur} → ≈ ${parts.join(' – ')} (today's rate)` : `Currency: ${cur}`;
+        }
+
         function addQualRow(containerId) {
             appendQualRow(containerId, '', '');
         }
+
 
         function setQualRows(containerId, quals) {
             const wrap = document.getElementById(containerId);
@@ -3375,19 +3589,17 @@ if (empty($allCurrencies)) {
         function openAddModal() {
             const form = document.getElementById('addForm');
             if (form) form.reset();
+            CURRENCY_BY_FORM.add = null;
+            const h = document.getElementById('add_currency_hint');
+            if (h) h.textContent = 'Salary currency is set automatically from the country.';
             setRequirementRows('addRequirementsWrap', []);
             setQuestionRows('addQuestionsWrap', []);
             setQualRows('addQualWrap', []);
             setSkillRows('addSkillsWrap', []);
-            const addPreview = document.getElementById('add_salary_php_preview');
-            if (addPreview) addPreview.textContent = '';
-            document.getElementById('add_category_id').value = '';
-            if (typeof addCategoryDD !== 'undefined') addCategoryDD.refresh();
+            setPositionRows();
             if (typeof addClassificationDD !== 'undefined') addClassificationDD.refresh();
-            populateSubcategorySelect('add_subcategory_id', '', '');
             document.getElementById('addModal').classList.remove('hidden');
 
-            // Fetch the next auto-generated RSF number for preview
             const preview = document.getElementById('rsf_number_preview');
             if (preview) {
                 preview.value = 'Generating…';
@@ -3397,9 +3609,9 @@ if (empty($allCurrencies)) {
                         method: 'POST',
                         body: fd
                     })
-                    .then(res => res.json())
-                    .then(data => {
-                        preview.value = data.status === 'success' ? data.rsf_number : 'DMW-RSF-XXXXXX-XXXX';
+                    .then(r => r.json())
+                    .then(d => {
+                        preview.value = d.status === 'success' ? d.rsf_number + ' (first of the batch)' : 'DMW-RSF-XXXXXX-XXXX';
                     })
                     .catch(() => {
                         preview.value = 'DMW-RSF-XXXXXX-XXXX';
@@ -3407,34 +3619,7 @@ if (empty($allCurrencies)) {
             }
         }
 
-        const AVAILABLE_CURRENCIES = <?= json_encode($allCurrencies) ?>;
 
-        // Populate datalists
-        function populateCurrencyDatalists() {
-            const addList = document.getElementById('currencyList');
-            const editList = document.getElementById('currencyListEdit');
-
-            const options = AVAILABLE_CURRENCIES.map(code =>
-                `<option value="${code}">${code}</option>`
-            ).join('');
-
-            if (addList) addList.innerHTML = options;
-            if (editList) editList.innerHTML = options;
-        }
-
-        function setupCurrencyInputs() {
-            const ids = ['add_salary_currency', 'edit_salary_currency'];
-            ids.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.addEventListener('blur', function() {
-                        this.value = this.value.toUpperCase().trim();
-                        const prefix = this.id.includes('add') ? 'add' : 'edit';
-                        updatePhpPreview(prefix);
-                    });
-                }
-            });
-        }
 
         async function refreshExchangeRates() {
             const btn = event.currentTarget;
@@ -3468,12 +3653,6 @@ if (empty($allCurrencies)) {
                 btn.disabled = false;
             }
         }
-
-        // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            populateCurrencyDatalists();
-            setupCurrencyInputs();
-        });
     </script>
 
     <script>
@@ -3620,9 +3799,9 @@ if (empty($allCurrencies)) {
         });
 
         //  RSF Add/Edit modal dropdowns — same floating-panel design 
-        const addCategoryDD = enhanceAdminSelect(document.getElementById('add_category_id'));
+
         const editCategoryDD = enhanceAdminSelect(document.getElementById('edit_category_id'));
-        const addSubcategoryDD = enhanceAdminSelect(document.getElementById('add_subcategory_id'));
+
         const editSubcategoryDD = enhanceAdminSelect(document.getElementById('edit_subcategory_id'));
         const addClassificationDD = enhanceAdminSelect(document.querySelector('#addForm select[name="classification"]'));
         const editClassificationDD = enhanceAdminSelect(document.getElementById('edit_classification'));

@@ -1,7 +1,7 @@
 <?php
 
 /**
- * reportss.php  –  DMW RO IV-A Admin Reports
+ * reports.php  –  DMW RO IV-A Admin Reports
  * Printable + Excel-exportable report suite.
  * Opened from dashboard.php's "Print / Export PDF" button, carrying
  * across whatever month / province / job_type / country filters the
@@ -48,7 +48,7 @@ $f_country  = trim($_GET['country'] ?? '');
 function buildWhere(): array
 {
     global $f_month, $f_province, $f_jobtype, $f_country;
-    $where  = [];
+    $where  = ["a.status <> 'draft'"]; // exclude draft applications from all reports
     $types  = '';
     $params = [];
 
@@ -330,8 +330,8 @@ $res = q($database, "
            COUNT(a.id) AS applied,
            SUM(a.status = 'approved') AS approved,
            GREATEST(j.slots_available - COALESCE(SUM(a.status = 'approved'), 0), 0) AS remaining
-    FROM rsf_job_orders j
-    LEFT JOIN applications a ON a.rsf_id = j.id
+        FROM rsf_job_orders j
+    LEFT JOIN applications a ON a.rsf_id = j.id AND a.status <> 'draft'
     $jobWhereSql
     GROUP BY j.id
     ORDER BY j.deadline ASC
@@ -448,7 +448,7 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="stylesheet" href="../css/dashboard.css">
@@ -1770,7 +1770,7 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
 
         <div id="printReport">
             <div class="pr-page-header">
-                <img id="printLogo" src="../pictures/dmw_tahanan_ng_ofw.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
+                <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                 <div>
                     <div class="pr-republic">Republic of the Philippines</div>
                     <div class="pr-agency">DEPARTMENT OF MIGRANT WORKERS</div>
@@ -2159,6 +2159,12 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
             'rep-doccompliance': 'Document Compliance Report'
         };
 
+        const REPORT_META = <?= json_encode([
+                                'filters'     => $filterRecap,
+                                'generatedAt' => $generatedAt,
+                                'preparedBy'  => $admin_name,
+                            ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -2204,32 +2210,479 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
             return name.replace(/[\\\/\?\*\[\]:]/g, ' ').substring(0, 31);
         }
 
-        function exportCurrent() {
-            const id = activeSectionId();
-            const tables = tablesInSection(id);
-            if (!tables.length) return;
+        /* ───────── Styled Excel export (ExcelJS) ───────── */
+        const XL = {
+            navy: 'FF0B1F4B',
+            navySoft: 'FF13295E',
+            white: 'FFFFFFFF',
+            zebra: 'FFF8FAFC',
+            border: 'FFD1D5DB',
+            grey: 'FF6B7280',
+            okBg: 'FFD1FAE5',
+            okFg: 'FF047857',
+            badBg: 'FFFEE2E2',
+            badFg: 'FFB91C1C',
+            totalBg: 'FFE9EDF7'
+        };
+        const XL_TOTAL_TABLES = ['tbl-country-summary', 'tbl-status']; // tables that get a TOTAL row
+        const thin = c => ({
+            style: 'thin',
+            color: {
+                argb: c || XL.border
+            }
+        });
+        const allBorders = () => ({
+            top: thin(),
+            left: thin(),
+            bottom: thin(),
+            right: thin()
+        });
 
-            const wb = XLSX.utils.book_new();
-            tables.forEach((tbl, i) => {
-                const ws = XLSX.utils.table_to_sheet(tbl);
-                const name = safeSheetName(tables.length > 1 ? `${REPORT_TITLES[id]} ${i + 1}` : REPORT_TITLES[id]);
-                XLSX.utils.book_append_sheet(wb, ws, name || `Sheet${i + 1}`);
-            });
-            XLSX.writeFile(wb, `${REPORT_TITLES[id].replace(/\s+/g, '_')}.xlsx`);
+        function xlParse(txt, header) {
+            if (/rsf|email|phone/i.test(header)) return {
+                v: txt
+            };
+            if (/^-?\d+$/.test(txt)) return {
+                v: Number(txt),
+                fmt: '0',
+                num: true
+            };
+            if (/^-?\d+\.\d+$/.test(txt)) return {
+                v: Number(txt),
+                fmt: '0.0',
+                num: true
+            };
+            const p = txt.match(/^(\d+(?:\.(\d+))?)%$/);
+            if (p) return {
+                v: Number(p[1]) / 100,
+                fmt: p[2] ? '0.0%' : '0%',
+                num: true,
+                pct: true
+            };
+            return {
+                v: txt
+            };
         }
 
-        function exportAll() {
-            const wb = XLSX.utils.book_new();
-            document.querySelectorAll('.report-section').forEach(section => {
-                const tables = tablesInSection(section.id);
-                tables.forEach((tbl, i) => {
-                    const ws = XLSX.utils.table_to_sheet(tbl);
-                    const baseName = REPORT_TITLES[section.id] || section.id;
-                    const name = safeSheetName(tables.length > 1 ? `${baseName} ${i + 1}` : baseName);
-                    XLSX.utils.book_append_sheet(wb, ws, name || section.id);
+        async function xlLoadLogo(wb) {
+            try {
+                const data = await toDataURL('../pictures/dmw_logo.png');
+                const img = await loadImage(data);
+                return {
+                    id: wb.addImage({
+                        base64: data.split(',')[1],
+                        extension: 'png'
+                    }),
+                    ratio: img.naturalWidth / img.naturalHeight
+                };
+            } catch (e) {
+                console.warn('Logo not added to Excel:', e);
+                return null;
+            }
+        }
+
+        function xlBuildSheet(wb, section, logo) {
+            const id = section.id;
+            const ws = wb.addWorksheet(safeSheetName(REPORT_TITLES[id] || id), {
+                properties: {
+                    tabColor: {
+                        argb: XL.navy
+                    }
+                },
+                views: [{
+                    showGridLines: false
+                }],
+                pageSetup: {
+                    orientation: 'landscape',
+                    paperSize: 9,
+                    fitToPage: true,
+                    fitToWidth: 1,
+                    fitToHeight: 0,
+                    margins: {
+                        left: .4,
+                        right: .4,
+                        top: .5,
+                        bottom: .6,
+                        header: .3,
+                        footer: .3
+                    }
+                }
+            });
+            ws.headerFooter.oddFooter = '&L&8DMW RO IV-A - For Official Use Only&R&8Page &P of &N';
+
+            // Collect tables
+            const blocks = [];
+            section.querySelectorAll('.section').forEach(sec => {
+                const tbl = sec.querySelector('table.report-table');
+                if (!tbl) return;
+                const title = (sec.querySelector('.section-title')?.textContent || '').replace(/\s+/g, ' ').trim();
+                const headers = Array.from(tbl.querySelectorAll('thead th')).map(th => th.textContent.trim());
+                const rows = Array.from(tbl.querySelectorAll('tbody tr:not(.empty-row)'))
+                    .map(tr => Array.from(tr.children).map(td => td.textContent.replace(/\s+/g, ' ').trim()));
+                blocks.push({
+                    title,
+                    headers,
+                    rows,
+                    tableId: tbl.id
                 });
             });
-            XLSX.writeFile(wb, 'DMW_All_Reports.xlsx');
+
+            const N = Math.max(5, ...blocks.map(b => b.headers.length));
+
+            // Column widths from content
+            const widths = Array(N).fill(12);
+            blocks.forEach(b => {
+                [b.headers, ...b.rows].forEach(r => r.forEach((t, i) => {
+                    widths[i] = Math.min(45, Math.max(widths[i], String(t).length + 3));
+                }));
+            });
+            widths.forEach((w, i) => ws.getColumn(i + 1).width = w);
+
+            // Letterhead
+            const head = [
+                ['Republic of the Philippines', 9, false, XL.grey, 14],
+                ['DEPARTMENT OF MIGRANT WORKERS', 15, true, XL.navy, 24],
+                ['Regional Office IV-A (CALABARZON)', 9.5, false, XL.grey, 14],
+                ['Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027  |  calamba@dmw.gov.ph  |  dmw.gov.ph', 8, false, XL.grey, 14]
+            ];
+            head.forEach(([text, size, bold, color, h], i) => {
+                const r = ws.getRow(i + 1);
+                r.height = h;
+                const c = r.getCell(1);
+                c.value = text;
+                c.font = {
+                    name: 'Calibri',
+                    size,
+                    bold,
+                    color: {
+                        argb: color
+                    }
+                };
+                c.alignment = {
+                    vertical: 'middle',
+                    horizontal: 'left',
+                    indent: 9
+                };
+            });
+            for (let c = 1; c <= N; c++) {
+                ws.getRow(4).getCell(c).border = {
+                    bottom: {
+                        style: 'thick',
+                        color: {
+                            argb: XL.navy
+                        }
+                    }
+                };
+            }
+            if (logo) {
+                ws.addImage(logo.id, {
+                    tl: {
+                        col: 0.15,
+                        row: 0.25
+                    },
+                    ext: {
+                        width: 66 * logo.ratio,
+                        height: 66
+                    }
+                });
+            }
+
+            // Report title + meta
+            const meta = (rowNo, text, font, h) => {
+                ws.mergeCells(rowNo, 1, rowNo, N);
+                const c = ws.getCell(rowNo, 1);
+                c.value = text;
+                c.font = font;
+                c.alignment = {
+                    horizontal: 'center',
+                    vertical: 'middle',
+                    wrapText: true
+                };
+                ws.getRow(rowNo).height = h;
+            };
+            meta(6, (REPORT_TITLES[id] || id).toUpperCase(), {
+                name: 'Calibri',
+                size: 15,
+                bold: true,
+                color: {
+                    argb: XL.navy
+                }
+            }, 26);
+            meta(7, REPORT_META.filters, {
+                name: 'Calibri',
+                size: 10,
+                italic: true,
+                color: {
+                    argb: XL.grey
+                }
+            }, 16);
+            meta(8, `Generated: ${REPORT_META.generatedAt}   |   Prepared by: ${REPORT_META.preparedBy}`, {
+                name: 'Calibri',
+                size: 9,
+                color: {
+                    argb: XL.grey
+                }
+            }, 16);
+
+            // Tables
+            let row = 10;
+            let firstHeaderRow = null,
+                lastDataRow = null;
+
+            blocks.forEach(b => {
+                // Section banner
+                ws.mergeCells(row, 1, row, N);
+                const t = ws.getCell(row, 1);
+                t.value = b.title.toUpperCase();
+                t.font = {
+                    name: 'Calibri',
+                    size: 11,
+                    bold: true,
+                    color: {
+                        argb: XL.white
+                    }
+                };
+                t.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: {
+                        argb: XL.navy
+                    }
+                };
+                t.alignment = {
+                    vertical: 'middle',
+                    indent: 1
+                };
+                ws.getRow(row).height = 22;
+                row++;
+
+                // Header row
+                const hr = ws.getRow(row);
+                hr.height = 26;
+                b.headers.forEach((h, i) => {
+                    const c = hr.getCell(i + 1);
+                    c.value = h;
+                    c.font = {
+                        name: 'Calibri',
+                        size: 10,
+                        bold: true,
+                        color: {
+                            argb: XL.white
+                        }
+                    };
+                    c.fill = {
+                        type: 'pattern',
+                        pattern: 'solid',
+                        fgColor: {
+                            argb: XL.navySoft
+                        }
+                    };
+                    c.alignment = {
+                        horizontal: 'center',
+                        vertical: 'middle',
+                        wrapText: true
+                    };
+                    c.border = allBorders();
+                });
+                if (firstHeaderRow === null) firstHeaderRow = row;
+                const headerRowNo = row;
+                row++;
+
+                // Data rows
+                if (!b.rows.length) {
+                    ws.mergeCells(row, 1, row, b.headers.length);
+                    const c = ws.getCell(row, 1);
+                    c.value = 'No records found for the selected filters.';
+                    c.font = {
+                        name: 'Calibri',
+                        size: 10,
+                        italic: true,
+                        color: {
+                            argb: XL.grey
+                        }
+                    };
+                    c.alignment = {
+                        horizontal: 'center',
+                        vertical: 'middle'
+                    };
+                    c.border = allBorders();
+                    row++;
+                }
+                const dataStart = row;
+                b.rows.forEach((cells, rIdx) => {
+                    const r = ws.getRow(row);
+                    r.height = 20;
+                    cells.forEach((txt, i) => {
+                        const p = xlParse(txt, b.headers[i] || '');
+                        const c = r.getCell(i + 1);
+                        c.value = p.v;
+                        if (p.fmt) c.numFmt = p.fmt;
+                        c.font = {
+                            name: 'Calibri',
+                            size: 10,
+                            color: {
+                                argb: 'FF1F2937'
+                            }
+                        };
+                        c.alignment = {
+                            vertical: 'middle',
+                            horizontal: p.num ? 'center' : 'left',
+                            wrapText: !p.num
+                        };
+                        c.border = allBorders();
+                        if (rIdx % 2 === 1) c.fill = {
+                            type: 'pattern',
+                            pattern: 'solid',
+                            fgColor: {
+                                argb: XL.zebra
+                            }
+                        };
+
+                        // Completion % → green when 100%, red otherwise
+                        if (/completion/i.test(b.headers[i] || '') && p.pct) {
+                            const full = p.v >= 1;
+                            c.font = {
+                                name: 'Calibri',
+                                size: 10,
+                                bold: true,
+                                color: {
+                                    argb: full ? XL.okFg : XL.badFg
+                                }
+                            };
+                            c.fill = {
+                                type: 'pattern',
+                                pattern: 'solid',
+                                fgColor: {
+                                    argb: full ? XL.okBg : XL.badBg
+                                }
+                            };
+                        }
+                    });
+                    row++;
+                });
+                const dataEnd = row - 1;
+                if (b.rows.length) lastDataRow = dataEnd;
+
+                // TOTAL row (live SUM formulas) for summary tables
+                if (b.rows.length && XL_TOTAL_TABLES.includes(b.tableId)) {
+                    const r = ws.getRow(row);
+                    r.height = 22;
+                    b.headers.forEach((h, i) => {
+                        const c = r.getCell(i + 1);
+                        const col = ws.getColumn(i + 1).letter;
+                        const sample = xlParse(b.rows[0][i], h);
+                        if (i === 0) c.value = 'TOTAL';
+                        else if (sample.num) {
+                            c.value = {
+                                formula: `SUM(${col}${dataStart}:${col}${dataEnd})`
+                            };
+                            c.numFmt = sample.fmt;
+                        }
+                        c.font = {
+                            name: 'Calibri',
+                            size: 10,
+                            bold: true,
+                            color: {
+                                argb: XL.navy
+                            }
+                        };
+                        c.fill = {
+                            type: 'pattern',
+                            pattern: 'solid',
+                            fgColor: {
+                                argb: XL.totalBg
+                            }
+                        };
+                        c.alignment = {
+                            vertical: 'middle',
+                            horizontal: i === 0 ? 'left' : 'center'
+                        };
+                        c.border = {
+                            top: {
+                                style: 'medium',
+                                color: {
+                                    argb: XL.navy
+                                }
+                            },
+                            bottom: thin(),
+                            left: thin(),
+                            right: thin()
+                        };
+                    });
+                    row++;
+                }
+                row += 2; // gap before next table
+            });
+
+            // Filter dropdowns only when the sheet has a single table
+            if (blocks.length === 1 && blocks[0].rows.length) {
+                ws.autoFilter = {
+                    from: {
+                        row: firstHeaderRow,
+                        column: 1
+                    },
+                    to: {
+                        row: lastDataRow,
+                        column: blocks[0].headers.length
+                    }
+                };
+            }
+
+            // Footer
+            ws.mergeCells(row, 1, row, N);
+            const f = ws.getCell(row, 1);
+            f.value = 'System-generated report  •  DMW Application Management System  •  Regional Office IV-A (CALABARZON)  •  For Official Use Only';
+            f.font = {
+                name: 'Calibri',
+                size: 8,
+                italic: true,
+                color: {
+                    argb: XL.grey
+                }
+            };
+            f.alignment = {
+                horizontal: 'center'
+            };
+            f.border = {
+                top: thin()
+            };
+            ws.pageSetup.printArea = `A1:${ws.getColumn(N).letter}${row}`;
+        }
+
+        async function xlSave(wb, filename) {
+            const buf = await wb.xlsx.writeBuffer();
+            const blob = new Blob([buf], {
+                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }
+
+        async function exportWorkbook(sections, filename) {
+            const wb = new ExcelJS.Workbook();
+            wb.creator = REPORT_META.preparedBy;
+            wb.company = 'DMW Regional Office IV-A';
+            wb.created = new Date();
+            const logo = await xlLoadLogo(wb);
+            sections.forEach(s => xlBuildSheet(wb, s, logo));
+            await xlSave(wb, filename);
+        }
+
+        async function exportCurrent() {
+            const section = document.querySelector('.report-section.active');
+            if (!section || !tablesInSection(section.id).length) return;
+            await exportWorkbook([section], `${REPORT_TITLES[section.id].replace(/\s+/g, '_')}.xlsx`);
+        }
+
+        async function exportAll() {
+            const sections = Array.from(document.querySelectorAll('.report-section'))
+                .filter(s => tablesInSection(s.id).length);
+            await exportWorkbook(sections, 'DMW_All_Reports.xlsx');
         }
 
         async function toDataURL(url) {

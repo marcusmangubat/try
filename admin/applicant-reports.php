@@ -606,7 +606,7 @@ $generatedAt = date('F j, Y g:i A');
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -2088,6 +2088,11 @@ $generatedAt = date('F j, Y g:i A');
         const REPORT_ROWS = <?= json_encode($rows, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const EXPORT_COLUMNS = <?= json_encode($exportColumns, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?>;
         const TABLE_COLUMNS = <?= json_encode($tableColumns, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?>;
+        const REPORT_META = <?= json_encode([
+                                'filters'     => $filterSummaryText,
+                                'generatedAt' => $generatedAt,
+                                'preparedBy'  => $admin_name,
+                            ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 
         /*  PDF REPORT CONFIG  */
         // Configurable logo path. Point this at a locally-hosted file (e.g. '../assets/dmw-logo.png')
@@ -2420,14 +2425,498 @@ $generatedAt = date('F j, Y g:i A');
             URL.revokeObjectURL(url);
         }
 
-        function exportExcel() {
-            const rows = exportRowsFlat();
-            const ws = XLSX.utils.json_to_sheet(rows, {
-                header: EXPORT_COLUMNS.map(c => c.label)
+        /* ───────── Styled Excel export (ExcelJS) ───────── */
+        const XL = {
+            navy: 'FF0B1F4B',
+            navySoft: 'FF13295E',
+            white: 'FFFFFFFF',
+            zebra: 'FFF8FAFC',
+            border: 'FFD1D5DB',
+            grey: 'FF6B7280',
+            text: 'FF1F2937',
+            totalBg: 'FFE9EDF7'
+        };
+        // [background, text] per application status
+        const XL_STATUS = {
+            approved: ['FFD1FAE5', 'FF047857'],
+            disapproved: ['FFFEE2E2', 'FFB91C1C'],
+            pending: ['FFFEF3C7', 'FFB45309'],
+            under_evaluation: ['FFE0E7FF', 'FF3730A3'],
+            for_compliance: ['FFFFEDD5', 'FFC2410C'],
+            resubmitted: ['FFFCE7F3', 'FF9D174D']
+        };
+        // Columns kept as text (never converted to numbers)
+        const XL_TEXT_KEYS = ['applicant_phone', 'applicant_email'];
+        const xlThin = () => ({
+            style: 'thin',
+            color: {
+                argb: XL.border
+            }
+        });
+        const xlBorders = () => ({
+            top: xlThin(),
+            left: xlThin(),
+            bottom: xlThin(),
+            right: xlThin()
+        });
+        const xlFill = argb => ({
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: {
+                argb
+            }
+        });
+
+        function xlImageRatio(dataUrl) {
+            return new Promise(res => {
+                const i = new Image();
+                i.onload = () => res(i.naturalWidth / i.naturalHeight);
+                i.onerror = () => res(1);
+                i.src = dataUrl;
             });
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'Applicant Report');
-            XLSX.writeFile(wb, 'Applicant_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+        }
+
+        function xlLetterhead(ws, wb, logo, N) {
+            const lines = [
+                ['Republic of the Philippines', 9, false, XL.grey, 14],
+                ['DEPARTMENT OF MIGRANT WORKERS', 15, true, XL.navy, 24],
+                ['Regional Office IV-A (CALABARZON)', 9.5, false, XL.grey, 14],
+                ['Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027  |  calamba@dmw.gov.ph  |  dmw.gov.ph', 8, false, XL.grey, 14]
+            ];
+            lines.forEach(([text, size, bold, color, h], i) => {
+                const r = ws.getRow(i + 1);
+                r.height = h;
+                const c = r.getCell(1);
+                c.value = text;
+                c.font = {
+                    name: 'Calibri',
+                    size,
+                    bold,
+                    color: {
+                        argb: color
+                    }
+                };
+                c.alignment = {
+                    vertical: 'middle',
+                    horizontal: 'left',
+                    indent: 9
+                };
+            });
+            for (let c = 1; c <= N; c++) {
+                ws.getRow(4).getCell(c).border = {
+                    bottom: {
+                        style: 'thick',
+                        color: {
+                            argb: XL.navy
+                        }
+                    }
+                };
+            }
+            if (logo) ws.addImage(logo.id, {
+                tl: {
+                    col: 0.15,
+                    row: 0.25
+                },
+                ext: {
+                    width: 66 * logo.ratio,
+                    height: 66
+                }
+            });
+        }
+
+        function xlMergedLine(ws, rowNo, lastCol, text, font, h) {
+            ws.mergeCells(rowNo, 1, rowNo, lastCol);
+            const c = ws.getCell(rowNo, 1);
+            c.value = text;
+            c.font = font;
+            c.alignment = {
+                horizontal: 'center',
+                vertical: 'middle',
+                wrapText: true
+            };
+            ws.getRow(rowNo).height = h;
+        }
+
+        async function exportExcel() {
+            const rows = currentRows; // respects the quick-filter box, same as CSV/PDF
+            const cols = EXPORT_COLUMNS;
+            const N = cols.length;
+            const M = Math.min(N, 8); // title/meta span (keeps them on-screen)
+
+            const wb = new ExcelJS.Workbook();
+            wb.creator = REPORT_META.preparedBy;
+            wb.company = 'DMW Regional Office IV-A';
+            wb.created = new Date();
+
+            // Logo (reuses the PDF logo loader)
+            let logo = null;
+            const logoData = await loadImageAsDataURL(DMW_LOGO_URL);
+            if (logoData) {
+                logo = {
+                    id: wb.addImage({
+                        base64: logoData.split(',')[1],
+                        extension: 'png'
+                    }),
+                    ratio: await xlImageRatio(logoData)
+                };
+            }
+
+            /* ── Sheet 1: Applicant Report ── */
+            const ws = wb.addWorksheet('Applicant Report', {
+                properties: {
+                    tabColor: {
+                        argb: XL.navy
+                    }
+                },
+                views: [{
+                    showGridLines: false
+                }],
+                pageSetup: {
+                    orientation: 'landscape',
+                    paperSize: 9,
+                    fitToPage: true,
+                    fitToWidth: 1,
+                    fitToHeight: 0,
+                    margins: {
+                        left: .4,
+                        right: .4,
+                        top: .5,
+                        bottom: .6,
+                        header: .3,
+                        footer: .3
+                    }
+                }
+            });
+            ws.headerFooter.oddFooter = '&L&8DMW RO IV-A - For Official Use Only&R&8Page &P of &N';
+
+            xlLetterhead(ws, wb, logo, N);
+            xlMergedLine(ws, 5, M, 'APPLICANT REPORT', {
+                name: 'Calibri',
+                size: 15,
+                bold: true,
+                color: {
+                    argb: XL.navy
+                }
+            }, 26);
+            xlMergedLine(ws, 6, M,
+                `Filters: ${REPORT_META.filters}\nGenerated: ${REPORT_META.generatedAt}   |   Prepared by: ${REPORT_META.preparedBy}   |   Total records: ${rows.length}`, {
+                    name: 'Calibri',
+                    size: 9,
+                    italic: true,
+                    color: {
+                        argb: XL.grey
+                    }
+                }, 30);
+
+            const HR = 8; // header row
+            const hr = ws.getRow(HR);
+            hr.height = 30;
+            cols.forEach((col, i) => {
+                const c = hr.getCell(i + 1);
+                c.value = col.label;
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    bold: true,
+                    color: {
+                        argb: XL.white
+                    }
+                };
+                c.fill = xlFill(XL.navy);
+                c.alignment = {
+                    horizontal: 'center',
+                    vertical: 'middle',
+                    wrapText: true
+                };
+                c.border = xlBorders();
+            });
+
+            const widths = cols.map(c => String(c.label).length + 4);
+            rows.forEach((r, idx) => {
+                const row = ws.getRow(HR + 1 + idx);
+                row.height = 20;
+                cols.forEach((col, i) => {
+                    const raw = r[col.key];
+                    const c = row.getCell(i + 1);
+                    let isNum = false;
+
+                    if (col.key === 'profile_completion') {
+                        c.value = (Number(raw) || 0) / 100;
+                        c.numFmt = '0%';
+                        isNum = true;
+                    } else if (col.key === 'document_count') {
+                        c.value = Number(raw) || 0;
+                        c.numFmt = '0';
+                        isNum = true;
+                    } else {
+                        const txt = (raw === null || raw === undefined || raw === '') ? '—' : String(raw);
+                        c.value = txt; // plain string → can never run as a formula
+                        widths[i] = Math.max(widths[i], Math.min(40, txt.length + 3));
+                    }
+
+                    c.font = {
+                        name: 'Calibri',
+                        size: 10,
+                        color: {
+                            argb: XL.text
+                        }
+                    };
+                    c.alignment = {
+                        vertical: 'middle',
+                        horizontal: isNum ? 'center' : 'left',
+                        wrapText: false
+                    };
+                    c.border = xlBorders();
+                    if (idx % 2 === 1) c.fill = xlFill(XL.zebra);
+
+                    // Status badge colors
+                    if (col.key === 'status_label' && XL_STATUS[r.status]) {
+                        const [bg, fg] = XL_STATUS[r.status];
+                        c.fill = xlFill(bg);
+                        c.font = {
+                            name: 'Calibri',
+                            size: 10,
+                            bold: true,
+                            color: {
+                                argb: fg
+                            }
+                        };
+                        c.alignment = {
+                            vertical: 'middle',
+                            horizontal: 'center'
+                        };
+                    }
+                    // Profile completion: green ≥ 80%, amber ≥ 50%, red below
+                    if (col.key === 'profile_completion') {
+                        const v = c.value;
+                        const [bg, fg] = v >= 0.8 ? XL_STATUS.approved : (v >= 0.5 ? XL_STATUS.pending : XL_STATUS.disapproved);
+                        c.fill = xlFill(bg);
+                        c.font = {
+                            name: 'Calibri',
+                            size: 10,
+                            bold: true,
+                            color: {
+                                argb: fg
+                            }
+                        };
+                    }
+                });
+            });
+            widths.forEach((w, i) => ws.getColumn(i + 1).width = Math.max(11, w));
+            ws.getColumn(1).width = Math.max(ws.getColumn(1).width, 26);
+
+            if (!rows.length) {
+                ws.mergeCells(HR + 1, 1, HR + 1, M);
+                const c = ws.getCell(HR + 1, 1);
+                c.value = 'No applications found for the selected filters.';
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    italic: true,
+                    color: {
+                        argb: XL.grey
+                    }
+                };
+                c.alignment = {
+                    horizontal: 'center'
+                };
+            } else {
+                ws.autoFilter = {
+                    from: {
+                        row: HR,
+                        column: 1
+                    },
+                    to: {
+                        row: HR + rows.length,
+                        column: N
+                    }
+                };
+            }
+            ws.views = [{
+                state: 'frozen',
+                xSplit: 1,
+                ySplit: HR,
+                showGridLines: false
+            }]; // header + name column stay visible
+
+            const lastRow = HR + Math.max(rows.length, 1) + 2;
+            ws.mergeCells(lastRow, 1, lastRow, M);
+            const f = ws.getCell(lastRow, 1);
+            f.value = 'System-generated report  •  DMW Application Management System  •  Regional Office IV-A (CALABARZON)  •  For Official Use Only';
+            f.font = {
+                name: 'Calibri',
+                size: 8,
+                italic: true,
+                color: {
+                    argb: XL.grey
+                }
+            };
+            f.alignment = {
+                horizontal: 'center'
+            };
+            ws.pageSetup.printArea = `A1:${ws.getColumn(N).letter}${lastRow}`;
+            ws.pageSetup.printTitlesRow = `${HR}:${HR}`; // header repeats on every printed page
+
+            /* ── Sheet 2: Summary (status counts with live formulas) ── */
+            const ss = wb.addWorksheet('Summary', {
+                properties: {
+                    tabColor: {
+                        argb: 'FF3B82F6'
+                    }
+                },
+                views: [{
+                    showGridLines: false
+                }],
+                pageSetup: {
+                    orientation: 'portrait',
+                    paperSize: 9,
+                    fitToPage: true,
+                    fitToWidth: 1,
+                    fitToHeight: 0
+                }
+            });
+            ss.getColumn(1).width = 30;
+            ss.getColumn(2).width = 16;
+            ss.getColumn(3).width = 16;
+            xlLetterhead(ss, wb, logo, 3);
+            xlMergedLine(ss, 5, 3, 'APPLICANT REPORT — STATUS SUMMARY', {
+                name: 'Calibri',
+                size: 14,
+                bold: true,
+                color: {
+                    argb: XL.navy
+                }
+            }, 26);
+            xlMergedLine(ss, 6, 3, `Filters: ${REPORT_META.filters}\nGenerated: ${REPORT_META.generatedAt}`, {
+                name: 'Calibri',
+                size: 9,
+                italic: true,
+                color: {
+                    argb: XL.grey
+                }
+            }, 30);
+
+            const sh = ss.getRow(8);
+            sh.height = 24;
+            ['Status', 'Applications', '% of Total'].forEach((h, i) => {
+                const c = sh.getCell(i + 1);
+                c.value = h;
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    bold: true,
+                    color: {
+                        argb: XL.white
+                    }
+                };
+                c.fill = xlFill(XL.navy);
+                c.alignment = {
+                    horizontal: 'center',
+                    vertical: 'middle'
+                };
+                c.border = xlBorders();
+            });
+
+            const keys = Object.keys(STATUS_LABELS);
+            const first = 9,
+                last = first + keys.length - 1,
+                totalRow = last + 1;
+            keys.forEach((k, i) => {
+                const rNo = first + i;
+                const r = ss.getRow(rNo);
+                r.height = 20;
+                const count = rows.filter(x => x.status === k).length;
+                const [bg, fg] = XL_STATUS[k] || ['FFF3F4F6', XL.text];
+
+                const a = r.getCell(1);
+                a.value = STATUS_LABELS[k];
+                a.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    bold: true,
+                    color: {
+                        argb: fg
+                    }
+                };
+                a.fill = xlFill(bg);
+                const b = r.getCell(2);
+                b.value = count;
+                b.numFmt = '0';
+                const p = r.getCell(3);
+                p.value = {
+                    formula: `IF($B$${totalRow}=0,0,B${rNo}/$B$${totalRow})`
+                };
+                p.numFmt = '0.0%';
+                [a, b, p].forEach((c, j) => {
+                    if (j > 0) c.font = {
+                        name: 'Calibri',
+                        size: 10,
+                        color: {
+                            argb: XL.text
+                        }
+                    };
+                    c.alignment = {
+                        vertical: 'middle',
+                        horizontal: j === 0 ? 'left' : 'center',
+                        indent: j === 0 ? 1 : 0
+                    };
+                    c.border = xlBorders();
+                });
+            });
+
+            const t = ss.getRow(totalRow);
+            t.height = 22;
+            [
+                ['TOTAL', null],
+                [{
+                    formula: `SUM(B${first}:B${last})`
+                }, '0'],
+                [{
+                    formula: `SUM(C${first}:C${last})`
+                }, '0.0%']
+            ].forEach(([v, fmt], i) => {
+                const c = t.getCell(i + 1);
+                c.value = v;
+                if (fmt) c.numFmt = fmt;
+                c.font = {
+                    name: 'Calibri',
+                    size: 10,
+                    bold: true,
+                    color: {
+                        argb: XL.navy
+                    }
+                };
+                c.fill = xlFill(XL.totalBg);
+                c.alignment = {
+                    vertical: 'middle',
+                    horizontal: i === 0 ? 'left' : 'center',
+                    indent: i === 0 ? 1 : 0
+                };
+                c.border = {
+                    top: {
+                        style: 'medium',
+                        color: {
+                            argb: XL.navy
+                        }
+                    },
+                    bottom: xlThin(),
+                    left: xlThin(),
+                    right: xlThin()
+                };
+            });
+
+            /* ── Save ── */
+            const buf = await wb.xlsx.writeBuffer();
+            const blob = new Blob([buf], {
+                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'Applicant_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         }
 
         /*  PDF REPORT: HELPERS  */
