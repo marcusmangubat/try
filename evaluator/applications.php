@@ -162,7 +162,7 @@ if ($status_filter === 'available') {
         JOIN rsf_job_orders r ON a.rsf_id = r.id
         LEFT JOIN clients   c ON a.client_id = c.cid
         WHERE a.handling_party IS NULL
-          AND a.status IN ('pending','assign','assigned','resubmitted')
+          AND a.status IN ('pending','assign','assigned','resubmitted') {$filterWhere}
     ";
     $params = $filterParams;
     $types  = $filterTypes;
