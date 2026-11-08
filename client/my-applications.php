@@ -3165,8 +3165,9 @@ $single_mode = ($total === 1 && !$show_wizard);
     <div class="dock-wrap">
         <nav class="dock">
             <a href="index.php" class="dk"><i class="fas fa-house"></i><span class="dk-lbl">Home</span></a>
-            <div class="dk-div"></div>
+
             <a href="jobs.php" class="dk"><i class="fas fa-briefcase"></i><span class="dk-lbl">Jobs</span></a>
+            <div class="dk-div"></div>
             <a href="my-applications.php" class="dk active">
                 <i class="fas fa-file-lines"></i>
                 <span class="dk-lbl">Applications</span>
