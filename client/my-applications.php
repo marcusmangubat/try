@@ -2492,45 +2492,232 @@ $single_mode = ($total === 1 && !$show_wizard);
                                         <p style="font-size:12px;color:var(--text3);margin:3px 0 0;"><?= htmlspecialchars($wizard_job['employer_name'] ?? '—') ?> &nbsp;·&nbsp; <?= htmlspecialchars($wizard_job['worksite_country'] ?? '—') ?> &nbsp;·&nbsp; <?= htmlspecialchars($wizard_job['rsf_number'] ?? '—') ?></p>
                                     </div>
                                     <!-- Answers summary -->
-                                    <?php if ($wizard_questions !== []): ?>
+                                    <?php if ($wizard_questions !== []):
+                                        // Build the rows once, render them in both the table and the mobile cards.
+                                        $rev_answers = [];
+                                        foreach ($wizard_questions as $q) {
+                                            $qid = (int)$q['id'];
+                                            $ans = is_array($_SESSION['app_answers'] ?? null)
+                                                ? trim((string)($_SESSION['app_answers'][$qid] ?? ''))
+                                                : '';
+                                            $rev_answers[] = [
+                                                'question' => (string)$q['question_text'],
+                                                'required' => !empty($q['is_required']),
+                                                'answer'   => $ans,
+                                            ];
+                                        }
+                                        $rev_answered = count(array_filter($rev_answers, fn($r) => $r['answer'] !== ''));
+                                    ?>
                                         <div class="wiz-review-block">
-                                            <h4>Your Answers</h4>
-                                            <?php foreach ($wizard_questions as $q):
-                                                $qid = (int)$q['id'];
-                                                $ans = is_array($_SESSION['app_answers'] ?? null) ? (string)($_SESSION['app_answers'][$qid] ?? '—') : '—'; ?>
-                                                <div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);">
-                                                    <div style="font-size:12px;font-weight:700;color:var(--text2);"><?= htmlspecialchars((string)$q['question_text']) ?></div>
-                                                    <div style="font-size:13px;color:var(--text1);margin-top:3px;"><?= htmlspecialchars($ans) ?></div>
+                                            <div class="flex items-center justify-between gap-2 mb-2">
+                                                <h4 style="margin:0;">Your Answers</h4>
+                                                <span class="text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                    style="background:rgba(16,185,129,.12);color:var(--green);">
+                                                    <?= $rev_answered ?> of <?= count($rev_answers) ?> answered
+                                                </span>
+                                            </div>
+
+                                            <!-- Desktop / tablet: table -->
+                                            <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                                                <div class="overflow-x-auto">
+                                                    <table class="w-full border-collapse text-left">
+                                                        <thead>
+                                                            <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                                                <th class="px-4 py-3 w-12">#</th>
+                                                                <th class="px-4 py-3 w-[45%]">Question</th>
+                                                                <th class="px-4 py-3">Your Answer</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <?php foreach ($rev_answers as $i => $r): ?>
+                                                                <tr style="border-top:1px solid var(--border);">
+                                                                    <td class="px-4 py-3 align-top text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                                                    <td class="px-4 py-3 align-top">
+                                                                        <div class="text-[13px] font-bold break-words" style="color:var(--text1);">
+                                                                            <?= htmlspecialchars($r['question']) ?>
+                                                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td class="px-4 py-3 align-top">
+                                                                        <?php if ($r['answer'] !== ''): ?>
+                                                                            <div class="text-[13px] font-medium break-words whitespace-pre-wrap" style="color:var(--text2);"><?= htmlspecialchars($r['answer']) ?></div>
+                                                                        <?php else: ?>
+                                                                            <span class="text-[12.5px] italic" style="color:var(--text3);">No answer provided</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                </tr>
+                                                            <?php endforeach; ?>
+                                                        </tbody>
+                                                    </table>
                                                 </div>
-                                            <?php endforeach; ?>
+                                            </div>
+
+                                            <!-- Mobile: stacked cards -->
+                                            <div class="md:hidden flex flex-col gap-2.5">
+                                                <?php foreach ($rev_answers as $i => $r): ?>
+                                                    <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                                                        <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Question <?= $i + 1 ?></div>
+                                                        <div class="text-[13px] font-bold mt-0.5 break-words" style="color:var(--text1);">
+                                                            <?= htmlspecialchars($r['question']) ?>
+                                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                        </div>
+                                                        <div class="mt-2 pt-2 text-[12.5px] break-words whitespace-pre-wrap" style="border-top:1px solid var(--border);color:var(--text2);">
+                                                            <?php if ($r['answer'] !== ''): ?>
+                                                                <?= htmlspecialchars($r['answer']) ?>
+                                                            <?php else: ?>
+                                                                <span class="italic" style="color:var(--text3);">No answer provided</span>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
                                         </div>
                                     <?php endif; ?>
                                     <!-- Documents summary -->
+                                    <?php
+                                    // Build the rows once, render them in both the table and the mobile cards.
+                                    $rev_rows = [];
+                                    foreach ($doc_types_rev as $doc) {
+                                        $docType = (string)($doc['document_type'] ?? '');
+                                        $reqId   = (int)($doc['id'] ?? 0);
+                                        $uKey    = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType);
+                                        $revName = (string)($wiz_uploads_rev[$uKey]['file_name'] ?? '');
+                                        $revPath = (string)($wiz_uploads_rev[$uKey]['file_path'] ?? '');
+                                        $revExt  = strtolower(pathinfo($revPath !== '' ? $revPath : $revName, PATHINFO_EXTENSION));
+                                        $rev_rows[] = [
+                                            'name'     => (string)($doc['document_name'] ?? $docType),
+                                            'required' => !empty($doc['is_required']),
+                                            'file'     => $revName,
+                                            'path'     => $revPath,
+                                            'ext'      => $revExt,
+                                            'icon'     => $revExt === 'pdf' ? 'fa-file-pdf' : (in_array($revExt, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true) ? 'fa-file-image' : 'fa-file-lines'),
+                                        ];
+                                    }
+                                    $rev_uploaded = count(array_filter($rev_rows, fn($r) => $r['file'] !== ''));
+                                    ?>
                                     <div class="wiz-review-block">
-                                        <h4>Uploaded Documents</h4>
-                                        <ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.5;color:var(--text2);">
-                                            <?php foreach ($doc_types_rev as $doc):
-                                                $docType = (string)($doc['document_type'] ?? '');
-                                                $docName = (string)($doc['document_name'] ?? $docType);
-                                                $reqId   = (int)($doc['id'] ?? 0);
-                                                $uKey    = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType);
-                                                $revName = (string)($wiz_uploads_rev[$uKey]['file_name'] ?? '');
-                                                $revPath = (string)($wiz_uploads_rev[$uKey]['file_path'] ?? '');
-                                                $revExt  = strtolower(pathinfo($revPath !== '' ? $revPath : $revName, PATHINFO_EXTENSION)); ?>
-                                                <li>
-                                                    <strong><?= htmlspecialchars($docName) ?>:</strong>
-                                                    <?= $revName !== '' ? htmlspecialchars($revName) : '—' ?>
-                                                    <?php if ($revPath !== ''): ?>
-                                                        <button type="button" class="wiz-btn secondary wiz-preview-btn" style="padding:4px 10px;font-size:11px;margin-left:6px;vertical-align:middle;"
-                                                            data-preview-src="../<?= htmlspecialchars($revPath) ?>"
-                                                            data-preview-name="<?= htmlspecialchars($revName) ?>"
-                                                            data-preview-ext="<?= htmlspecialchars($revExt) ?>">
-                                                            <i class="fas fa-eye"></i> Preview
-                                                        </button>
-                                                    <?php endif; ?>
-                                                </li>
-                                            <?php endforeach; ?>
-                                        </ul>
+                                        <div class="flex items-center justify-between gap-2 mb-2">
+                                            <h4 style="margin:0;">Uploaded Documents</h4>
+                                            <span class="text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                style="background:rgba(16,185,129,.12);color:var(--green);">
+                                                <?= $rev_uploaded ?> of <?= count($rev_rows) ?> uploaded
+                                            </span>
+                                        </div>
+
+                                        <?php if ($rev_rows === []): ?>
+                                            <p class="wiz-muted">No documents required for this position.</p>
+                                        <?php else: ?>
+
+                                            <!-- Desktop / tablet: table -->
+                                            <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                                                <div class="overflow-x-auto">
+                                                    <table class="w-full border-collapse text-left">
+                                                        <thead>
+                                                            <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                                                <th class="px-4 py-3 w-12">#</th>
+                                                                <th class="px-4 py-3">Document</th>
+                                                                <th class="px-4 py-3">File Name</th>
+                                                                <th class="px-4 py-3">Status</th>
+                                                                <th class="px-4 py-3 text-center w-32">Preview</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <?php foreach ($rev_rows as $i => $r): $has = $r['file'] !== ''; ?>
+                                                                <tr style="border-top:1px solid var(--border);">
+                                                                    <td class="px-4 py-3 text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                                                    <td class="px-4 py-3">
+                                                                        <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                                                            <?= htmlspecialchars($r['name']) ?>
+                                                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td class="px-4 py-3">
+                                                                        <?php if ($has): ?>
+                                                                            <div class="flex items-center gap-2 min-w-0">
+                                                                                <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                                                                <span class="text-[12.5px] font-medium break-all" style="color:var(--text2);"><?= htmlspecialchars($r['file']) ?></span>
+                                                                            </div>
+                                                                        <?php else: ?>
+                                                                            <span class="text-[12.5px] italic" style="color:var(--text3);">—</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                    <td class="px-4 py-3">
+                                                                        <?php if ($has): ?>
+                                                                            <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap"
+                                                                                style="background:rgba(16,185,129,.12);color:var(--green);">
+                                                                                <i class="fas fa-circle-check"></i> Uploaded
+                                                                            </span>
+                                                                        <?php else: ?>
+                                                                            <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap"
+                                                                                style="background:rgba(239,68,68,.12);color:var(--red);">
+                                                                                <i class="fas fa-circle-xmark"></i> Missing
+                                                                            </span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                    <td class="px-4 py-3 text-center">
+                                                                        <?php if ($r['path'] !== ''): ?>
+                                                                            <button type="button"
+                                                                                class="wiz-btn secondary wiz-preview-btn" style="padding:6px 12px;font-size:11.5px;"
+                                                                                data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                                                                data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                                                                data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                                                                <i class="fas fa-eye"></i> Preview
+                                                                            </button>
+                                                                        <?php else: ?>
+                                                                            <span class="text-[12px]" style="color:var(--text3);">—</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                </tr>
+                                                            <?php endforeach; ?>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            <!-- Mobile: stacked cards -->
+                                            <div class="md:hidden flex flex-col gap-2.5">
+                                                <?php foreach ($rev_rows as $i => $r): $has = $r['file'] !== ''; ?>
+                                                    <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                                                        <div class="flex items-start justify-between gap-2">
+                                                            <div class="min-w-0">
+                                                                <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Document <?= $i + 1 ?></div>
+                                                                <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                                                    <?= htmlspecialchars($r['name']) ?>
+                                                                    <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                                </div>
+                                                            </div>
+                                                            <?php if ($has): ?>
+                                                                <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                                    style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                                                            <?php else: ?>
+                                                                <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                                    style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                                                            <?php endif; ?>
+                                                        </div>
+
+                                                        <div class="mt-2 flex items-center gap-2 min-w-0 text-[12.5px]" style="color:var(--text2);">
+                                                            <?php if ($has): ?>
+                                                                <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                                                <span class="break-all"><?= htmlspecialchars($r['file']) ?></span>
+                                                            <?php else: ?>
+                                                                <span class="italic" style="color:var(--text3);">No file uploaded</span>
+                                                            <?php endif; ?>
+                                                        </div>
+
+                                                        <?php if ($r['path'] !== ''): ?>
+                                                            <button type="button"
+                                                                class="wiz-btn secondary wiz-preview-btn w-full mt-3" style="padding:8px 12px;font-size:12px;"
+                                                                data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                                                data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                                                data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                                                <i class="fas fa-eye"></i> Preview
+                                                            </button>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+
+                                        <?php endif; ?>
                                     </div>
                                     <p id="wizard-step4-err" class="wiz-error hidden"></p>
                                     <div class="wiz-actions">
@@ -2844,7 +3031,7 @@ $single_mode = ($total === 1 && !$show_wizard);
                                     <i class="fas fa-file-arrow-up"></i> Requirements
                                 </button>
                                 <button class="atab done" onclick="switchAppTab(<?= $idx ?>,'atcontent-rev-<?= $idx ?>',this,'seg-part1-<?= $idx ?>')">
-                                    <i class="fas fa-paper-plane"></i> Review &amp; Submit
+                                    <i class="fas fa-clipboard-list"></i> Summary
                                 </button>
                                 <div class="atab-divider"></div>
                                 <button class="atab active current-stage" onclick="switchAppTab(<?= $idx ?>,'atcontent-status-<?= $idx ?>',this,'seg-part2-<?= $idx ?>')">
@@ -2962,20 +3149,39 @@ $single_mode = ($total === 1 && !$show_wizard);
                                         </a>
                                     <?php endif; ?>
 
-                                    <!-- Requirements / qualifications reference -->
-                                    <?php if (!empty($app['req_lines'])): ?>
-                                        <div class="review-section">
-                                            <div class="review-section-title">Requirements &amp; Qualifications</div>
-                                            <?php foreach ($app['req_lines'] as $line): ?>
-                                                <div class="checklist-item">
-                                                    <i class="fas fa-circle-check checklist-icon"></i>
-                                                    <span style="font-size:12.5px;color:var(--text1);"><?= htmlspecialchars($line) ?></span>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    <?php endif; ?>
+                                    <?php
+                                    // Build rows once, render in both the table and the mobile cards.
+                                    $rv_answers = [];
+                                    foreach ($app['questions'] as $q) {
+                                        $rv_answers[] = [
+                                            'question' => (string)$q['question_text'],
+                                            'required' => !empty($q['is_required']),
+                                            'answer'   => trim((string)($app['answers_map'][(int)$q['id']] ?? '')),
+                                        ];
+                                    }
+                                    $rv_answered = count(array_filter($rv_answers, fn($r) => $r['answer'] !== ''));
 
-                                    <!-- Summary -->
+                                    $rv_docs = [];
+                                    foreach ($app['required_docs'] as $rd) {
+                                        $rid   = (int)$rd['id'];
+                                        $dtype = (string)$rd['document_type'];
+                                        $up    = $rid > 0 ? ($app['uploaded_by_req'][$rid] ?? null) : ($app['uploaded_by_type'][$dtype] ?? null);
+                                        $fname = (string)($up['file_name'] ?? '');
+                                        $fpath = (string)($up['file_path'] ?? '');
+                                        $fext  = strtolower(pathinfo($fpath !== '' ? $fpath : $fname, PATHINFO_EXTENSION));
+                                        $rv_docs[] = [
+                                            'name'     => (string)$rd['document_name'],
+                                            'required' => !empty($rd['is_required']),
+                                            'file'     => $fname,
+                                            'path'     => $fpath,
+                                            'ext'      => $fext,
+                                            'icon'     => $fext === 'pdf' ? 'fa-file-pdf' : (in_array($fext, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true) ? 'fa-file-image' : 'fa-file-lines'),
+                                        ];
+                                    }
+                                    $rv_uploaded = count(array_filter($rv_docs, fn($r) => $r['file'] !== ''));
+                                    ?>
+
+                                    <!-- Application Summary -->
                                     <div class="review-section">
                                         <div class="review-section-title">Application Summary</div>
                                         <dl class="info-grid" style="margin-bottom:0;">
@@ -2985,6 +3191,8 @@ $single_mode = ($total === 1 && !$show_wizard);
                                             <dd class="info-dd"><?= htmlspecialchars($app['rsf_number']) ?></dd>
                                             <dt class="info-dt">Employer</dt>
                                             <dd class="info-dd"><?= htmlspecialchars($app['employer_name']) ?></dd>
+                                            <dt class="info-dt">Country</dt>
+                                            <dd class="info-dd"><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></dd>
                                             <dt class="info-dt">Status</dt>
                                             <dd class="info-dd"><span class="status-pill <?= $si['pill'] ?>"><?= htmlspecialchars($si['label']) ?></span></dd>
                                             <dt class="info-dt">Submitted</dt>
@@ -2992,6 +3200,192 @@ $single_mode = ($total === 1 && !$show_wizard);
                                             <dt class="info-dt">Last Updated</dt>
                                             <dd class="info-dd"><?= date('F d, Y • g:i a', strtotime($app['updated_at'])) ?></dd>
                                         </dl>
+                                    </div>
+
+                                    <!-- Application Questions & Answers -->
+                                    <?php if ($rv_answers !== []): ?>
+                                        <div class="review-section">
+                                            <div class="flex items-center justify-between gap-2 mb-2">
+                                                <div class="review-section-title" style="margin:0;">Application Questions &amp; Answers</div>
+                                                <span class="text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                    style="background:rgba(16,185,129,.12);color:var(--green);">
+                                                    <?= $rv_answered ?> of <?= count($rv_answers) ?> answered
+                                                </span>
+                                            </div>
+
+                                            <!-- Desktop / tablet: table -->
+                                            <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                                                <div class="overflow-x-auto">
+                                                    <table class="w-full border-collapse text-left">
+                                                        <thead>
+                                                            <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                                                <th class="px-4 py-3 w-12">#</th>
+                                                                <th class="px-4 py-3 w-[45%]">Question</th>
+                                                                <th class="px-4 py-3">Answer</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <?php foreach ($rv_answers as $i => $r): ?>
+                                                                <tr style="border-top:1px solid var(--border);">
+                                                                    <td class="px-4 py-3 align-top text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                                                    <td class="px-4 py-3 align-top">
+                                                                        <div class="text-[13px] font-bold break-words" style="color:var(--text1);">
+                                                                            <?= htmlspecialchars($r['question']) ?>
+                                                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td class="px-4 py-3 align-top">
+                                                                        <?php if ($r['answer'] !== ''): ?>
+                                                                            <div class="text-[13px] font-medium break-words whitespace-pre-wrap" style="color:var(--text2);"><?= htmlspecialchars($r['answer']) ?></div>
+                                                                        <?php else: ?>
+                                                                            <span class="text-[12.5px] italic" style="color:var(--text3);">No answer provided</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                </tr>
+                                                            <?php endforeach; ?>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            <!-- Mobile: stacked cards -->
+                                            <div class="md:hidden flex flex-col gap-2.5">
+                                                <?php foreach ($rv_answers as $i => $r): ?>
+                                                    <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                                                        <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Question <?= $i + 1 ?></div>
+                                                        <div class="text-[13px] font-bold mt-0.5 break-words" style="color:var(--text1);">
+                                                            <?= htmlspecialchars($r['question']) ?>
+                                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                        </div>
+                                                        <div class="mt-2 pt-2 text-[12.5px] break-words whitespace-pre-wrap" style="border-top:1px solid var(--border);color:var(--text2);">
+                                                            <?php if ($r['answer'] !== ''): ?>
+                                                                <?= htmlspecialchars($r['answer']) ?>
+                                                            <?php else: ?>
+                                                                <span class="italic" style="color:var(--text3);">No answer provided</span>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
+
+                                    <!-- Uploaded Documents -->
+                                    <div class="review-section" style="margin-bottom:0;">
+                                        <div class="flex items-center justify-between gap-2 mb-2">
+                                            <div class="review-section-title" style="margin:0;">Uploaded Documents</div>
+                                            <span class="text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                style="background:rgba(16,185,129,.12);color:var(--green);">
+                                                <?= $rv_uploaded ?> of <?= count($rv_docs) ?> uploaded
+                                            </span>
+                                        </div>
+
+                                        <?php if ($rv_docs === []): ?>
+                                            <p class="wiz-muted">No documents required for this position.</p>
+                                        <?php else: ?>
+
+                                            <!-- Desktop / tablet: table -->
+                                            <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                                                <div class="overflow-x-auto">
+                                                    <table class="w-full border-collapse text-left">
+                                                        <thead>
+                                                            <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                                                <th class="px-4 py-3 w-12">#</th>
+                                                                <th class="px-4 py-3">Document</th>
+                                                                <th class="px-4 py-3">File Name</th>
+                                                                <th class="px-4 py-3">Status</th>
+                                                                <th class="px-4 py-3 text-center w-32">Preview</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <?php foreach ($rv_docs as $i => $r): $has = $r['file'] !== ''; ?>
+                                                                <tr style="border-top:1px solid var(--border);">
+                                                                    <td class="px-4 py-3 text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                                                    <td class="px-4 py-3">
+                                                                        <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                                                            <?= htmlspecialchars($r['name']) ?>
+                                                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td class="px-4 py-3">
+                                                                        <?php if ($has): ?>
+                                                                            <div class="flex items-center gap-2 min-w-0">
+                                                                                <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                                                                <span class="text-[12.5px] font-medium break-all" style="color:var(--text2);"><?= htmlspecialchars($r['file']) ?></span>
+                                                                            </div>
+                                                                        <?php else: ?>
+                                                                            <span class="text-[12.5px] italic" style="color:var(--text3);">—</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                    <td class="px-4 py-3">
+                                                                        <?php if ($has): ?>
+                                                                            <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap"
+                                                                                style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                                                                        <?php else: ?>
+                                                                            <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap"
+                                                                                style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                    <td class="px-4 py-3 text-center">
+                                                                        <?php if ($r['path'] !== ''): ?>
+                                                                            <button type="button" class="wiz-btn secondary wiz-preview-btn" style="padding:6px 12px;font-size:11.5px;"
+                                                                                data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                                                                data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                                                                data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                                                                <i class="fas fa-eye"></i> Preview
+                                                                            </button>
+                                                                        <?php else: ?>
+                                                                            <span class="text-[12px]" style="color:var(--text3);">—</span>
+                                                                        <?php endif; ?>
+                                                                    </td>
+                                                                </tr>
+                                                            <?php endforeach; ?>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            <!-- Mobile: stacked cards -->
+                                            <div class="md:hidden flex flex-col gap-2.5">
+                                                <?php foreach ($rv_docs as $i => $r): $has = $r['file'] !== ''; ?>
+                                                    <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                                                        <div class="flex items-start justify-between gap-2">
+                                                            <div class="min-w-0">
+                                                                <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Document <?= $i + 1 ?></div>
+                                                                <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                                                    <?= htmlspecialchars($r['name']) ?>
+                                                                    <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                                </div>
+                                                            </div>
+                                                            <?php if ($has): ?>
+                                                                <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                                    style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                                                            <?php else: ?>
+                                                                <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1"
+                                                                    style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                        <div class="mt-2 flex items-center gap-2 min-w-0 text-[12.5px]" style="color:var(--text2);">
+                                                            <?php if ($has): ?>
+                                                                <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                                                <span class="break-all"><?= htmlspecialchars($r['file']) ?></span>
+                                                            <?php else: ?>
+                                                                <span class="italic" style="color:var(--text3);">No file uploaded</span>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                        <?php if ($r['path'] !== ''): ?>
+                                                            <button type="button" class="wiz-btn secondary wiz-preview-btn w-full mt-3" style="padding:8px 12px;font-size:12px;"
+                                                                data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                                                data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                                                data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                                                <i class="fas fa-eye"></i> Preview
+                                                            </button>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+
+                                        <?php endif; ?>
                                     </div>
                                 </div>
 
@@ -3484,6 +3878,34 @@ $single_mode = ($total === 1 && !$show_wizard);
                     if (fileInput) {
                         fileInput.addEventListener('change', function() {
                             if (!fileInput.files || !fileInput.files.length) return;
+
+                            // Block the same file name being used for a different requirement
+                            const picked = fileInput.files[0].name.trim().toLowerCase();
+                            const currentRow = form.closest('.wiz-upload-row');
+                            let duplicateOf = null;
+
+                            guide.querySelectorAll('.wiz-upload-row').forEach(function(row) {
+                                if (row === currentRow || duplicateOf) return;
+                                const nameEl = row.querySelector('.wiz-upload-filename');
+                                if (nameEl && nameEl.textContent.trim().toLowerCase() === picked) {
+                                    const label = row.querySelector('strong');
+                                    duplicateOf = label ? label.textContent.trim() : 'another requirement';
+                                }
+                            });
+
+                            if (duplicateOf) {
+                                const dupFileName = fileInput.files[0].name;
+                                fileInput.value = ''; // clear the selection so nothing is uploaded
+                                Swal.fire({
+                                    icon: 'warning',
+                                    title: 'Document Already Uploaded',
+                                    text: '"' + dupFileName + '" was already uploaded for "' + duplicateOf + '". Please choose the correct file for this requirement.',
+                                    confirmButtonText: 'OK',
+                                    confirmButtonColor: '#2563eb'
+                                });
+                                return;
+                            }
+
                             if (typeof form.requestSubmit === 'function') {
                                 form.requestSubmit();
                             } else {
@@ -3520,11 +3942,20 @@ $single_mode = ($total === 1 && !$show_wizard);
                                 pickerBtn.innerHTML = pickerLabel;
                             }
                             if (!data.ok) {
+                                if (fileInput) fileInput.value = '';
+                                if (data.duplicate) {
+                                    Swal.fire({
+                                        icon: 'warning',
+                                        title: 'Document Already Uploaded',
+                                        text: data.error,
+                                        confirmButtonColor: '#2563eb'
+                                    });
+                                    return;
+                                }
                                 if (errEl) {
                                     errEl.textContent = data.error || 'Upload failed.';
                                     errEl.classList.remove('hidden');
                                 }
-                                if (fileInput) fileInput.value = '';
                                 return;
                             }
                             const tab3 = document.getElementById('tab3');
@@ -3630,6 +4061,8 @@ $single_mode = ($total === 1 && !$show_wizard);
                         if (rev) rev.classList.add('hidden');
                         if (okMsg) okMsg.textContent = data.message || 'Submitted.';
                         if (okBox) okBox.classList.remove('hidden');
+                        const reviewTab = document.getElementById('ptab-review');
+                        if (reviewTab) reviewTab.classList.add('done');
                         Swal.mixin({
                             toast: true,
                             position: "top-end",

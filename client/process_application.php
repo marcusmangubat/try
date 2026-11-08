@@ -285,10 +285,41 @@ function app_render_step3_upload(array $job, int $job_id, array $uploads, array 
  */
 function app_render_step4_review(mysqli $db, array $job, int $job_id): string
 {
-    $answers = is_array($_SESSION['app_answers'] ?? null) ? $_SESSION['app_answers'] : [];
-    $questions = app_fetch_questions_for_job($db, $job_id);
-    $uploads = app_get_session_uploads();
+    $answers      = is_array($_SESSION['app_answers'] ?? null) ? $_SESSION['app_answers'] : [];
+    $questions    = app_fetch_questions_for_job($db, $job_id);
+    $uploads      = app_get_session_uploads();
     $requiredDocs = app_required_documents_for_job($db, $job_id);
+
+    // Answers rows
+    $revAnswers = [];
+    foreach ($questions as $q) {
+        $revAnswers[] = [
+            'question' => (string) $q['question_text'],
+            'required' => !empty($q['is_required']),
+            'answer'   => trim((string) ($answers[(int) $q['id']] ?? '')),
+        ];
+    }
+    $revAnswered = count(array_filter($revAnswers, fn($r) => $r['answer'] !== ''));
+
+    // Document rows
+    $revRows = [];
+    foreach ($requiredDocs as $doc) {
+        $docType = (string) ($doc['document_type'] ?? '');
+        $reqId   = (int) ($doc['id'] ?? 0);
+        $uKey    = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType);
+        $name    = (string) ($uploads[$uKey]['file_name'] ?? '');
+        $path    = (string) ($uploads[$uKey]['file_path'] ?? '');
+        $ext     = strtolower(pathinfo($path !== '' ? $path : $name, PATHINFO_EXTENSION));
+        $revRows[] = [
+            'name'     => (string) ($doc['document_name'] ?? $docType),
+            'required' => !empty($doc['is_required']),
+            'file'     => $name,
+            'path'     => $path,
+            'ext'      => $ext,
+            'icon'     => $ext === 'pdf' ? 'fa-file-pdf' : (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true) ? 'fa-file-image' : 'fa-file-lines'),
+        ];
+    }
+    $revUploaded = count(array_filter($revRows, fn($r) => $r['file'] !== ''));
 
     ob_start(); ?>
     <div class="wiz-card" id="wizard-step4-review" data-wizard-step="4">
@@ -298,50 +329,185 @@ function app_render_step4_review(mysqli $db, array $job, int $job_id): string
             <p class="wiz-sub">Review all your information, then submit your application.</p>
         </div>
         <div class="wiz-body">
+
             <div class="wiz-review-block">
                 <h4>Position</h4>
                 <p style="font-size:13px;font-weight:700;color:var(--text1);margin:0;"><?= htmlspecialchars($job['position_title'] ?? '—') ?></p>
                 <p style="font-size:12px;color:var(--text3);margin:3px 0 0;"><?= htmlspecialchars($job['employer_name'] ?? '—') ?> &nbsp;·&nbsp; <?= htmlspecialchars($job['worksite_country'] ?? '—') ?> &nbsp;·&nbsp; <?= htmlspecialchars($job['rsf_number'] ?? '—') ?></p>
             </div>
-            <?php if ($questions !== []): ?>
+
+            <?php if ($revAnswers !== []): ?>
                 <div class="wiz-review-block">
-                    <h4>Your Answers</h4>
-                    <?php foreach ($questions as $q):
-                        $qid = (int) $q['id'];
-                        $ans = (string) ($answers[$qid] ?? '—'); ?>
-                        <div style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);">
-                            <div style="font-size:12px;font-weight:700;color:var(--text2);"><?= htmlspecialchars((string) $q['question_text']) ?></div>
-                            <div style="font-size:13px;color:var(--text1);margin-top:3px;"><?= htmlspecialchars($ans) ?></div>
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <h4 style="margin:0;">Your Answers</h4>
+                        <span class="text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(16,185,129,.12);color:var(--green);">
+                            <?= $revAnswered ?> of <?= count($revAnswers) ?> answered
+                        </span>
+                    </div>
+
+                    <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                        <div class="overflow-x-auto">
+                            <table class="w-full border-collapse text-left">
+                                <thead>
+                                    <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                        <th class="px-4 py-3 w-12">#</th>
+                                        <th class="px-4 py-3 w-[45%]">Question</th>
+                                        <th class="px-4 py-3">Your Answer</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($revAnswers as $i => $r): ?>
+                                        <tr style="border-top:1px solid var(--border);">
+                                            <td class="px-4 py-3 align-top text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                            <td class="px-4 py-3 align-top">
+                                                <div class="text-[13px] font-bold break-words" style="color:var(--text1);">
+                                                    <?= htmlspecialchars($r['question']) ?>
+                                                    <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                </div>
+                                            </td>
+                                            <td class="px-4 py-3 align-top">
+                                                <?php if ($r['answer'] !== ''): ?>
+                                                    <div class="text-[13px] font-medium break-words whitespace-pre-wrap" style="color:var(--text2);"><?= htmlspecialchars($r['answer']) ?></div>
+                                                <?php else: ?>
+                                                    <span class="text-[12.5px] italic" style="color:var(--text3);">No answer provided</span>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
                         </div>
-                    <?php endforeach; ?>
+                    </div>
+
+                    <div class="md:hidden flex flex-col gap-2.5">
+                        <?php foreach ($revAnswers as $i => $r): ?>
+                            <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                                <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Question <?= $i + 1 ?></div>
+                                <div class="text-[13px] font-bold mt-0.5 break-words" style="color:var(--text1);">
+                                    <?= htmlspecialchars($r['question']) ?>
+                                    <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                </div>
+                                <div class="mt-2 pt-2 text-[12.5px] break-words whitespace-pre-wrap" style="border-top:1px solid var(--border);color:var(--text2);">
+                                    <?php if ($r['answer'] !== ''): ?>
+                                        <?= htmlspecialchars($r['answer']) ?>
+                                    <?php else: ?>
+                                        <span class="italic" style="color:var(--text3);">No answer provided</span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
                 </div>
             <?php endif; ?>
+
             <div class="wiz-review-block">
-                <h4>Uploaded Documents</h4>
-                <ul style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.5;color:var(--text2);">
-                    <?php foreach ($requiredDocs as $doc):
-                        $docType = (string) ($doc['document_type'] ?? '');
-                        $docName = (string) ($doc['document_name'] ?? $docType);
-                        $reqId = (int) ($doc['id'] ?? 0);
-                        $uKey = $reqId > 0 ? 'doc_' . $reqId : 'type_' . strtolower($docType);
-                        $revName = (string) ($uploads[$uKey]['file_name'] ?? '');
-                        $revPath = (string) ($uploads[$uKey]['file_path'] ?? '');
-                        $revExt = strtolower(pathinfo($revPath !== '' ? $revPath : $revName, PATHINFO_EXTENSION)); ?>
-                        <li>
-                            <strong><?= htmlspecialchars($docName) ?>:</strong>
-                            <?= $revName !== '' ? htmlspecialchars($revName) : '—' ?>
-                            <?php if ($revPath !== ''): ?>
-                                <button type="button" class="wiz-btn secondary wiz-preview-btn" style="padding:4px 10px;font-size:11px;margin-left:6px;vertical-align:middle;"
-                                    data-preview-src="../<?= htmlspecialchars($revPath) ?>"
-                                    data-preview-name="<?= htmlspecialchars($revName) ?>"
-                                    data-preview-ext="<?= htmlspecialchars($revExt) ?>">
-                                    <i class="fas fa-eye"></i> Preview
-                                </button>
-                            <?php endif; ?>
-                        </li>
-                    <?php endforeach; ?>
-                </ul>
+                <div class="flex items-center justify-between gap-2 mb-2">
+                    <h4 style="margin:0;">Uploaded Documents</h4>
+                    <span class="text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(16,185,129,.12);color:var(--green);">
+                        <?= $revUploaded ?> of <?= count($revRows) ?> uploaded
+                    </span>
+                </div>
+
+                <?php if ($revRows === []): ?>
+                    <p class="wiz-muted">No documents required for this position.</p>
+                <?php else: ?>
+                    <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                        <div class="overflow-x-auto">
+                            <table class="w-full border-collapse text-left">
+                                <thead>
+                                    <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                        <th class="px-4 py-3 w-12">#</th>
+                                        <th class="px-4 py-3">Document</th>
+                                        <th class="px-4 py-3">File Name</th>
+                                        <th class="px-4 py-3">Status</th>
+                                        <th class="px-4 py-3 text-center w-32">Preview</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($revRows as $i => $r): $has = $r['file'] !== ''; ?>
+                                        <tr style="border-top:1px solid var(--border);">
+                                            <td class="px-4 py-3 text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                            <td class="px-4 py-3">
+                                                <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                                    <?= htmlspecialchars($r['name']) ?>
+                                                    <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                                </div>
+                                            </td>
+                                            <td class="px-4 py-3">
+                                                <?php if ($has): ?>
+                                                    <div class="flex items-center gap-2 min-w-0">
+                                                        <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                                        <span class="text-[12.5px] font-medium break-all" style="color:var(--text2);"><?= htmlspecialchars($r['file']) ?></span>
+                                                    </div>
+                                                <?php else: ?>
+                                                    <span class="text-[12.5px] italic" style="color:var(--text3);">—</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td class="px-4 py-3">
+                                                <?php if ($has): ?>
+                                                    <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap" style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                                                <?php else: ?>
+                                                    <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap" style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td class="px-4 py-3 text-center">
+                                                <?php if ($r['path'] !== ''): ?>
+                                                    <button type="button" class="wiz-btn secondary wiz-preview-btn" style="padding:6px 12px;font-size:11.5px;"
+                                                        data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                                        data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                                        data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                                        <i class="fas fa-eye"></i> Preview
+                                                    </button>
+                                                <?php else: ?>
+                                                    <span class="text-[12px]" style="color:var(--text3);">—</span>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="md:hidden flex flex-col gap-2.5">
+                        <?php foreach ($revRows as $i => $r): $has = $r['file'] !== ''; ?>
+                            <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                                <div class="flex items-start justify-between gap-2">
+                                    <div class="min-w-0">
+                                        <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Document <?= $i + 1 ?></div>
+                                        <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                            <?= htmlspecialchars($r['name']) ?>
+                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <?php if ($has): ?>
+                                        <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                                    <?php else: ?>
+                                        <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="mt-2 flex items-center gap-2 min-w-0 text-[12.5px]" style="color:var(--text2);">
+                                    <?php if ($has): ?>
+                                        <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                        <span class="break-all"><?= htmlspecialchars($r['file']) ?></span>
+                                    <?php else: ?>
+                                        <span class="italic" style="color:var(--text3);">No file uploaded</span>
+                                    <?php endif; ?>
+                                </div>
+                                <?php if ($r['path'] !== ''): ?>
+                                    <button type="button" class="wiz-btn secondary wiz-preview-btn w-full mt-3" style="padding:8px 12px;font-size:12px;"
+                                        data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                        data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                        data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                        <i class="fas fa-eye"></i> Preview
+                                    </button>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
             </div>
+
             <p id="wizard-step4-err" class="wiz-error hidden"></p>
             <div class="wiz-actions">
                 <button type="button" class="wiz-btn primary" id="wizard-step4-submit" data-job-id="<?= (int) $job_id ?>"><i class="fas fa-paper-plane"></i> Submit Application</button>
@@ -520,6 +686,33 @@ if ($action === 'step3_upload') {
     $allowedExt = ['pdf', 'jpg', 'jpeg', 'png'];
     if (!in_array($ext, $allowedExt, true)) {
         app_json_out(['ok' => false, 'error' => 'Invalid file type. Allowed: PDF, JPG, PNG.']);
+    }
+
+    // Reject the same original file name already uploaded for a DIFFERENT requirement.
+    $origName = trim((string) ($_FILES['doc_file']['name'] ?? ''));
+    $dupStmt = $database->prepare("SELECT document_type, required_doc_id FROM application_documents WHERE application_id = ? AND LOWER(file_name) = LOWER(?)");
+    $dupStmt->bind_param('is', $draft_id, $origName);
+    $dupStmt->execute();
+    $dupRows = $dupStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $dupStmt->close();
+
+    foreach ($dupRows as $dr) {
+        $drReqId = (int) ($dr['required_doc_id'] ?? 0);
+        $sameSlot = $required_doc_id > 0
+            ? ($drReqId === $required_doc_id)
+            : ($drReqId === 0 && strtolower((string) $dr['document_type']) === strtolower($doc_type));
+        if ($sameSlot) {
+            continue; // replacing the same requirement with the same name is allowed
+        }
+        $otherDoc = $drReqId > 0
+            ? ($allowedById[$drReqId] ?? null)
+            : ($allowedByType[strtolower((string) $dr['document_type'])] ?? null);
+        $otherName = $otherDoc['document_name'] ?? 'another requirement';
+        app_json_out([
+            'ok' => false,
+            'duplicate' => true,
+            'error' => '"' . $origName . '" was already uploaded for "' . $otherName . '". Please choose the correct file for this requirement.',
+        ]);
     }
 
     $app_dir = __DIR__ . '/../uploads/app_documents/';

@@ -78,6 +78,7 @@ $tab_map = [
     'rsf'          => ['tabc-rsf',    'tabbtn-rsf',    'seg-part1'],
     'questions'    => ['tabc-q',      'tabbtn-q',      'seg-part1'],
     'requirements' => ['tabc-req',    'tabbtn-req',    'seg-part1'],
+    'review'       => ['tabc-review', 'tabbtn-review', 'seg-part1'],
     'status'       => ['tabc-status', 'tabbtn-status', 'seg-part2'],
 ];
 $requested_tab = strtolower((string) ($_GET['tab'] ?? ''));
@@ -442,6 +443,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'uploa
     $rel_path   = null;
     $orig       = null;
     $replaced   = false;
+    $dup_msg    = '';
 
     $stmt = $database->prepare("SELECT status FROM applications WHERE id = ? AND client_id = ? LIMIT 1");
     $stmt->bind_param("ii", $app_id, $client_id);
@@ -461,7 +463,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'uploa
             $suffix = $req_doc_id > 0 ? 'doc_' . $req_doc_id : $doc_type;
             $fname  = $app_id . '_' . time() . '_' . $suffix . '_' . bin2hex(random_bytes(3)) . '.' . $ext;
             $path   = $upload_dir . $fname;
-            if (move_uploaded_file($_FILES['doc_file']['tmp_name'], $path)) {
+
+            // Same original file name already uploaded for a DIFFERENT requirement?
+            $origName = trim((string) $_FILES['doc_file']['name']);
+            $dupStmt  = $database->prepare("SELECT document_type, required_doc_id FROM application_documents WHERE application_id = ? AND LOWER(file_name) = LOWER(?)");
+            $dupStmt->bind_param('is', $app_id, $origName);
+            $dupStmt->execute();
+            $dupRows = $dupStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $dupStmt->close();
+
+            foreach ($dupRows as $dr) {
+                $drReq    = (int) ($dr['required_doc_id'] ?? 0);
+                $drType   = strtolower((string) $dr['document_type']);
+                // Same slot = replacing this requirement's own file → allowed
+                $sameSlot = ($req_doc_id > 0 && $drReq === $req_doc_id)
+                    || ($drReq === 0 && $drType === strtolower($doc_type));
+                if ($sameSlot) continue;
+
+                $otherName = 'another requirement';
+                foreach (edit_required_documents_for_job($database, $rsf_id) as $rd) {
+                    if (($drReq > 0 && (int) $rd['id'] === $drReq)
+                        || ($drReq === 0 && strtolower((string) $rd['document_type']) === $drType)
+                    ) {
+                        $otherName = $rd['document_name'];
+                        break;
+                    }
+                }
+                $dup_msg = '"' . $origName . '" was already uploaded for "' . $otherName . '". Please choose the correct file for this requirement.';
+                break;
+            }
+
+            if ($dup_msg !== '') {
+                $error = $dup_msg;
+            } elseif (move_uploaded_file($_FILES['doc_file']['tmp_name'], $path)) {
                 $rel_path = 'uploads/app_documents/' . $fname;
                 $orig     = $_FILES['doc_file']['name'];
 
@@ -552,8 +586,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'uploa
             ]);
         } else {
             echo json_encode([
-                'success' => false,
-                'message' => $error ?: 'Upload failed. Please try again.',
+                'success'   => false,
+                'duplicate' => $dup_msg !== '',
+                'message'   => $error ?: 'Upload failed. Please try again.',
             ]);
         }
         exit;
@@ -828,6 +863,249 @@ $statusOrder[]  = 'approved';
 $statusLabels[] = 'Approved';
 $statusIcons[]  = 'fa-circle-check';
 $curIdx = array_search($cur, $statusOrder);
+
+/**
+ * Renders the Review tab body (summary + answers + documents).
+ * Used for the initial render and for the AJAX refresh.
+ */
+function edit_render_review(array $app, array $status_info, array $questions, array $answers_map, array $required_docs, array $uploaded_by_req_id, array $uploaded_by_doc_type): string
+{
+    $answers = [];
+    foreach ($questions as $q) {
+        $answers[] = [
+            'question' => (string) $q['question_text'],
+            'required' => !empty($q['is_required']),
+            'answer'   => trim((string) ($answers_map[(int) $q['id']] ?? '')),
+        ];
+    }
+    $answered = count(array_filter($answers, fn($r) => $r['answer'] !== ''));
+
+    $docs = [];
+    foreach ($required_docs as $rd) {
+        $rid   = (int) $rd['id'];
+        $dtype = (string) $rd['document_type'];
+        $up    = $rid > 0 ? ($uploaded_by_req_id[$rid] ?? null) : ($uploaded_by_doc_type[$dtype] ?? null);
+        if ($up === null && $rid > 0) {
+            $up = $uploaded_by_doc_type[$dtype] ?? null; // same fallback the Requirements tab uses
+        }
+        $fname = (string) ($up['file_name'] ?? '');
+        $fpath = (string) ($up['file_path'] ?? '');
+        $fext  = strtolower(pathinfo($fpath !== '' ? $fpath : $fname, PATHINFO_EXTENSION));
+        $docs[] = [
+            'name'     => (string) $rd['document_name'],
+            'required' => !empty($rd['is_required']),
+            'file'     => $fname,
+            'path'     => $fpath,
+            'ext'      => $fext,
+            'icon'     => $fext === 'pdf' ? 'fa-file-pdf' : (in_array($fext, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true) ? 'fa-file-image' : 'fa-file-lines'),
+        ];
+    }
+    $uploaded = count(array_filter($docs, fn($r) => $r['file'] !== ''));
+
+    ob_start(); ?>
+    <!-- Application Summary -->
+    <div class="review-section">
+        <div class="review-section-title">Application Summary</div>
+        <dl class="info-grid" style="margin-bottom:0;">
+            <dt class="info-dt">Position</dt>
+            <dd class="info-dd"><?= htmlspecialchars($app['position_title']) ?></dd>
+            <dt class="info-dt">RSF</dt>
+            <dd class="info-dd"><?= htmlspecialchars($app['rsf_number']) ?></dd>
+            <dt class="info-dt">Employer</dt>
+            <dd class="info-dd"><?= htmlspecialchars($app['employer_name']) ?></dd>
+            <dt class="info-dt">Country</dt>
+            <dd class="info-dd"><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></dd>
+            <dt class="info-dt">Status</dt>
+            <dd class="info-dd"><span class="status-pill <?= $status_info['pill'] ?>"><?= htmlspecialchars($status_info['label']) ?></span></dd>
+            <dt class="info-dt">Last Updated</dt>
+            <dd class="info-dd"><?= date('F d, Y • g:i a', strtotime($app['updated_at'])) ?></dd>
+        </dl>
+    </div>
+
+    <!-- Questions & Answers -->
+    <?php if ($answers !== []): ?>
+        <div class="review-section">
+            <div class="flex items-center justify-between gap-2 mb-2">
+                <div class="review-section-title" style="margin:0;">Application Questions &amp; Answers</div>
+                <span class="text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(16,185,129,.12);color:var(--green);">
+                    <?= $answered ?> of <?= count($answers) ?> answered
+                </span>
+            </div>
+
+            <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                <div class="overflow-x-auto">
+                    <table class="w-full border-collapse text-left">
+                        <thead>
+                            <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                <th class="px-4 py-3 w-12">#</th>
+                                <th class="px-4 py-3 w-[45%]">Question</th>
+                                <th class="px-4 py-3">Answer</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($answers as $i => $r): ?>
+                                <tr style="border-top:1px solid var(--border);">
+                                    <td class="px-4 py-3 align-top text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                    <td class="px-4 py-3 align-top">
+                                        <div class="text-[13px] font-bold break-words" style="color:var(--text1);">
+                                            <?= htmlspecialchars($r['question']) ?>
+                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3 align-top">
+                                        <?php if ($r['answer'] !== ''): ?>
+                                            <div class="text-[13px] font-medium break-words whitespace-pre-wrap" style="color:var(--text2);"><?= htmlspecialchars($r['answer']) ?></div>
+                                        <?php else: ?>
+                                            <span class="text-[12.5px] italic" style="color:var(--text3);">No answer provided</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="md:hidden flex flex-col gap-2.5">
+                <?php foreach ($answers as $i => $r): ?>
+                    <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                        <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Question <?= $i + 1 ?></div>
+                        <div class="text-[13px] font-bold mt-0.5 break-words" style="color:var(--text1);">
+                            <?= htmlspecialchars($r['question']) ?>
+                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                        </div>
+                        <div class="mt-2 pt-2 text-[12.5px] break-words whitespace-pre-wrap" style="border-top:1px solid var(--border);color:var(--text2);">
+                            <?php if ($r['answer'] !== ''): ?>
+                                <?= htmlspecialchars($r['answer']) ?>
+                            <?php else: ?>
+                                <span class="italic" style="color:var(--text3);">No answer provided</span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <!-- Uploaded Documents -->
+    <div class="review-section" style="margin-bottom:0;">
+        <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="review-section-title" style="margin:0;">Uploaded Documents</div>
+            <span class="text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(16,185,129,.12);color:var(--green);">
+                <?= $uploaded ?> of <?= count($docs) ?> uploaded
+            </span>
+        </div>
+
+        <?php if ($docs === []): ?>
+            <p class="wiz-muted">No documents required for this position.</p>
+        <?php else: ?>
+            <div class="hidden md:block rounded-xl overflow-hidden" style="border:1px solid var(--border);background:var(--card);">
+                <div class="overflow-x-auto">
+                    <table class="w-full border-collapse text-left">
+                        <thead>
+                            <tr class="text-[10px] font-bold uppercase tracking-wide" style="background:var(--surface);color:var(--text3);">
+                                <th class="px-4 py-3 w-12">#</th>
+                                <th class="px-4 py-3">Document</th>
+                                <th class="px-4 py-3">File Name</th>
+                                <th class="px-4 py-3">Status</th>
+                                <th class="px-4 py-3 text-center w-32">Preview</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($docs as $i => $r): $has = $r['file'] !== ''; ?>
+                                <tr style="border-top:1px solid var(--border);">
+                                    <td class="px-4 py-3 text-[12px] font-bold" style="color:var(--text3);"><?= $i + 1 ?></td>
+                                    <td class="px-4 py-3">
+                                        <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                            <?= htmlspecialchars($r['name']) ?>
+                                            <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <?php if ($has): ?>
+                                            <div class="flex items-center gap-2 min-w-0">
+                                                <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                                <span class="text-[12.5px] font-medium break-all" style="color:var(--text2);"><?= htmlspecialchars($r['file']) ?></span>
+                                            </div>
+                                        <?php else: ?>
+                                            <span class="text-[12.5px] italic" style="color:var(--text3);">—</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <?php if ($has): ?>
+                                            <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap" style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                                        <?php else: ?>
+                                            <span class="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1 whitespace-nowrap" style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <?php if ($r['path'] !== ''): ?>
+                                            <button type="button" class="btn btn-sm wiz-preview-btn" style="background:var(--surface);border:1px solid var(--border);color:var(--blue-lt);"
+                                                data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                                data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                                data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                                <i class="fas fa-eye"></i> Preview
+                                            </button>
+                                        <?php else: ?>
+                                            <span class="text-[12px]" style="color:var(--text3);">—</span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="md:hidden flex flex-col gap-2.5">
+                <?php foreach ($docs as $i => $r): $has = $r['file'] !== ''; ?>
+                    <div class="rounded-xl p-3.5" style="border:1px solid var(--border);background:var(--card);">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3);">Document <?= $i + 1 ?></div>
+                                <div class="text-[13px] font-bold" style="color:var(--text1);">
+                                    <?= htmlspecialchars($r['name']) ?>
+                                    <?php if ($r['required']): ?><span style="color:var(--red);">*</span><?php endif; ?>
+                                </div>
+                            </div>
+                            <?php if ($has): ?>
+                                <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(16,185,129,.12);color:var(--green);"><i class="fas fa-circle-check"></i> Uploaded</span>
+                            <?php else: ?>
+                                <span class="inline-flex flex-shrink-0 items-center gap-1.5 text-[11px] font-bold rounded-full px-2.5 py-1" style="background:rgba(239,68,68,.12);color:var(--red);"><i class="fas fa-circle-xmark"></i> Missing</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="mt-2 flex items-center gap-2 min-w-0 text-[12.5px]" style="color:var(--text2);">
+                            <?php if ($has): ?>
+                                <i class="fas <?= $r['icon'] ?>" style="color:var(--blue-lt);"></i>
+                                <span class="break-all"><?= htmlspecialchars($r['file']) ?></span>
+                            <?php else: ?>
+                                <span class="italic" style="color:var(--text3);">No file uploaded</span>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($r['path'] !== ''): ?>
+                            <button type="button" class="btn btn-sm wiz-preview-btn w-full mt-3" style="background:var(--surface);border:1px solid var(--border);color:var(--blue-lt);"
+                                data-preview-src="../<?= htmlspecialchars($r['path']) ?>"
+                                data-preview-name="<?= htmlspecialchars($r['file']) ?>"
+                                data-preview-ext="<?= htmlspecialchars($r['ext']) ?>">
+                                <i class="fas fa-eye"></i> Preview
+                            </button>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </div>
+<?php
+    return (string) ob_get_clean();
+}
+
+// AJAX refresh for the Review tab (documents change via AJAX, so re-fetch on open).
+// $app_id was already verified to belong to this client above.
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && ($_GET['partial'] ?? '') === 'review' && is_ajax_request()) {
+    header('Content-Type: text/html; charset=utf-8');
+    echo edit_render_review($app, $status_info, $questions, $answers_map, $required_docs, $uploaded_by_req_id, $uploaded_by_doc_type);
+    exit;
+}
 
 $disabled_attr = $editable ? '' : ' disabled';
 $readonly_attr = $editable ? '' : ' readonly';
@@ -1705,6 +1983,20 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
             margin-top: 18px;
         }
 
+        /* ── Review tab ── */
+        .review-section {
+            margin-bottom: 22px;
+        }
+
+        .review-section-title {
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            color: var(--text3);
+            margin-bottom: 8px;
+        }
+
         @media (max-width: 640px) {
             .main {
                 padding-left: 12px;
@@ -1823,6 +2115,10 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
         }
 
         .eval-note-label {
+            font-size: 11.5px;
+        }
+
+        .review-section-title {
             font-size: 11.5px;
         }
 
@@ -2054,6 +2350,9 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
                 <button class="atab done" id="tabbtn-req" onclick="switchEditTab('tabc-req', this, 'seg-part1')">
                     <i class="fas fa-file-arrow-up"></i> Requirements
                 </button>
+                <button class="atab done" id="tabbtn-review" onclick="switchEditTab('tabc-review', this, 'seg-part1')">
+                    <i class="fas fa-clipboard-list"></i> Review
+                </button>
                 <div class="atab-divider"></div>
                 <button class="atab active current-stage" id="tabbtn-status" onclick="switchEditTab('tabc-status', this, 'seg-part2')">
                     <i class="fas fa-chart-line"></i> Status
@@ -2203,6 +2502,13 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
                                 <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
+                    </div>
+                </div>
+
+                <!-- TAB: Review -->
+                <div id="tabc-review" class="atab-content">
+                    <div id="reviewTabBody">
+                        <?= edit_render_review($app, $status_info, $questions, $answers_map, $required_docs, $uploaded_by_req_id, $uploaded_by_doc_type) ?>
                     </div>
                 </div>
 
@@ -2405,6 +2711,26 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
             if (btn) btn.classList.add('active');
             const seg = document.getElementById(partSegId);
             if (seg) seg.classList.add('part-active');
+            if (contentId === 'tabc-review') refreshReviewTab();
+        }
+
+        /* Re-fetch the Review tab so it reflects the latest uploads/removals. */
+        function refreshReviewTab() {
+            const body = document.getElementById('reviewTabBody');
+            if (!body) return;
+            fetch('edit-application.php?id=<?= (int) $app_id ?>&partial=review', {
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    credentials: 'same-origin'
+                })
+                .then(r => r.ok ? r.text() : Promise.reject())
+                .then(html => {
+                    body.innerHTML = html;
+                })
+                .catch(() => {
+                    /* keep the server-rendered content if the refresh fails */
+                });
         }
 
         <?php if ($initial_tab !== null): ?>
@@ -2498,6 +2824,32 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
 
         /* ── Upload / replace a required document without reloading the page ── */
         function handleDocUpload(form) {
+            // Quick client-side check against files shown in OTHER requirement rows
+            const picked = form.querySelector('input[type="file"]');
+            if (picked && picked.files.length) {
+                const name = picked.files[0].name.trim().toLowerCase();
+                const thisRow = form.closest('.wiz-upload-row');
+                let dupOf = null;
+                document.querySelectorAll('#requiredDocsList .wiz-upload-row').forEach(function(row) {
+                    if (row === thisRow || dupOf) return;
+                    const f = row.querySelector('.wiz-upload-filename');
+                    if (f && f.textContent.trim().toLowerCase() === name) {
+                        const lbl = row.querySelector('.wiz-label');
+                        dupOf = lbl ? lbl.childNodes[0].textContent.trim() : 'another requirement';
+                    }
+                });
+                if (dupOf) {
+                    const dupFileName = picked.files[0].name; // capture BEFORE clearing the input
+                    picked.value = '';
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Document Already Uploaded',
+                        text: '"' + dupFileName + '" was already uploaded for "' + dupOf + '". Please choose the correct file for this requirement.',
+                        confirmButtonColor: '#2563eb'
+                    });
+                    return;
+                }
+            }
             const submitBtn = form.querySelector('button[type="submit"]');
             const originalHtml = submitBtn ? submitBtn.innerHTML : '';
             if (submitBtn) {
@@ -2520,7 +2872,16 @@ $page_title    = 'Application – ' . ($app['position_title'] ?? 'Edit');
                         markComplianceChangeMade();
                         showToast(data.message || 'Document uploaded successfully.', 'success');
                     } else {
-                        showToast(data.message || 'Upload failed. Please try again.', 'error');
+                        if (data.duplicate) {
+                            Swal.fire({
+                                icon: 'warning',
+                                title: 'Document Already Uploaded',
+                                text: data.message,
+                                confirmButtonColor: '#2563eb'
+                            });
+                        } else {
+                            showToast(data.message || 'Upload failed. Please try again.', 'error');
+                        }
                         if (submitBtn) {
                             submitBtn.disabled = false;
                             submitBtn.innerHTML = originalHtml;
