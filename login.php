@@ -14,6 +14,21 @@ header("Referrer-Policy: strict-origin-when-cross-origin");
 session_start();
 
 require_once 'db.php';
+require_once 'auth.php';
+
+$authenticated_redirects = [
+    'client'    => 'client/index.php',
+    'admin'     => 'admin/dashboard.php',
+    'evaluator' => 'evaluator/dashboard.php',
+];
+if (
+    isset($_SESSION['user_email'], $_SESSION['user_type'])
+    && isset($authenticated_redirects[$_SESSION['user_type']])
+) {
+    header('Location: ' . $authenticated_redirects[$_SESSION['user_type']]);
+    exit;
+}
+
 
 date_default_timezone_set('Asia/Manila');
 

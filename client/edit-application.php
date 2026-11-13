@@ -340,6 +340,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'resub
         if (!$hasChanges) {
             $error = "Please update your answers or documents based on the evaluator's comments before resubmitting.";
         } elseif (application_status_change($database, $app_id, 'resubmitted', $client_email, 'Client resubmitted application')) {
+            releaseResubmissionsToEvaluator($database, $app_id);
             log_activity(
                 $database,
                 $client_email,
@@ -499,29 +500,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'uploa
                 $rel_path = 'uploads/app_documents/' . $fname;
                 $orig     = $_FILES['doc_file']['name'];
 
-                // Replace existing doc of same required_doc_id / document_type
+                // Re-upload keeps the previous file + its reviewer comments as history.
+                // The newest row (latest uploaded_at) is the current version.
                 if ($req_doc_id > 0) {
-                    // Delete the old file + record for this required_doc slot
-                    $stmt = $database->prepare("SELECT file_path FROM application_documents WHERE application_id = ? AND required_doc_id = ? LIMIT 1");
+                    $stmt = $database->prepare("SELECT 1 FROM application_documents WHERE application_id = ? AND required_doc_id = ? LIMIT 1");
                     $stmt->bind_param("ii", $app_id, $req_doc_id);
                     $stmt->execute();
-                    $old = $stmt->get_result()->fetch_assoc();
+                    $replaced = (bool) $stmt->get_result()->fetch_row();
                     $stmt->close();
-                    if ($old && !empty($old['file_path'])) @unlink('../' . $old['file_path']);
-                    $replaced = (bool) $old;
-                    $database->query("DELETE FROM application_documents WHERE application_id = " . (int)$app_id . " AND required_doc_id = " . (int)$req_doc_id);
                     $stmt = $database->prepare("INSERT INTO application_documents (application_id, document_type, required_doc_id, file_name, file_path) VALUES (?,?,?,?,?)");
                     $stmt->bind_param("isiss", $app_id, $doc_type, $req_doc_id, $orig, $rel_path);
                 } else {
-                    // Fallback: replace by document_type
-                    $stmt2 = $database->prepare("SELECT file_path FROM application_documents WHERE application_id = ? AND document_type = ? AND (required_doc_id IS NULL OR required_doc_id = 0) LIMIT 1");
+                    $stmt2 = $database->prepare("SELECT 1 FROM application_documents WHERE application_id = ? AND document_type = ? AND (required_doc_id IS NULL OR required_doc_id = 0) LIMIT 1");
                     $stmt2->bind_param("is", $app_id, $doc_type);
                     $stmt2->execute();
-                    $old2 = $stmt2->get_result()->fetch_assoc();
+                    $replaced = (bool) $stmt2->get_result()->fetch_row();
                     $stmt2->close();
-                    if ($old2 && !empty($old2['file_path'])) @unlink('../' . $old2['file_path']);
-                    $replaced = (bool) $old2;
-                    $database->query("DELETE FROM application_documents WHERE application_id = " . (int)$app_id . " AND document_type = '" . $database->real_escape_string($doc_type) . "' AND (required_doc_id IS NULL OR required_doc_id = 0)");
                     $stmt = $database->prepare("INSERT INTO application_documents (application_id, document_type, file_name, file_path) VALUES (?,?,?,?)");
                     $stmt->bind_param("isss", $app_id, $doc_type, $orig, $rel_path);
                 }
@@ -613,7 +607,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delet
         $stmt->execute();
         $drow = $stmt->get_result()->fetch_assoc();
         $stmt->close();
+        $hasReviewComments = false;
         if ($drow) {
+            $cs = $database->prepare("SELECT 1 FROM document_comments WHERE document_id = ? LIMIT 1");
+            $cs->bind_param("i", $doc_id);
+            $cs->execute();
+            $hasReviewComments = (bool) $cs->get_result()->fetch_row();
+            $cs->close();
+            if ($hasReviewComments) {
+                $del_message = 'This document has reviewer comments and is kept as part of the review history. Upload a replacement instead.';
+            }
+        }
+        if ($drow && !$hasReviewComments) {
             if (!empty($drow['file_path'])) @unlink('../' . $drow['file_path']);
             $database->query("DELETE FROM application_documents WHERE id = " . $doc_id);
             $database->query("UPDATE applications SET updated_at = NOW() WHERE id = " . (int)$app_id);

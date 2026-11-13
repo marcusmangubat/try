@@ -168,6 +168,21 @@ function claimApplication($db, $application_id, $evaluator_id, $evaluator_email)
         return ['ok' => true, 'already_owned' => true];
     }
 
+    // A resubmission belongs to the evaluator already on the case. Hand it
+    // back without changing the status away from resubmitted.
+    if ($row['status'] === 'resubmitted' && (int) $row['current_evaluator_id'] === $evaluator_id) {
+        $stmt = $db->prepare("
+            UPDATE applications
+            SET handling_party = 'evaluator', updated_at = NOW()
+            WHERE id = ?
+        ");
+        $stmt->bind_param("i", $application_id);
+        $stmt->execute();
+        $stmt->close();
+        $db->commit();
+        return ['ok' => true, 'already_owned' => true];
+    }
+
     $isClaimable = $row['handling_party'] === null
         && in_array($row['status'], APPLICATION_CLAIMABLE_STATUSES, true);
 
@@ -182,27 +197,31 @@ function claimApplication($db, $application_id, $evaluator_id, $evaluator_email)
     }
 
     $from_status = $row['status'];
+    // A resubmission stays Resubmitted so it remains on that evaluator tab.
+    $next_status = $from_status === 'resubmitted' ? 'resubmitted' : 'under_evaluation';
 
     $stmt = $db->prepare("
         UPDATE applications
-        SET status = 'under_evaluation',
+        SET status = ?,
             current_evaluator_id = ?,
             handling_party = 'evaluator',
             locked_at = NOW(),
             updated_at = NOW()
         WHERE id = ?
     ");
-    $stmt->bind_param("ii", $evaluator_id, $application_id);
+    $stmt->bind_param("sii", $next_status, $evaluator_id, $application_id);
     $stmt->execute();
     $stmt->close();
 
-    $stmt = $db->prepare("
-        INSERT INTO status_history (application_id, from_status, to_status, changed_by, reason)
-        VALUES (?, ?, 'under_evaluation', ?, 'Evaluator claimed application')
-    ");
-    $stmt->bind_param("iss", $application_id, $from_status, $evaluator_email);
-    $stmt->execute();
-    $stmt->close();
+    if ($from_status !== $next_status) {
+        $stmt = $db->prepare("
+            INSERT INTO status_history (application_id, from_status, to_status, changed_by, reason)
+            VALUES (?, ?, 'under_evaluation', ?, 'Evaluator claimed application')
+        ");
+        $stmt->bind_param("iss", $application_id, $from_status, $evaluator_email);
+        $stmt->execute();
+        $stmt->close();
+    }
 
     // Close out any stale active assignment left by a different evaluator.
     $stmt = $db->prepare("
@@ -283,63 +302,39 @@ function sendToCompliance($db, $application_id, $evaluator_id, $evaluator_email,
 }
 
 /**
- * Statuses where the case is presented to Admin:
- * - for_compliance: evaluator routed the case to Admin, but it is
- *   INFORMATIONAL ONLY until the applicant resubmits — no admin action
- *   (reopen / evaluate directly / reassign) is permitted in this state.
- * - resubmitted: applicant has resubmitted after complying; the case is
- *   now actionable by Admin (reopen to evaluator, evaluate directly, or
- *   reassign).
- */
-const ADMIN_HANDOFF_STATUSES = ['for_compliance', 'resubmitted'];
-
-/**
- * ADMIN ACTION 1: reopen a for_compliance/resubmitted case back to the SAME
- * evaluator who originally handled it.
+ * Send a resubmitted application straight back to the evaluator on record.
+ * Status stays resubmitted. When $application_id is omitted, every matching
+ * case is released (covers applications resubmitted before this handoff).
  *
  * @param mysqli $db
- * @param int $application_id
- * @param string $admin_email
- * @return bool
+ * @param int|null $application_id
  */
-function adminReopenToEvaluator($db, $application_id, $admin_email)
+function releaseResubmissionsToEvaluator($db, $application_id = null)
 {
-    $application_id = (int) $application_id;
-    if (!$application_id) return false;
+    if ($application_id !== null) {
+        $application_id = (int) $application_id;
+        if (!$application_id) return;
+        $stmt = $db->prepare("
+            UPDATE applications
+            SET handling_party = 'evaluator'
+            WHERE id = ?
+              AND status = 'resubmitted'
+              AND current_evaluator_id IS NOT NULL
+              AND (handling_party IS NULL OR handling_party <> 'evaluator')
+        ");
+        $stmt->bind_param('i', $application_id);
+        $stmt->execute();
+        $stmt->close();
+        return;
+    }
 
-    $stmt = $db->prepare("
-    SELECT status, current_evaluator_id FROM applications
-    WHERE id = ? AND status = 'resubmitted'
-    LIMIT 1
-");
-    $stmt->bind_param("i", $application_id);
-    $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-    if (!$row || !$row['current_evaluator_id']) return false;
-
-    $from_status = $row['status'];
-
-    $stmt = $db->prepare("
-    UPDATE applications
-    SET status = 'under_evaluation', handling_party = 'evaluator', locked_at = NOW(), updated_at = NOW()
-    WHERE id = ? AND status = 'resubmitted'
-");
-    $stmt->bind_param("i", $application_id);
-    $stmt->execute();
-    $ok = $stmt->affected_rows === 1;
-    $stmt->close();
-    if (!$ok) return false;
-
-    $stmt = $db->prepare("
-        INSERT INTO status_history (application_id, from_status, to_status, changed_by, reason)
-        VALUES (?, ?, 'under_evaluation', ?, 'Admin reopened case to original evaluator')
+    $db->query("
+        UPDATE applications
+        SET handling_party = 'evaluator'
+        WHERE status = 'resubmitted'
+          AND current_evaluator_id IS NOT NULL
+          AND (handling_party IS NULL OR handling_party <> 'evaluator')
     ");
-    $stmt->bind_param("iss", $application_id, $from_status, $admin_email);
-    $stmt->execute();
-    $stmt->close();
-
-    return true;
 }
 
 /**

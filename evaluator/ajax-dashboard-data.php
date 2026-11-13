@@ -6,6 +6,7 @@
 session_start();
 require_once '../db.php';
 require_once '../auth.php';
+require_once '../includes/app-helpers.php';
 require_once '../includes/dashboard-data.php';
 date_default_timezone_set('Asia/Manila');
 
@@ -16,6 +17,8 @@ if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evalu
     echo json_encode(['error' => 'Unauthorized']);
     exit;
 }
+
+releaseResubmissionsToEvaluator($database);
 
 $evaluator_email = $_SESSION['user_email'];
 $evaluator_id = null;

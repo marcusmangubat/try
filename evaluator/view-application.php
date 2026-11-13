@@ -40,28 +40,18 @@ $initials = count($parts) >= 2
     ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
     : strtoupper(substr($evaluator_name, 0, 2));
 
-// Claim-or-verify ownership: opening this page is the "evaluator clicks to
-// begin evaluation" moment. If the case is unclaimed, this evaluator claims
-// it atomically (locking out everyone else). If it's already claimed by
-// someone else — or currently with Admin for compliance — access is denied.
+// Opening an unclaimed application claims it. Every other status stays
+// viewable: a case is never hidden because of its status.
 if (!$evaluator_id) {
     header('Location: ../login.php');
     exit;
 }
 
+releaseResubmissionsToEvaluator($database, $app_id);
+
 $claim = claimApplication($database, $app_id, $evaluator_id, $evaluator_email);
-if (!$claim['ok']) {
-    if ($claim['reason'] === 'not_found') {
-        header('Location: applications.php?error=not_found');
-        exit;
-    }
-    // Either owned by another evaluator, or currently with Admin
-    // (status = for_compliance, handling_party = admin).
-    $holder = $claim['holder_name'] ?? null;
-    $msg = $holder
-        ? 'This application is already being evaluated by ' . $holder . '.'
-        : 'This application is not currently available for evaluation.';
-    header('Location: applications.php?locked=1&msg=' . urlencode($msg));
+if (!$claim['ok'] && ($claim['reason'] ?? '') === 'not_found') {
+    header('Location: applications.php?error=not_found');
     exit;
 }
 
@@ -82,7 +72,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $eval_error = $msg;
     };
 
-    if ($document_id <= 0 || $doc_comment === '') {
+    if (!evaluatorOwnsApplication($database, $app_id, $evaluator_id)) {
+        $fail('Only the assigned evaluator can comment on this application.');
+    } elseif ($document_id <= 0 || $doc_comment === '') {
         $fail('Please enter a comment before submitting.');
     } else {
         $stmt = $database->prepare("
@@ -227,10 +219,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $database->query("UPDATE applications SET handling_party = NULL WHERE id = $app_id");
                     $database->query("UPDATE assignments SET status = 'completed' WHERE application_id = $app_id AND evaluator_id = $evaluator_id AND status = 'active'");
                 }
-                // Any successful decision (approved/disapproved/for_compliance) moves
-                // the case out of this evaluator's reach on reload, so the success
-                // message is shown on applications.php instead of bouncing through
-                // a locked view-application.php.
+                // Show the result on the applications list after a decision is saved.
                 header("Location: applications.php?evaluated=1&decision=" . urlencode($decision));
                 exit;
             }
@@ -536,6 +525,48 @@ if (!empty($documents)) {
     }
 }
 
+// ── Corrected documents: uploaded AFTER the latest comment on the same document type ──
+$latestCommentByType = [];
+foreach ($documents as $d) {
+    $typeKey = strtolower(trim($d['document_type'] ?? ''));
+    foreach ($docCommentsByDocumentId[(int) $d['id']] ?? [] as $c) {
+        $t = strtotime($c['created_at']);
+        if (!isset($latestCommentByType[$typeKey]) || $t > $latestCommentByType[$typeKey]) {
+            $latestCommentByType[$typeKey] = $t;
+        }
+    }
+}
+
+$correctedDocIds = [];
+foreach ($documents as $d) {
+    $typeKey = strtolower(trim($d['document_type'] ?? ''));
+    if (isset($latestCommentByType[$typeKey]) && strtotime($d['uploaded_at']) > $latestCommentByType[$typeKey]) {
+        $correctedDocIds[(int) $d['id']] = true;
+    }
+}
+$correctedCount      = count($correctedDocIds);
+$firstCorrectedDocId = $correctedCount ? array_key_first($correctedDocIds) : null;
+
+// Old uploads that the applicant has since replaced with a corrected file of the same type
+$supersededDocIds = [];
+foreach ($documents as $d) {
+    $typeKey = strtolower(trim($d['document_type'] ?? ''));
+    foreach ($documents as $o) {
+        if (
+            (int) $o['id'] !== (int) $d['id']
+            && strtolower(trim($o['document_type'] ?? '')) === $typeKey
+            && isset($correctedDocIds[(int) $o['id']])
+            && strtotime($o['uploaded_at']) > strtotime($d['uploaded_at'])
+        ) {
+            $supersededDocIds[(int) $d['id']] = true;
+            break;
+        }
+    }
+}
+
+$cls_rowCorrected = '!bg-emerald-50 !border !border-emerald-300 !border-l-4 !border-l-emerald-600 !rounded-[10px] !px-2.5 !py-2 dark:!bg-emerald-500/10 dark:!border-emerald-500/45 dark:!border-l-emerald-500';
+$cls_badge        = 'inline-flex items-center gap-1 ml-1.5 px-2 py-0.5 text-[9.5px] font-extrabold tracking-wide uppercase align-middle rounded-full text-emerald-700 bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-500/20';
+
 // Past evaluations
 $stmt = $database->prepare("
     SELECT e.decision, e.comments, e.evaluated_at, ev.full_name
@@ -592,10 +623,10 @@ $appAvi = strtoupper(count($anp) >= 2
 $app_has_pic = !empty($app['profile_picture']);
 $app_pic_url = $app_has_pic ? '../' . $app['profile_picture'] : null;
 
-// Does this application currently accept a new evaluation? (drives whether
-// the eval panel / doc-comment forms render, and whether it belongs in the
-// sticky action rail)
-$isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true);
+// Evaluation actions stay with the assigned evaluator. Every status can
+// still be opened and read.
+$ownsCase = evaluatorOwnsApplication($database, $app_id, (int) $evaluator_id);
+$isActionable = $ownsCase && in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -609,6 +640,11 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]']
+        }
+    </script>
     <link rel="stylesheet" href="../css/darkmode.css">
     <?php include '../includes/theme-init.php'; ?>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -996,9 +1032,12 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
         </div>
 
         <!-- Alerts -->
-        <?php if ($eval_error): ?>
-            <div class="alert alert-error fade-in d1">
-                <i class="fas fa-circle-xmark"></i> <?= htmlspecialchars($eval_error) ?>
+        <?php if ($correctedCount > 0): ?>
+            <div class="alert !flex items-center gap-2.5 flex-wrap !bg-emerald-50 !border !border-emerald-300 !text-emerald-800 text-[12.5px] dark:!bg-emerald-500/10 dark:!border-emerald-500/45 dark:!text-emerald-300 fade-in d1">
+                <i class="fas fa-file-circle-check"></i>
+                <span>The applicant updated <strong><?= $correctedCount ?></strong> document<?= $correctedCount !== 1 ? 's' : '' ?> after your comments.</span>
+                <a href="#doc-<?= (int) $firstCorrectedDocId ?>" onclick="scrollToCorrected(event)"
+                    class="ml-auto font-extrabold underline text-emerald-700 dark:text-emerald-300">Review now</a>
             </div>
         <?php endif; ?>
 
@@ -1290,11 +1329,14 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
                                     </div>
 
                                     <?php foreach ($matches as $d): ?>
-                                        <div class="doc-row" style="margin-left:25px;">
+                                        <?php $isCorrected = isset($correctedDocIds[(int) $d['id']]); ?>
+                                        <div class="doc-row scroll-mt-24 <?= $isCorrected ? $cls_rowCorrected : '' ?>" id="doc-<?= (int) $d['id'] ?>" style="margin-left:25px;">
                                             <div class="doc-row-left">
                                                 <div class="doc-icon"><i class="fas fa-file-lines"></i></div>
                                                 <div>
-                                                    <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?></div>
+                                                    <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?>
+                                                        <?php if ($isCorrected): ?><span class="<?= $cls_badge ?>"><i class="fas fa-rotate"></i> Updated by applicant</span><?php endif; ?>
+                                                    </div>
                                                     <div class="doc-type"><?= htmlspecialchars($d['document_type']) ?></div>
                                                 </div>
                                             </div>
@@ -1321,7 +1363,7 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
                                                 <?php endforeach; ?>
                                             </div>
                                         </div>
-                                        <?php if ($isActionable): ?>
+                                        <?php if ($isActionable && !isset($supersededDocIds[(int) $d['id']])): ?>
                                             <form method="POST" class="js-doc-comment-form" data-doc-id="<?= (int) $d['id'] ?>" style="margin:0 0 12px 71px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
                                                 <input type="hidden" name="action" value="add_doc_comment">
                                                 <input type="hidden" name="document_id" value="<?= (int) $d['id'] ?>">
@@ -1345,11 +1387,14 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
                                     </div>
                                 <?php endif; ?>
                                 <?php foreach ($extraDocuments as $d): ?>
-                                    <div class="doc-row">
+                                    <?php $isCorrected = isset($correctedDocIds[(int) $d['id']]); ?>
+                                    <div class="doc-row scroll-mt-24 <?= $isCorrected ? $cls_rowCorrected : '' ?>" id="doc-<?= (int) $d['id'] ?>">
                                         <div class="doc-row-left">
                                             <div class="doc-icon"><i class="fas fa-file-lines"></i></div>
                                             <div>
-                                                <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?></div>
+                                                <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?>
+                                                    <?php if ($isCorrected): ?><span class="<?= $cls_badge ?>"><i class="fas fa-rotate"></i> Updated by applicant</span><?php endif; ?>
+                                                </div>
                                                 <div class="doc-type"><?= htmlspecialchars($d['document_type']) ?></div>
                                             </div>
                                         </div>
@@ -1376,7 +1421,7 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
                                             <?php endforeach; ?>
                                         </div>
                                     </div>
-                                    <?php if ($isActionable): ?>
+                                    <?php if ($isActionable && !isset($supersededDocIds[(int) $d['id']])): ?>
                                         <form method="POST" class="js-doc-comment-form" data-doc-id="<?= (int) $d['id'] ?>" style="margin:0 0 12px 46px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
                                             <input type="hidden" name="action" value="add_doc_comment">
                                             <input type="hidden" name="document_id" value="<?= (int) $d['id'] ?>">
@@ -1917,6 +1962,24 @@ $isActionable = in_array($app['status'], ['assign', 'assigned', 'under_evaluatio
                 });
         });
     </script>
+    <?php if ($firstCorrectedDocId): ?>
+        <script>
+            function scrollToCorrected(e) {
+                if (e) e.preventDefault();
+                const el = document.getElementById('doc-<?= (int) $firstCorrectedDocId ?>');
+                if (el) el.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                });
+            }
+
+            // Auto-jump on every load/refresh, except right after posting a comment
+            document.addEventListener('DOMContentLoaded', function() {
+                if (new URLSearchParams(window.location.search).has('doc_comment')) return;
+                setTimeout(scrollToCorrected, 350); // let layout and fade-in settle first
+            });
+        </script>
+    <?php endif; ?>
     <script type="module" src="../js/main.js"></script>
     <script>
         window.DMW_USER_EMAIL = <?= json_encode($evaluator_email) ?>;

@@ -3,6 +3,7 @@
 session_start();
 require_once '../db.php';
 require_once '../auth.php';
+require_once '../includes/app-helpers.php';
 date_default_timezone_set('Asia/Manila');
 require_once '../includes/dashboard-data.php';
 
@@ -11,6 +12,8 @@ if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evalu
     header('Location: ../login.php');
     exit;
 }
+
+releaseResubmissionsToEvaluator($database);
 
 $evaluator_email = $_SESSION['user_email'];
 
@@ -1139,9 +1142,6 @@ function kpi_card(
                 "'": '&#39;'
             } [ch]));
         }
-        // Mirrors $locked_statuses in applications.php
-        const LOCKED_STATUSES = ['for_compliance', 'resubmitted', 'approved', 'disapproved'];
-
         // "Open for Evaluation": confirm before claiming (same wording as applications.php)
         function claimAndOpen(id) {
             Swal.fire({
@@ -1156,22 +1156,6 @@ function kpi_card(
             }).then(result => {
                 if (result.isConfirmed) window.location = 'view-application.php?id=' + id;
             });
-            return false;
-        }
-
-        // "My Assigned Applications": block locked cases with a popup
-        function openAssigned(id, status) {
-            if (LOCKED_STATUSES.includes(status)) {
-                Swal.fire({
-                    icon: 'warning',
-                    title: 'Application Locked',
-                    text: 'This application is currently with Admin or has already been finalized. It cannot be accessed until it is reopened or reassigned to you.',
-                    confirmButtonColor: '#1e40af',
-                    confirmButtonText: 'Understood'
-                });
-                return false;
-            }
-            window.location = 'view-application.php?id=' + id;
             return false;
         }
 

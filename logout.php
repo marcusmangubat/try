@@ -3,7 +3,7 @@ session_start();
 require_once 'db.php';
 
 // 1. Capture email before wiping session
-$user_email = $_SESSION['email'] ?? null;
+$user_email = $_SESSION['user_email'] ?? null;
 
 // 2. Clear all session data
 $_SESSION = [];
@@ -36,6 +36,7 @@ if ($user_email !== null) {
 }
 
 // 6. Kill the remember_me cookie too
+setcookie('remember_token', '', time() - 3600, '/', '', false, true);
 setcookie('remember_me', '', time() - 3600, '/', '', true, true);
 
 // 7. Prevent cached pages from being viewed via back button

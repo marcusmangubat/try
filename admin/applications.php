@@ -390,40 +390,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
-// Admin reopens a for_compliance case back to the SAME evaluator who
-// originally handled it.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'reopen') {
-    $app_id = (int) ($_POST['application_id'] ?? 0);
-    if ($app_id && adminReopenToEvaluator($database, $app_id, $admin_email)) {
-        $applicant_name = get_applicant_name($database, $app_id);
-        log_activity(
-            $database,
-            $admin_email,
-            'admin',
-            'application',
-            'reopen',
-            "Reopened {$applicant_name}'s application to the original evaluator",
-            $app_id
-        );
-        notify_evaluator_for_application(
-            $database,
-            $app_id,
-            'Application Reopened',
-            "{$applicant_name}'s application has been reopened by Admin and returned to your queue. Please review the application details."
-        );
-        notify_client_for_application(
-            $database,
-            $app_id,
-            'Application Under Review Again',
-            'Your application has been returned to the evaluator for continued review.'
-        );
-        $success = "{$applicant_name}'s application has been reopened and sent back to the original evaluator.";
-        $success_type = 'reopen';
-    } else {
-        $error = 'Could not reopen this application — it may not be in a for_compliance state, or no evaluator is on record for it.';
-    }
-}
-
 // NOTE: "Evaluate Directly" is no longer handled on this page. Clicking the
 // button in the table now redirects the admin to view-application.php,
 // which already has the full Evaluate Directly panel (Approve/Disapprove
@@ -651,8 +617,8 @@ $kpi_defs = [
 
 <?php ob_start(); ?>
 <?php if (empty($applications)): ?>
-    <tr>
-        <td colspan="6" class="px-8 py-16 text-center text-[var(--text3)]">
+    <tr class="empty-row">
+        <td colspan="6" class="px-6 py-16 text-center text-[var(--text3)]">
             <i class="fas fa-inbox text-4xl text-[var(--border)] block mb-3"></i>
             <span class="text-sm font-bold text-[var(--text2)] block">No applications found</span>
             <span class="text-xs">
@@ -688,54 +654,58 @@ $kpi_defs = [
             $statusClass = 'bg-blue-100 text-blue-700';
             $statusIcon  = 'fa-clock';
         }
-        $rowDelay = .05 + (min($i, 8) * .02);
         $isStale  = !empty($app['locked_at'])
             && in_array($app['status'], ['under_evaluation', 'for_compliance'], true)
             && ((time() - strtotime($app['locked_at'])) / 3600) > 48;
+
+        $app_has_pic = !empty($app['applicant_picture']);
+        $app_pic_url = $app_has_pic ? '../' . $app['applicant_picture'] : null;
+        $ap_parts = explode(' ', trim($app['applicant_name'] ?? ''));
+        $ap_avi = strtoupper(count($ap_parts) >= 2
+            ? substr($ap_parts[0], 0, 1) . substr(end($ap_parts), 0, 1)
+            : substr($app['applicant_name'] ?? 'NA', 0, 2));
+        $is_unowned = empty($app['current_evaluator_name'])
+            && in_array($app['status'], ['pending', 'unassign', 'unassigned'], true);
         ?>
-        <tr class="fade-in hover:bg-[var(--surface)] transition-colors <?= $isStale ? 'row-stale' : '' ?>" style="animation-delay:<?= $rowDelay ?>s">
-            <!--<td class="px-6 py-5 font-semibold text-[var(--navy)]">#<?= $app['id'] ?></td>-->
-            <?php
-            $app_has_pic = !empty($app['applicant_picture']);
-            $app_pic_url = $app_has_pic ? '../' . $app['applicant_picture'] : null;
-            $ap_parts = explode(' ', trim($app['applicant_name'] ?? ''));
-            $ap_avi = strtoupper(count($ap_parts) >= 2
-                ? substr($ap_parts[0], 0, 1) . substr(end($ap_parts), 0, 1)
-                : substr($app['applicant_name'] ?? 'NA', 0, 2));
-            ?>
-            <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5">
-                <div class="flex items-center gap-1.5 sm:gap-2.5 lg:gap-3">
-                    <div class="flex h-6 w-6 sm:h-7 sm:w-7 lg:h-9 lg:w-9 flex-shrink-0 items-center justify-center rounded-lg lg:rounded-xl bg-[#eef2ff] text-[8px] sm:text-[9.5px] lg:text-[11px] font-extrabold text-[var(--indigo)]"
+        <tr class="app-row <?= $isStale ? 'row-stale' : '' ?>">
+            <!-- Applicant -->
+            <td class="c-app">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="app-avatar"
                         <?= $app_has_pic ? "style=\"background-image:url('" . htmlspecialchars($app_pic_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
                         <?= $app_has_pic ? '' : htmlspecialchars($ap_avi) ?>
                     </div>
                     <div class="min-w-0">
-                        <div class="font-medium truncate text-[11px] sm:text-[12.5px] lg:text-sm">
-                            <a href="view-application.php?id=<?= (int) $app['id'] ?>" class="hover:underline" style="color:var(--navy);">
-                                <?= htmlspecialchars($app['applicant_name'] ?? '—') ?>
-                            </a>
-                        </div>
-                        <div class="text-[9px] sm:text-[10.5px] lg:text-xs text-[var(--text3)] truncate"><?= htmlspecialchars($app['applicant_email'] ?? '') ?></div>
+                        <a href="view-application.php?id=<?= (int) $app['id'] ?>" class="app-name hover:underline block truncate">
+                            <?= htmlspecialchars($app['applicant_name'] ?? '—') ?>
+                        </a>
+                        <div class="app-sub truncate"><?= htmlspecialchars($app['applicant_email'] ?? '') ?></div>
                     </div>
                 </div>
             </td>
-            <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-[11px] sm:text-[12.5px] lg:text-sm">
-                <div class="truncate"><?= htmlspecialchars($app['position_title']) ?></div>
-                <div class="text-[9px] sm:text-[10.5px] lg:text-xs text-[var(--text3)] truncate"><?= htmlspecialchars($app['rsf_number']) ?></div>
-                <div class="text-[9px] sm:text-[10.5px] lg:text-xs text-[var(--text3)] truncate">
+
+            <!-- Position / RSF -->
+            <td class="c-pos">
+                <div class="app-title truncate"><?= htmlspecialchars($app['position_title']) ?></div>
+                <div class="app-sub truncate"><?= htmlspecialchars($app['rsf_number']) ?></div>
+                <div class="app-sub truncate">
                     <?= htmlspecialchars($app['employer_name']) ?><?= !empty($app['worksite_country']) ? ' · ' . htmlspecialchars($app['worksite_country']) : '' ?>
                 </div>
             </td>
-            <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
-                <span class="status-badge inline-flex items-center gap-1 sm:gap-1.5 px-2 py-1 sm:px-2.5 sm:py-1.5 lg:px-3 rounded-full text-[8.5px] sm:text-[9.5px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide <?= $statusClass ?>"
+
+            <!-- Status -->
+            <td class="c-status">
+                <span class="status-badge inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10.5px] font-bold uppercase tracking-wide whitespace-nowrap <?= $statusClass ?>"
                     <?php if (!empty($app['notes'])): ?>title="<?= htmlspecialchars($app['notes'], ENT_QUOTES) ?>" <?php endif; ?>>
-                    <i class="fas <?= $statusIcon ?> text-[7.5px] sm:text-[9px]"></i><?= htmlspecialchars(str_replace('_', ' ', ucfirst($app['status']))) ?>
+                    <i class="fas <?= $statusIcon ?> text-[9px]"></i><?= htmlspecialchars(str_replace('_', ' ', ucfirst($app['status']))) ?>
                 </span>
             </td>
-            <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-[9.5px] sm:text-[11px] lg:text-xs">
+
+            <!-- Handling -->
+            <td class="c-hand">
                 <?php if (!empty($app['current_evaluator_name'])): ?>
-                    <div class="font-semibold" style="color:var(--navy);"><?= htmlspecialchars($app['current_evaluator_name']) ?></div>
-                    <div class="text-[var(--text3)]">
+                    <div class="app-title truncate" style="color:var(--navy);"><?= htmlspecialchars($app['current_evaluator_name']) ?></div>
+                    <div class="app-sub">
                         <?= $app['handling_party'] === 'admin' ? 'With Admin' : 'With Evaluator' ?>
                         <?php if (!empty($app['reassign_count']) && (int) $app['reassign_count'] > 1): ?>
                             · reassigned <?= (int) $app['reassign_count'] - 1 ?>x
@@ -745,98 +715,84 @@ $kpi_defs = [
                     if (!empty($app['locked_at']) && in_array($app['status'], ['under_evaluation', 'for_compliance'], true)) {
                         $locked_hours = (time() - strtotime($app['locked_at'])) / 3600;
                         if ($locked_hours > 48) {
-                            echo '<div class="text-amber-600 font-semibold mt-0.5"><i class="fas fa-triangle-exclamation"></i> Stale since '
+                            echo '<div class="text-amber-600 font-semibold mt-0.5 text-xs"><i class="fas fa-triangle-exclamation"></i> Stale since '
                                 . date('M d', strtotime($app['locked_at'])) . '</div>';
                         }
                     }
                     ?>
+                <?php elseif ($is_unowned): ?>
+                    <div class="app-title" style="color:#dc2626;">Unassigned</div>
+                    <div class="app-sub">Awaiting evaluator</div>
                 <?php else: ?>
-                    <span class="text-[var(--text3)]">—</span>
+                    <span class="app-sub">—</span>
                 <?php endif; ?>
             </td>
-            <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-[9.5px] sm:text-[11px] lg:text-xs text-[var(--text3)]">
-                <div>Sub: <?= date('M d, Y', strtotime($app['submitted_at'])) ?></div>
-                <div>Upd: <?= date('M d, Y', strtotime($app['updated_at'])) ?></div>
+
+            <!-- Dates -->
+            <td class="c-date">
+                <div class="app-sub"><span class="date-lbl">Submitted</span> <?= date('M d, Y', strtotime($app['submitted_at'])) ?></div>
+                <div class="app-sub"><span class="date-lbl">Updated</span> <?= date('M d, Y', strtotime($app['updated_at'])) ?></div>
             </td>
-            <td class="px-2 py-2 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5">
+
+            <!-- Action -->
+            <td class="c-act">
                 <?php if (in_array($app['status'], ['unassign', 'unassigned'], true) && !empty($evaluators)): ?>
-                    <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                        <a href="view-application.php?id=<?= (int) $app['id'] ?>"
-                            class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition inline-block whitespace-nowrap">
-                            <i class="fas fa-eye"></i> <span class="hidden sm:inline">View</span>
-                        </a>
-                        <form method="POST" class="flex items-center gap-1.5 sm:gap-2">
+                    <div class="act-stack">
+                        <form method="POST" class="flex items-center gap-2 flex-wrap">
                             <input type="hidden" name="action" value="assign">
                             <input type="hidden" name="application_id" value="<?= $app['id'] ?>">
                             <select name="evaluator_id" required
-                                class="border border-[var(--border)] bg-white rounded-lg sm:rounded-xl px-2 py-1.5 sm:px-3 sm:py-2 text-[10px] sm:text-[11px] lg:text-xs focus:outline-none focus:border-[var(--blue-lt)] max-w-[110px] sm:max-w-none">
+                                class="border border-[var(--border)] bg-[var(--card)] text-[var(--text1)] rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:border-[var(--blue-lt)] w-full sm:w-auto sm:max-w-[150px]">
                                 <option value="">Select evaluator...</option>
                                 <?php foreach ($evaluators as $ev): ?>
                                     <option value="<?= $ev['eid'] ?>"><?= htmlspecialchars($ev['full_name']) ?></option>
                                 <?php endforeach; ?>
                             </select>
                             <button type="submit"
-                                class="bg-[var(--blue)] hover:bg-[#1e40af] hover:-translate-y-0.5 text-white px-2.5 py-1.5 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition whitespace-nowrap">
-                                Assign
+                                class="bg-[var(--blue)] hover:bg-[#1e40af] text-white px-4 py-2 rounded-lg text-xs font-semibold transition whitespace-nowrap">
+                                <i class="fas fa-user-plus"></i> Assign
                             </button>
                         </form>
+                        <a href="view-application.php?id=<?= (int) $app['id'] ?>" class="act-link">
+                            <i class="fas fa-eye"></i> View details
+                        </a>
                     </div>
                 <?php elseif (in_array($app['status'], ['resubmitted'], true)): ?>
-                    <div class="flex flex-col gap-2">
-                        <?php if (!empty($app['current_evaluator_name'])): ?>
-                            <div class="text-xs text-[var(--text3)]">
-                                Owner on record: <span class="font-semibold text-[var(--navy)]"><?= htmlspecialchars($app['current_evaluator_name']) ?></span>
-                            </div>
-                        <?php endif; ?>
-                        <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                            <?php if (!empty($app['current_evaluator_id'])): ?>
-                                <form method="POST" id="reopenForm<?= (int) $app['id'] ?>">
-                                    <input type="hidden" name="action" value="reopen">
+                    <div class="act-stack">
+                        <a href="view-application.php?id=<?= (int) $app['id'] ?>"
+                            class="direct-evaluate-link text-white px-4 py-2 rounded-lg text-xs font-semibold transition inline-flex items-center justify-center gap-2 whitespace-nowrap">
+                            <i class="fas fa-gavel"></i> Evaluate Directly
+                        </a>
+
+                        <?php if (!empty($evaluators)): ?>
+                            <details class="relative">
+                                <summary class="act-link cursor-pointer list-none">
+                                    <i class="fas fa-user-pen"></i> Reassign
+                                </summary>
+                                <form method="POST" class="mt-2 flex items-center gap-2">
+                                    <input type="hidden" name="action" value="reassign">
                                     <input type="hidden" name="application_id" value="<?= $app['id'] ?>">
-                                    <button type="button"
-                                        data-app-id="<?= (int) $app['id'] ?>"
-                                        data-evaluator-name="<?= htmlspecialchars($app['current_evaluator_name'] ?? 'the evaluator', ENT_QUOTES) ?>"
-                                        onclick="confirmReopen(this)"
-                                        class="bg-emerald-600 hover:bg-emerald-700 hover:-translate-y-0.5 text-white px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition whitespace-nowrap">
-                                        <i class="fas fa-rotate-left"></i> <span class="hidden sm:inline">Reopen</span>
+                                    <select name="evaluator_id" required oninvalid="this.setCustomValidity('Please select an evaluator from the list.')" oninput="this.setCustomValidity('')"
+                                        class="border border-[var(--border)] bg-[var(--card)] text-[var(--text1)] rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-[var(--blue-lt)] max-w-[150px]">
+                                        <option value="">Select evaluator...</option>
+                                        <?php foreach ($evaluators as $ev): ?>
+                                            <option value="<?= $ev['eid'] ?>"><?= htmlspecialchars($ev['full_name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <button type="submit"
+                                        class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap">
+                                        Go
                                     </button>
                                 </form>
-                            <?php endif; ?>
-
-                            <a href="view-application.php?id=<?= (int) $app['id'] ?>"
-                                class="direct-evaluate-link hover:-translate-y-0.5 text-white px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition inline-block whitespace-nowrap">
-                                <i class="fas fa-gavel"></i> <span class="hidden sm:inline">Evaluate Directly</span>
-                            </a>
-
-                            <?php if (!empty($evaluators)): ?>
-                                <details class="relative">
-                                    <summary class="cursor-pointer list-none bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition inline-block whitespace-nowrap">
-                                        <i class="fas fa-user-pen"></i> <span class="hidden sm:inline">Reassign</span>
-                                    </summary>
-                                    <form method="POST" class="mt-2 flex items-center gap-1.5 sm:gap-2">
-                                        <input type="hidden" name="action" value="reassign">
-                                        <input type="hidden" name="application_id" value="<?= $app['id'] ?>">
-                                        <select name="evaluator_id" required oninvalid="this.setCustomValidity('Please select an evaluator from the list.')" oninput="this.setCustomValidity('')"
-                                            class="border border-[var(--border)] bg-white rounded-lg sm:rounded-xl px-2 py-1.5 text-[10px] sm:text-[11px] lg:text-xs focus:outline-none focus:border-[var(--blue-lt)] max-w-[110px] sm:max-w-none">
-                                            <option value="">Select evaluator...</option>
-                                            <?php foreach ($evaluators as $ev): ?>
-                                                <option value="<?= $ev['eid'] ?>"><?= htmlspecialchars($ev['full_name']) ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                        <button type="submit"
-                                            class="bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition whitespace-nowrap">
-                                            Go
-                                        </button>
-                                    </form>
-                                </details>
-                            <?php endif; ?>
-                        </div>
+                            </details>
+                        <?php endif; ?>
                     </div>
                 <?php else: ?>
-                    <a href="view-application.php?id=<?= (int) $app['id'] ?>"
-                        class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] lg:text-xs font-semibold transition inline-block whitespace-nowrap">
-                        <i class="fas fa-eye"></i> <span class="hidden sm:inline">View</span>
-                    </a>
+                    <div class="act-stack">
+                        <a href="view-application.php?id=<?= (int) $app['id'] ?>" class="act-btn-ghost">
+                            <i class="fas fa-eye"></i> View
+                        </a>
+                    </div>
                 <?php endif; ?>
             </td>
         </tr>
@@ -846,35 +802,57 @@ $kpi_defs = [
 
 <?php ob_start(); ?>
 <?php if ($total_pages > 1 || $view_all): ?>
-    <div class="flex flex-col sm:flex-row items-center justify-between gap-3 px-6 py-4 border-t border-[var(--border)] text-sm">
-        <span class="text-[var(--text3)] order-2 sm:order-1">
+    <?php
+    $qs = ($status_filter ? '&status=' . urlencode($status_filter) : '')
+        . ($month_filter !== '' ? '&month=' . urlencode($month_filter) : '')
+        . ($country_filter !== '' ? '&country=' . urlencode($country_filter) : '')
+        . ($search_filter !== '' ? '&q=' . urlencode($search_filter) : '');
+
+    $show_from = $total_filtered > 0 ? ($view_all ? 1 : $offset + 1) : 0;
+    $show_to   = $view_all ? $total_filtered : ($offset + count($applications));
+
+    // Compact page list: first, last, current ±1, with ellipses between gaps
+    $page_items = [];
+    for ($p = 1; $p <= $total_pages; $p++) {
+        if ($p === 1 || $p === $total_pages || abs($p - $page) <= 1) {
+            $page_items[] = $p;
+        } elseif (end($page_items) !== '…') {
+            $page_items[] = '…';
+        }
+    }
+    ?>
+    <div class="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-6 py-4 border-t border-[var(--border)] text-sm">
+        <span class="text-[var(--text3)] text-xs order-2 sm:order-1">
             <?php if ($view_all): ?>
                 Showing all <?= $total_filtered ?> application<?= $total_filtered === 1 ? '' : 's' ?>
             <?php else: ?>
-                Page <?= $page ?> of <?= $total_pages ?>
+                Showing <?= $show_from ?>–<?= $show_to ?> of <?= $total_filtered ?> · Page <?= $page ?> of <?= $total_pages ?>
             <?php endif; ?>
         </span>
         <div class="flex items-center gap-1.5 flex-wrap justify-center order-1 sm:order-2">
-            <?php
-            $qs = ($status_filter ? '&status=' . urlencode($status_filter) : '')
-                . ($month_filter !== '' ? '&month=' . urlencode($month_filter) : '')
-                . ($country_filter !== '' ? '&country=' . urlencode($country_filter) : '')
-                . ($search_filter !== '' ? '&q=' . urlencode($search_filter) : '');
-            ?>
             <?php if (!$view_all): ?>
-                <?php for ($p = 1; $p <= $total_pages; $p++): ?>
-                    <a href="applications.php?page=<?= $p ?><?= $qs ?>"
-                        class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition <?= $p === $page ? 'bg-[var(--blue)] text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700' ?>">
-                        <?= $p ?>
-                    </a>
-                <?php endfor; ?>
-                <a href="applications.php?view_all=1<?= $qs ?>"
-                    class="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition whitespace-nowrap ml-1">
-                    <i class="fas fa-list"></i> View All
+                <?php if ($page > 1): ?>
+                    <a href="applications.php?page=<?= $page - 1 ?><?= $qs ?>" class="pg-btn" aria-label="Previous page"><i class="fas fa-chevron-left text-[10px]"></i></a>
+                <?php endif; ?>
+                <?php foreach ($page_items as $p): ?>
+                    <?php if ($p === '…'): ?>
+                        <span class="px-1 text-[var(--text3)]">…</span>
+                    <?php else: ?>
+                        <a href="applications.php?page=<?= $p ?><?= $qs ?>"
+                            class="pg-btn <?= $p === $page ? 'pg-active' : '' ?>" <?= $p === $page ? 'aria-current="page"' : '' ?>>
+                            <?= $p ?>
+                        </a>
+                    <?php endif; ?>
+                <?php endforeach; ?>
+                <?php if ($page < $total_pages): ?>
+                    <a href="applications.php?page=<?= $page + 1 ?><?= $qs ?>" class="pg-btn" aria-label="Next page"><i class="fas fa-chevron-right text-[10px]"></i></a>
+                <?php endif; ?>
+                <a href="applications.php?view_all=1<?= $qs ?>" class="pg-btn px-3 whitespace-nowrap ml-1">
+                    <i class="fas fa-list mr-1"></i> View All
                 </a>
             <?php else: ?>
-                <a href="applications.php?page=1<?= $qs ?>" class="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg text-xs font-semibold bg-gray-100 hover:bg-gray-200 text-gray-700 transition whitespace-nowrap ml-1">
-                    <i class="fas fa-table-list"></i> Back to Paginated View
+                <a href="applications.php?page=1<?= $qs ?>" class="pg-btn px-3 whitespace-nowrap">
+                    <i class="fas fa-table-list mr-1"></i> Back to Paginated View
                 </a>
             <?php endif; ?>
         </div>
@@ -900,6 +878,11 @@ if ($is_ajax) {
     ]);
     exit;
 }
+
+// Presentation-only figures for the summary cards (derived from $stats, no extra query)
+$sum_action   = $stats['pending'] + $stats['resubmitted'];
+$sum_approved_pct    = $total_all > 0 ? (int) round($stats['approved'] / $total_all * 100) : 0;
+$sum_disapproved_pct = $total_all > 0 ? (int) round($stats['disapproved'] / $total_all * 100) : 0;
 ?>
 
 <!DOCTYPE html>
@@ -934,14 +917,6 @@ if ($is_ajax) {
             filter: none;
         }
 
-        .kpi-card {
-            text-decoration: none;
-        }
-
-        .kpi-card:hover {
-            transform: translateY(-2px);
-        }
-
         .direct-evaluate-link {
             background: #0b1f4b;
         }
@@ -950,11 +925,11 @@ if ($is_ajax) {
             background: #132a63;
         }
 
-        /* Fade-in-up entrance, staggered per tile/row via inline delay */
+        /* Short fade used by the verify-result card */
         @keyframes fadeInUp {
             from {
                 opacity: 0;
-                transform: translateY(10px);
+                transform: translateY(8px);
             }
 
             to {
@@ -965,11 +940,16 @@ if ($is_ajax) {
 
         .fade-in {
             opacity: 0;
-            animation: fadeInUp .4s ease forwards;
+            animation: fadeInUp .3s ease forwards;
         }
 
-        /* Hide scrollbar on the horizontally-scrolling table wrapper while
-           keeping it scrollable (mirrors the evaluator portal pattern) */
+        @media (prefers-reduced-motion: reduce) {
+            .fade-in {
+                animation: none;
+                opacity: 1;
+            }
+        }
+
         .no-scrollbar::-webkit-scrollbar {
             display: none;
         }
@@ -979,11 +959,313 @@ if ($is_ajax) {
             scrollbar-width: none;
         }
 
-        /* Visual cue for stale/locked rows */
-        .row-stale {
-            background: linear-gradient(90deg, rgba(217, 119, 6, .04), transparent 40%);
+        /* ===== Summary cards ===== */
+        .sum-card {
+            background: var(--card, #fff);
+            border: 1px solid var(--border, #e2e8f0);
+            border-left-width: 4px;
+            border-radius: 12px;
+            padding: 14px 16px;
         }
 
+        .sum-label {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text3, #94a3b8);
+        }
+
+        .sum-value {
+            font-size: 26px;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text1, #0f172a);
+            margin-top: 2px;
+        }
+
+        .sum-note {
+            font-size: 11.5px;
+            color: var(--text3, #94a3b8);
+        }
+
+        /* ===== Status tabs ===== */
+        .app-tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 13px 14px;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: var(--text2, #475569);
+            white-space: nowrap;
+            text-decoration: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            transition: color .15s, background .15s;
+        }
+
+        .app-tab:hover {
+            color: var(--text1, #0f172a);
+            background: var(--surface, #f4f6fb);
+        }
+
+        .app-tab.active {
+            color: var(--navy, #0b1f4b);
+            border-bottom-color: var(--navy, #0b1f4b);
+            font-weight: 700;
+        }
+
+        .tab-count {
+            background: var(--surface, #f4f6fb);
+            color: var(--text2, #475569);
+            border-radius: 999px;
+            padding: 1px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            min-width: 22px;
+            text-align: center;
+        }
+
+        .app-tab.active .tab-count {
+            background: var(--navy, #0b1f4b);
+            color: #fff;
+        }
+
+        /* ===== Table ===== */
+        .apps-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .apps-table th {
+            padding: 12px 16px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            color: var(--text3, #94a3b8);
+            background: var(--surface, #f4f6fb);
+            border-bottom: 1px solid var(--border, #e2e8f0);
+            white-space: nowrap;
+        }
+
+        .apps-table td {
+            padding: 16px;
+            vertical-align: middle;
+        }
+
+        .app-row {
+            transition: background .12s;
+        }
+
+        .app-row:hover {
+            background: var(--surface, #f4f6fb);
+        }
+
+        .row-stale {
+            box-shadow: inset 3px 0 0 #f59e0b;
+        }
+
+        .app-avatar {
+            width: 38px;
+            height: 38px;
+            flex-shrink: 0;
+            border-radius: 50%;
+            background: #eef2ff;
+            color: var(--indigo, #4f46e5);
+            font-size: 12px;
+            font-weight: 800;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .app-name {
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--navy, #0b1f4b);
+        }
+
+        .app-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text1, #0f172a);
+        }
+
+        .app-sub {
+            font-size: 11.5px;
+            color: var(--text3, #94a3b8);
+            line-height: 1.5;
+        }
+
+        .date-lbl {
+            display: inline-block;
+            min-width: 62px;
+            color: var(--text3, #94a3b8);
+            font-weight: 600;
+        }
+
+        .act-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+        }
+
+        .act-link {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text2, #475569);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 6px;
+            border-radius: 6px;
+        }
+
+        .act-link:hover {
+            color: var(--navy, #0b1f4b);
+            background: var(--surface, #f4f6fb);
+        }
+
+        details>summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .act-btn-ghost {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border, #e2e8f0);
+            color: var(--text1, #0f172a);
+            background: var(--card, #fff);
+            text-decoration: none;
+            transition: background .12s;
+        }
+
+        .act-btn-ghost:hover {
+            background: var(--surface, #f4f6fb);
+        }
+
+        /* ===== Pagination ===== */
+        .pg-btn {
+            min-width: 32px;
+            height: 32px;
+            padding: 0 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            text-decoration: none;
+            color: var(--text2, #475569);
+            background: var(--surface, #f4f6fb);
+            border: 1px solid var(--border, #e2e8f0);
+        }
+
+        .pg-btn:hover {
+            background: var(--border, #e2e8f0);
+        }
+
+        .pg-btn.pg-active {
+            background: var(--blue, #1d4ed8);
+            border-color: var(--blue, #1d4ed8);
+            color: #fff;
+        }
+
+        /* Desktop / tablet: fixed column widths, horizontal scroll if tight */
+        @media (min-width: 768px) {
+            .apps-table {
+                table-layout: fixed;
+                min-width: 980px;
+            }
+
+            .c-status {
+                text-align: center;
+            }
+
+            .c-act {
+                text-align: right;
+            }
+        }
+
+        /* Mobile: each row becomes a stacked card */
+        @media (max-width: 767px) {
+            .apps-table thead {
+                display: none;
+            }
+
+            .apps-table,
+            .apps-table tbody {
+                display: block;
+            }
+
+            .app-row {
+                display: grid;
+                grid-template-columns: 1fr auto;
+                gap: 10px 12px;
+                padding: 16px;
+                align-items: start;
+            }
+
+            .app-row td {
+                display: block;
+                padding: 0;
+            }
+
+            .app-row .c-app {
+                grid-column: 1;
+            }
+
+            .app-row .c-status {
+                grid-column: 2;
+                grid-row: 1;
+            }
+
+            .app-row .c-pos,
+            .app-row .c-act {
+                grid-column: 1 / -1;
+            }
+
+            .app-row .c-hand {
+                grid-column: 1;
+            }
+
+            .app-row .c-date {
+                grid-column: 2;
+                text-align: right;
+            }
+
+            .app-row .c-date .date-lbl {
+                min-width: 0;
+                margin-right: 4px;
+            }
+
+            .act-stack {
+                flex-direction: row;
+                flex-wrap: wrap;
+                align-items: center;
+                justify-content: flex-start;
+                padding-top: 10px;
+                border-top: 1px dashed var(--border, #e2e8f0);
+            }
+
+            .empty-row {
+                display: block;
+            }
+
+            .empty-row td {
+                display: block;
+            }
+        }
+
+        /* ===== Verify certificate modal ===== */
         .verify-modal-overlay {
             display: none;
             position: fixed;
@@ -1227,11 +1509,7 @@ if ($is_ajax) {
             font-family: 'DM Mono', ui-monospace, monospace;
         }
 
-        .cert-table td.mono {
-            font-family: 'DM Mono', ui-monospace, monospace;
-        }
-
-        /*  DARK MODE — Verify Certificate Modal  */
+        /*  DARK MODE  */
         [data-theme="dark"] .verify-modal-overlay {
             background: rgba(0, 0, 0, .65);
         }
@@ -1295,7 +1573,6 @@ if ($is_ajax) {
             background: #1d4ed8;
         }
 
-        /* Result cards (Verified / Failed / Not Found / Invalid) */
         [data-theme="dark"] .result-card.rc-ok {
             background: rgba(16, 185, 129, .08);
             border-color: rgba(16, 185, 129, .35);
@@ -1371,12 +1648,10 @@ if ($is_ajax) {
             --selected-row: rgba(59, 130, 246, .18);
         }
 
-        /* Dark mode: strip badge background, keep the text color as-is */
         [data-theme="dark"] .status-badge {
             background: transparent !important;
         }
 
-        /* Dark mode: evaluator select dropdown (Assign / Reassign) */
         [data-theme="dark"] select[name="evaluator_id"] {
             background: var(--surface, #1e293b) !important;
             color: var(--text1, #f1f5f9) !important;
@@ -1386,6 +1661,30 @@ if ($is_ajax) {
         [data-theme="dark"] select[name="evaluator_id"] option {
             background: var(--surface, #1e293b);
             color: var(--text1, #f1f5f9);
+        }
+
+        [data-theme="dark"] .app-avatar {
+            background: rgba(99, 102, 241, .18);
+            color: #a5b4fc;
+        }
+
+        [data-theme="dark"] .app-name,
+        [data-theme="dark"] .app-tab.active {
+            color: #93c5fd;
+        }
+
+        [data-theme="dark"] .app-tab.active {
+            border-bottom-color: #60a5fa;
+        }
+
+        [data-theme="dark"] .app-tab.active .tab-count {
+            background: #60a5fa;
+            color: #0b1f4b;
+        }
+
+        [data-theme="dark"] .pg-btn.pg-active {
+            background: var(--blue, #2563eb);
+            color: #fff;
         }
 
         /* Dark-mode scrollbars */
@@ -1430,14 +1729,10 @@ if ($is_ajax) {
         })();
     </script>
 </head>
-</style>
-</head>
-</style>
-</head>
 
 <body class="bg-[var(--bg,#f4f6fb)]">
 
-    <!-- TOP BAR -->
+    <!-- TOP BAR (unchanged) -->
     <header class="topbar">
         <div class="topbar-brand">
             <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
@@ -1454,12 +1749,11 @@ if ($is_ajax) {
                 <i class="fas fa-sun"></i>
             </button>
             <div class="tb-btn"><i class="fas fa-bell"></i><span class="notif-dot"></span></div>
-            <!-- <div class="tb-btn"><i class="fas fa-magnifying-glass"></i></div>-->
             <?php include __DIR__ . '/avatar-menu.php'; ?>
         </div>
     </header>
 
-    <!-- SUBBAR -->
+    <!-- PAGE HEADER -->
     <div class="subbar">
         <div class="subbar-top flex items-center justify-between gap-4 flex-wrap">
             <div class="subbar-greeting">
@@ -1467,152 +1761,162 @@ if ($is_ajax) {
                 <p><span id="totalCount"><?= $total_filtered ?></span> Total Applications &nbsp;|&nbsp; Page <span id="currentPage"><?= $page ?></span> of <span id="totalPages"><?= $total_pages ?></span> &nbsp;|&nbsp;
                     <?= $status_filter ? '• ' . ucfirst(str_replace('_', ' ', $status_filter)) : '• All Applications' ?></p>
             </div>
-        </div>
-        <div class="subbar-bottom flex items-center gap-4 flex-wrap">
-            <button type="button" onclick="openVerifyModal()" class="filter-pill flex-shrink-0" style="text-decoration:none;cursor:pointer;border:none">
-                <i class="fa-solid fa-shield-halved" style="color:#059669"></i>
-                <span style="font-weight:600;font-size:11px">Verify Certificate</span>
-            </button>
-            <div class="filter-scroll">
-                <label class="filter-pill">
-                    <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
-                    <select id="filter-month">
-                        <option value="">All Time</option>
-                        <?php
-                        $cur_year = (int) date('Y');
-                        for ($m = 1; $m <= 12; $m++) {
-                            $val = $cur_year . '-' . str_pad((string)$m, 2, '0', STR_PAD_LEFT);
-                            $lbl = date('M Y', mktime(0, 0, 0, $m, 1, $cur_year));
-                            $sel = ($val === $month_filter) ? 'selected' : '';
-                            echo "<option value=\"$val\" $sel>$lbl</option>\n";
-                        }
-                        ?>
-                    </select>
-                </label>
-                <label class="filter-pill">
-                    <i class="fas fa-globe" style="color:var(--indigo)"></i>
-                    <select id="filter-country">
-                        <option value="">All Destinations</option>
-                        <?php foreach ($countries as $c): ?>
-                            <option value="<?= htmlspecialchars($c) ?>" <?= $c === $country_filter ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($c) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
+            <div class="flex items-center gap-2 flex-wrap">
+                <button type="button" onclick="openVerifyModal()" class="filter-pill flex-shrink-0" style="text-decoration:none;cursor:pointer;border:none">
+                    <i class="fa-solid fa-shield-halved" style="color:#059669"></i>
+                    <span style="font-weight:600;font-size:11px">Verify Certificate</span>
+                </button>
+                <a href="dashboard.php" class="filter-pill flex-shrink-0" style="text-decoration:none">
+                    <i class="fas fa-house" style="color:var(--blue-lt)"></i>
+                    <span style="font-weight:600;font-size:11px">Back to Dashboard</span>
+                </a>
             </div>
-            <a href="dashboard.php" class="filter-pill ml-auto flex-shrink-0" style="text-decoration:none">
-                <i class="fas fa-house" style="color:var(--blue-lt)"></i>
-                <span style="font-weight:600;font-size:11px">Back to Dashboard</span>
-            </a>
         </div>
     </div>
 
     <!-- MAIN CONTENT -->
     <div class="main">
 
-        <!-- Search (live — filters the list + KPI-scoped table as you type, no page reload) -->
-        <div class="card fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] overflow-hidden" style="animation-delay:.1s">
-            <div class="card-head flex items-center justify-between gap-4 flex-wrap">
+        <?php if ($error): ?>
+            <div class="flex items-center gap-2.5 bg-red-50 border border-red-200 text-red-700 px-5 py-4 rounded-xl mb-5 text-sm">
+                <i class="fas fa-circle-exclamation text-red-500"></i>
+                <?= htmlspecialchars($error) ?>
+            </div>
+        <?php endif; ?>
+
+        <!-- SUMMARY CARDS -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+            <div class="sum-card" style="border-left-color:#f59e0b">
+                <div class="sum-label">Needs action</div>
+                <div class="sum-value" id="sum-action"><?= $sum_action ?></div>
+                <div class="sum-note">Pending + resubmitted</div>
+            </div>
+            <div class="sum-card" style="border-left-color:#a78bfa">
+                <div class="sum-label">Under evaluation</div>
+                <div class="sum-value" id="sum-eval"><?= $stats['under_evaluation'] ?></div>
+                <div class="sum-note">With evaluators</div>
+            </div>
+            <div class="sum-card" style="border-left-color:#10b981">
+                <div class="sum-label">Approved</div>
+                <div class="sum-value" id="sum-approved"><?= $stats['approved'] ?></div>
+                <div class="sum-note"><span id="sum-approved-pct"><?= $sum_approved_pct ?></span>% of all applications</div>
+            </div>
+            <div class="sum-card" style="border-left-color:#ef4444">
+                <div class="sum-label">Disapproved</div>
+                <div class="sum-value" id="sum-disapproved"><?= $stats['disapproved'] ?></div>
+                <div class="sum-note"><span id="sum-disapproved-pct"><?= $sum_disapproved_pct ?></span>% of all applications</div>
+            </div>
+        </div>
+
+        <!-- APPLICATIONS CARD -->
+        <div class="rounded-2xl border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+
+            <!-- Heading + search + filters -->
+            <div class="flex flex-col gap-3 p-4 sm:p-5">
                 <div class="card-title">
                     <span class="ctdot" style="background:var(--indigo)"></span>
                     <span id="cardHeading"><?= $status_filter ? ucfirst(str_replace('_', ' ', $status_filter)) . ' Applications' : 'All Applications' ?></span>
                 </div>
 
-                <div class="relative max-w-2xl w-full sm:w-auto sm:min-w-[320px]">
-                    <i class="fas fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-[13px] text-[var(--text3)]"></i>
-                    <input
-                        type="text"
-                        id="app-search-input"
-                        value="<?= htmlspecialchars($search_filter) ?>"
-                        placeholder="Search by applicant name, Gmail, RSF #, country, or handling…"
-                        autocomplete="off"
-                        class="w-full rounded-2xl border border-[var(--border)] bg-white py-3 pl-11 pr-11 text-[13px] font-medium text-[var(--text1)] outline-none transition focus:border-[var(--navy)] focus:ring-1 focus:ring-[var(--navy)]">
-                    <button type="button" id="app-search-clear"
-                        class="absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-[var(--text3)] hover:text-[var(--text1)]"
-                        title="Clear search" style="<?= $search_filter === '' ? 'display:none' : '' ?>">
-                        <i class="fas fa-xmark"></i>
-                    </button>
+                <div class="flex flex-col lg:flex-row lg:items-center gap-3">
+                    <div class="relative flex-1">
+                        <i class="fas fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-[13px] text-[var(--text3)]"></i>
+                        <input
+                            type="text"
+                            id="app-search-input"
+                            value="<?= htmlspecialchars($search_filter) ?>"
+                            placeholder="Search by applicant name, Gmail, RSF #, country, or handling…"
+                            autocomplete="off"
+                            aria-label="Search applications"
+                            class="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] py-2.5 pl-11 pr-10 text-[13px] font-medium text-[var(--text1)] outline-none transition focus:border-[var(--navy)] focus:ring-1 focus:ring-[var(--navy)]">
+                        <button type="button" id="app-search-clear"
+                            class="absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-[var(--text3)] hover:text-[var(--text1)]"
+                            title="Clear search" aria-label="Clear search" style="<?= $search_filter === '' ? 'display:none' : '' ?>">
+                            <i class="fas fa-xmark"></i>
+                        </button>
+                    </div>
+
+                    <div class="filter-scroll flex items-center gap-2 flex-wrap">
+                        <label class="filter-pill">
+                            <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
+                            <select id="filter-month">
+                                <option value="">All Time</option>
+                                <?php
+                                $cur_year = (int) date('Y');
+                                for ($m = 1; $m <= 12; $m++) {
+                                    $val = $cur_year . '-' . str_pad((string)$m, 2, '0', STR_PAD_LEFT);
+                                    $lbl = date('M Y', mktime(0, 0, 0, $m, 1, $cur_year));
+                                    $sel = ($val === $month_filter) ? 'selected' : '';
+                                    echo "<option value=\"$val\" $sel>$lbl</option>\n";
+                                }
+                                ?>
+                            </select>
+                        </label>
+                        <label class="filter-pill">
+                            <i class="fas fa-globe" style="color:var(--indigo)"></i>
+                            <select id="filter-country">
+                                <option value="">All Destinations</option>
+                                <?php foreach ($countries as $c): ?>
+                                    <option value="<?= htmlspecialchars($c) ?>" <?= $c === $country_filter ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($c) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                    </div>
                 </div>
             </div>
 
-            <!-- KPI FILTER CARDS -->
-            <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-3 mb-8">
-                <?php foreach ($kpi_defs as $i => $kpi):
+            <!-- Status tabs (same links as the former KPI cards) -->
+            <nav class="flex overflow-x-auto no-scrollbar border-b border-[var(--border)] px-2 sm:px-4" aria-label="Filter by status">
+                <?php foreach ($kpi_defs as $kpi):
                     $is_active = ($kpi['key'] === '' && $status_filter === '')
                         || ($kpi['key'] !== '' && $status_filter === $kpi['key'])
                         || ($kpi['key'] === 'unassign' && in_array($status_filter, ['unassign', 'unassigned'], true));
-                    $delay = .05 + ($i * .03);
-                ?>
-                    <?php
                     $kpi_qs = build_admin_apps_qs(
                         $kpi['key'] !== '' ? $kpi['key'] : null,
                         $month_filter,
                         $country_filter,
                         $search_filter
                     );
-                    ?>
-                    <a href="applications.php<?= $kpi_qs ?>"
-                        class="kpi-card fade-in group relative overflow-hidden rounded-xl sm:rounded-2xl <?= $is_active ? 'border-2 ring-1' : 'border' ?> bg-white p-2.5 sm:p-3 md:p-4 flex flex-col justify-between gap-1 sm:gap-1.5 md:gap-2 no-underline transition hover:-translate-y-0.5 hover:shadow-lg"
-                        style="animation-delay:<?= $delay ?>s;
-           border-color:<?= $is_active ? $kpi['color'] : 'var(--border)' ?>;<?= $is_active ? '--tw-ring-color:' . $kpi['color'] . ';' : '' ?>">
-                        <span class="flex items-center gap-1 sm:gap-1.5 text-[9px] sm:text-[10.5px] md:text-xs font-bold uppercase tracking-tight sm:tracking-wide md:tracking-widest text-gray-500 truncate">
-                            <i class="fas <?= $kpi['icon'] ?> text-[9px] sm:text-xs" style="color:<?= $kpi['color'] ?>"></i>
-                            <span class="truncate"><?= $kpi['label'] ?></span>
-                        </span>
-                        <span class="text-lg sm:text-xl md:text-3xl font-extrabold text-gray-900" id="kpi-count-<?= $kpi['key'] !== '' ? $kpi['key'] : 'all' ?>">
-                            <?= $kpi['count'] ?>
-                        </span>
+                ?>
+                    <a href="applications.php<?= $kpi_qs ?>" class="app-tab <?= $is_active ? 'active' : '' ?>" <?= $is_active ? 'aria-current="page"' : '' ?>>
+                        <i class="fas <?= $kpi['icon'] ?> text-[11px]" style="color:<?= $kpi['color'] ?>"></i>
+                        <?= $kpi['label'] ?>
+                        <span class="tab-count" id="kpi-count-<?= $kpi['key'] !== '' ? $kpi['key'] : 'all' ?>"><?= $kpi['count'] ?></span>
                     </a>
                 <?php endforeach; ?>
+            </nav>
+
+            <!-- Table -->
+            <div class="overflow-x-auto no-scrollbar">
+                <table class="apps-table">
+                    <colgroup>
+                        <col style="width:22%">
+                        <col style="width:22%">
+                        <col style="width:11%">
+                        <col style="width:15%">
+                        <col style="width:14%">
+                        <col style="width:16%">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Applicant</th>
+                            <th>Position / RSF</th>
+                            <th class="!text-center">Status</th>
+                            <th>Handling</th>
+                            <th>Submitted / Updated</th>
+                            <th class="!text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="appsTbody" class="divide-y divide-[var(--border)]">
+                        <?= $tbody_html ?>
+                    </tbody>
+                </table>
             </div>
-            <?php if ($error): ?>
-                <div class="fade-in flex items-center gap-2.5 bg-red-50 border border-red-200 text-red-700 px-5 py-4 rounded-2xl mb-6 text-sm">
-                    <i class="fas fa-circle-exclamation text-red-500"></i>
-                    <?= htmlspecialchars($error) ?>
-                </div>
-            <?php endif; ?>
-
-
-
-            <div class="card fade-in rounded-2xl border border-[var(--border)] bg-[var(--card)] overflow-hidden" style="animation-delay:.1s">
-                <div class="card-head">
-                    <div class="card-title">
-                        <span class="ctdot" style="background:var(--indigo)"></span>
-                        <span id="cardHeading"><?= $status_filter ? ucfirst(str_replace('_', ' ', $status_filter)) . ' Applications' : 'All Applications' ?></span>
-                    </div>
-                </div>
-
-                <div class="overflow-x-auto no-scrollbar">
-                    <table class="w-full min-w-[640px] sm:min-w-[820px] lg:min-w-[1150px] table-fixed">
-                        <colgroup>
-                            <col class="w-[140px] sm:w-[180px] lg:w-[220px]">
-                            <col class="w-[150px] sm:w-[190px] lg:w-[240px]">
-                            <col class="w-[90px] sm:w-[110px] lg:w-[140px]">
-                            <col class="w-[110px] sm:w-[135px] lg:w-[170px]">
-                            <col class="w-[100px] sm:w-[120px] lg:w-[150px]">
-                            <col class="w-[150px] sm:w-[185px] lg:w-[230px]">
-                        </colgroup>
-                        <thead>
-                            <tr class="bg-[var(--surface)] border-b border-[var(--border)]">
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide text-[var(--text3)]">Applicant</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide text-[var(--text3)]">Position / RSF</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide text-[var(--text3)]">Status</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide text-[var(--text3)]">Handling</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide text-[var(--text3)]">Submitted / Updated</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[10.5px] font-bold uppercase tracking-tight sm:tracking-wide text-[var(--text3)]">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="appsTbody" class="divide-y divide-[var(--border)] text-sm">
-                            <?= $tbody_html ?>
-                        </tbody>
-                    </table>
-                </div>
-                <div id="paginationWrap">
-                    <?= $pagination_html ?>
-                </div>
+            <div id="paginationWrap">
+                <?= $pagination_html ?>
             </div>
-
         </div>
 
         <!-- Verify Certificate Modal -->
@@ -1623,7 +1927,7 @@ if ($is_ajax) {
                         <i class="fa-solid fa-shield-halved" style="color:var(--blue,#1d4ed8)"></i>
                         Verify Certificate
                     </div>
-                    <button type="button" class="verify-modal-close" onclick="closeVerifyModal()">
+                    <button type="button" class="verify-modal-close" onclick="closeVerifyModal()" aria-label="Close">
                         <i class="fas fa-xmark"></i>
                     </button>
                 </div>
@@ -1658,7 +1962,8 @@ if ($is_ajax) {
                 <div id="verifyModalResult"></div>
             </div>
         </div>
-        <!-- FLOATING DOCK -->
+
+        <!-- FLOATING DOCK (unchanged) -->
         <div class="dock-wrap">
             <nav class="dock">
                 <a href="dashboard.php" class="dk" data-tip="Dashboard">
@@ -1693,10 +1998,6 @@ if ($is_ajax) {
                     </div>
                 </div>
                 <div class="dk-div"></div>
-                <!-- <a href="assignments.html" class="dk" data-tip="Assignments">
-                <i class="fas fa-list-check"></i>
-                <span class="dk-lbl">Assign</span>
-            </a>-->
                 <a href="job-orders.php" class="dk" data-tip="Job Orders">
                     <i class="fas fa-briefcase"></i>
                     <span class="dk-lbl">RSF</span>
@@ -1755,26 +2056,7 @@ if ($is_ajax) {
             }
 
             updateLiveDateTime();
-            setInterval(updateLiveDateTime, 1000); // refresh every second
-
-            function confirmReopen(btn) {
-                const appId = btn.dataset.appId;
-                const evaluatorName = btn.dataset.evaluatorName;
-                Swal.fire({
-                    title: 'Reopen this application?',
-                    text: `This will send it back to ${evaluatorName} for continued review.`,
-                    icon: 'warning',
-                    showCancelButton: true,
-                    confirmButtonText: 'Yes, reopen it',
-                    cancelButtonText: 'Cancel',
-                    confirmButtonColor: '#059669',
-                    cancelButtonColor: '#6b7280'
-                }).then((result) => {
-                    if (result.isConfirmed) {
-                        submitReopenForm(appId);
-                    }
-                });
-            }
+            setInterval(updateLiveDateTime, 1000);
 
             document.addEventListener('click', function(e) {
                 const link = e.target.closest('.js-cert-pdf-link');
@@ -1795,11 +2077,6 @@ if ($is_ajax) {
                         Swal.showLoading();
                     }
                 }).then(() => {
-                    // Opens in a new tab only after the message has been
-                    // visible for the full timer duration. Note: browsers
-                    // always switch focus to a newly opened tab — there is
-                    // no script-level way to open one silently in the
-                    // background, so this is the closest possible UX.
                     window.open(url, '_blank', 'noopener');
                 });
             });
@@ -1831,7 +2108,6 @@ if ($is_ajax) {
                 btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:6px"></i> Verifying…';
 
                 try {
-                    // Posts to THIS page (applications.php), not a separate file.
                     const res = await fetch('applications.php', {
                         method: 'POST',
                         body: new FormData(this)
@@ -1852,52 +2128,20 @@ if ($is_ajax) {
                     const el = document.getElementById('kpi-count-' + key);
                     if (el) el.textContent = stats[key];
                 });
-            }
 
-            async function submitReopenForm(appId) {
-                const form = document.getElementById('reopenForm' + appId);
-                const params = new URLSearchParams(window.location.search);
-                params.set('ajax', '1');
-
-                try {
-                    const res = await fetch('applications.php?' + params.toString(), {
-                        method: 'POST',
-                        body: new FormData(form)
-                    });
-                    const data = await res.json();
-
-                    document.getElementById('appsTbody').innerHTML = data.tbody;
-                    document.getElementById('paginationWrap').innerHTML = data.pagination;
-                    enhanceAllReassignSelects();
-                    document.getElementById('totalCount').textContent = data.total;
-                    document.getElementById('currentPage').textContent = data.page;
-                    document.getElementById('totalPages').textContent = data.total_pages;
-                    document.getElementById('cardHeading').textContent = data.heading;
-                    updateKpiCounts(data.stats);
-
-
-                    if (data.success_type === 'reopen' && data.success) {
-                        Swal.fire({
-                            title: 'Reopened!',
-                            text: data.success,
-                            icon: 'success',
-                            confirmButtonColor: '#059669'
-                        });
-                    } else if (data.error) {
-                        Swal.fire({
-                            title: 'Reopen failed',
-                            text: data.error,
-                            icon: 'error',
-                            confirmButtonColor: '#dc2626'
-                        });
-                    }
-                } catch (err) {
-                    Swal.fire({
-                        title: 'Something went wrong',
-                        text: 'Please try again.',
-                        icon: 'error'
-                    });
-                }
+                // Summary cards (derived from the same stats payload)
+                const set = (id, v) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = v;
+                };
+                const total = Number(stats.all) || 0;
+                const pct = n => total > 0 ? Math.round((Number(n) || 0) / total * 100) : 0;
+                set('sum-action', (Number(stats.pending) || 0) + (Number(stats.resubmitted) || 0));
+                set('sum-eval', stats.under_evaluation);
+                set('sum-approved', stats.approved);
+                set('sum-disapproved', stats.disapproved);
+                set('sum-approved-pct', pct(stats.approved));
+                set('sum-disapproved-pct', pct(stats.disapproved));
             }
 
             document.addEventListener('submit', async function(e) {

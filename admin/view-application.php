@@ -1,6 +1,6 @@
 <?php
 // admin/view-application.php – View application, browse documents & comments,
-// and handle the for_compliance workflow (Reopen / Evaluate Directly / Reassign)
+// and handle direct evaluation / reassignment after an applicant resubmits.
 session_start();
 require_once '../db.php';
 require_once '../includes/app-helpers.php';
@@ -133,36 +133,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_d
             $fail('Failed to save document comment.');
         }
     }
-}
-
-// ── Reopen to original evaluator ────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reopen') {
-    if (adminReopenToEvaluator($database, $app_id, $admin_email)) {
-        log_activity(
-            $database,
-            $admin_email,
-            'admin',
-            'application',
-            'reopen',
-            "Reopened {$applicant_name}'s application to the original evaluator",
-            $app_id
-        );
-        notify_evaluator_for_application(
-            $database,
-            $app_id,
-            'Application Reopened',
-            "{$applicant_name}'s application has been reopened by Admin and returned to your queue. Please review the application details."
-        );
-        notify_client_for_application(
-            $database,
-            $app_id,
-            'Application Under Review Again',
-            'Your application has been returned to the evaluator for continued review.'
-        );
-        header("Location: view-application.php?id=$app_id&reopened=1");
-        exit;
-    }
-    $page_error = 'Could not reopen this application — the applicant must resubmit their changes before it can be reopened, or no evaluator is on record for it.';
 }
 
 // ── Evaluate directly ────────────────────────────────────────────────────
@@ -490,7 +460,6 @@ if (isset($_GET['success'])) {
         default       => 'Decision recorded successfully.',
     };
 }
-if (isset($_GET['reopened'])) $page_success = 'Application reopened and sent back to the evaluator.';
 if (isset($_GET['reassigned'])) $page_success = 'Application reassigned successfully.';
 if (isset($_GET['doc_comment'])) $page_success = 'Document comment added successfully.';
 
@@ -1375,7 +1344,7 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                 <?php if (in_array($status, ['approved', 'disapproved'], true)): ?>
                                     This application has already been finalized as <strong><?= htmlspecialchars($statusText) ?></strong>. No further admin actions are available.
                                 <?php else: ?>
-                                    Approve, Disapprove, Reassign, and Reopen become available here only after the evaluator flags this application <strong>For Compliance</strong> and the applicant resubmits — right now it's still with the evaluator (<strong><?= htmlspecialchars($statusText) ?></strong>).
+                                    Approve, Disapprove, and Reassign are available here after the applicant resubmits. A resubmission is sent straight back to the evaluator — right now this application is still <strong><?= htmlspecialchars($statusText) ?></strong>.
                                 <?php endif; ?>
                             </p>
                         </div>
@@ -1386,35 +1355,23 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                     <i class="fas fa-hourglass-half" style="color:var(--text3);margin-top:2px;"></i>
                                     <div style="font-size:12.5px;color:var(--text2);line-height:1.6;">
                                         This application is waiting on the applicant to address the evaluator's comments
-                                        and resubmit. Reopening, direct evaluation, and reassignment are unavailable until
-                                        the applicant resubmits — this prevents re-evaluating an application whose
-                                        deficiencies haven't been fixed yet.
+                                        and resubmit. Once they do, it returns to the evaluator automatically.
+                                        Direct evaluation and reassignment stay unavailable until then.
                                     </div>
                                 </div>
                             <?php else: ?>
                                 <div style="display:flex;flex-direction:column;gap:18px;">
 
-                                    <?php if (!empty($app['current_evaluator_id'])): ?>
-                                        <div>
-                                            <div style="font-size:12.5px;color:var(--text2);margin-bottom:8px;">
-                                                Send this case back to <strong><?= htmlspecialchars($app['current_evaluator_name']) ?></strong> to continue evaluating<?= $isResubmitted ? ' now that the applicant has resubmitted' : ' after the applicant has complied' ?>.
-                                            </div>
-                                            <form method="POST" id="reopenToEvaluatorForm">
-                                                <input type="hidden" name="action" value="reopen">
-                                                <button type="button"
-                                                    data-evaluator-name="<?= htmlspecialchars($app['current_evaluator_name'], ENT_QUOTES) ?>"
-                                                    onclick="confirmReopenToEvaluator(this)"
-                                                    class="eval-btn eval-btn-approve">
-                                                    <i class="fas fa-rotate-left"></i> Reopen to Evaluator
-                                                </button>
-                                            </form>
+                                    <?php if ($isResubmitted && !empty($app['current_evaluator_name'])): ?>
+                                        <div style="font-size:12.5px;color:var(--text2);line-height:1.6;">
+                                            This resubmission was sent to <strong><?= htmlspecialchars($app['current_evaluator_name']) ?></strong> for re-evaluation. No admin handoff is required.
                                         </div>
                                         <hr style="border:none;border-top:1px solid var(--border);margin:0;">
                                     <?php endif; ?>
 
                                     <div>
                                         <div style="font-size:12.5px;color:var(--text2);margin-bottom:8px;">
-                                            Evaluate this application yourself instead of sending it back to the evaluator.
+                                            Evaluate this application yourself.
                                         </div>
                                         <form method="POST" id="evalDirectForm">
                                             <input type="hidden" name="action" value="evaluate_directly">
@@ -1815,26 +1772,6 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
 
         updateLiveDateTime();
         setInterval(updateLiveDateTime, 1000); // refresh every second
-
-        // Reopen to Evaluator: ask for confirmation via SweetAlert before submitting.
-        function confirmReopenToEvaluator(btn) {
-            const evaluatorName = btn.dataset.evaluatorName;
-            Swal.fire({
-                title: 'Reopen this application?',
-                text: `This will send it back to ${evaluatorName} for continued review.`,
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonText: 'Yes, reopen it',
-                cancelButtonText: 'Cancel',
-                confirmButtonColor: '#059669',
-                cancelButtonColor: '#6b7280'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    document.getElementById('reopenToEvaluatorForm').submit();
-                }
-                // If cancelled, Swal closes on its own and nothing else happens.
-            });
-        }
 
         <?php if ($page_success): ?>
             document.addEventListener('DOMContentLoaded', function() {
