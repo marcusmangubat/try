@@ -5,6 +5,28 @@
  * Requires: $database (mysqli), included after db.php
  */
 
+/** Same window the admin job-order list labels "Closing soon". */
+const JOB_CLOSING_SOON_DAYS = 7;
+
+/**
+ * ORDER BY prefix. Jobs whose deadline is today, already past, or within
+ * JOB_CLOSING_SOON_DAYS sort first (soonest date first). Everything else
+ * keeps the order the caller appends.
+ *
+ * $deadlineCol is a trusted SQL column name, not user input.
+ * $onlyWhen limits the boost (for example to applications that are still open)
+ * so a finished case does not jump the list only because its job date is old.
+ */
+function sql_deadline_priority(string $deadlineCol, ?string $onlyWhen = null): string
+{
+    $days = (int) JOB_CLOSING_SOON_DAYS;
+    $window = "{$deadlineCol} IS NOT NULL AND {$deadlineCol} <= DATE_ADD(CURDATE(), INTERVAL {$days} DAY)";
+    if ($onlyWhen !== null && $onlyWhen !== '') {
+        $window = "({$onlyWhen}) AND {$window}";
+    }
+    return "CASE WHEN {$window} THEN 0 ELSE 1 END ASC, CASE WHEN {$window} THEN {$deadlineCol} END ASC";
+}
+
 /**
  * Whether the client may change answers, documents, or use resubmit (server-side gate).
  * Editable: unassign (submitted, not yet assigned), for_compliance, resubmitted, and in-progress pending.
@@ -12,7 +34,7 @@
  *
  * @param string|null $status applications.status
  */
-function canEditApplication($status)
+function canEditApplication(?string $status): bool
 {
     $s = strtolower(trim((string) $status));
     if ($s === 'unassigned') {
@@ -31,7 +53,7 @@ function canEditApplication($status)
  * @param string|null $reason
  * @return bool
  */
-function application_status_change($db, $application_id, $new_status, $changed_by, $reason = null)
+function application_status_change(mysqli $db, int $application_id, string $new_status, string $changed_by, ?string $reason = null): bool
 {
     $application_id = (int) $application_id;
     $new_status = trim($new_status);
@@ -74,6 +96,7 @@ function application_status_change($db, $application_id, $new_status, $changed_b
                 $stmt->bind_param('i', $rsf_id);
                 $stmt->execute();
                 $stmt->close();
+                notify_unaccommodated_when_slots_full($db, $rsf_id);
             }
         }
     }
@@ -105,7 +128,7 @@ const APPLICATION_CLAIMABLE_STATUSES = ['pending', 'assign', 'assigned', 'resubm
  * @param int $evaluator_id
  * @return bool
  */
-function evaluatorOwnsApplication($db, $application_id, $evaluator_id)
+function evaluatorOwnsApplication(mysqli $db, int $application_id, int $evaluator_id): bool
 {
     $application_id = (int) $application_id;
     $evaluator_id = (int) $evaluator_id;
@@ -135,7 +158,7 @@ function evaluatorOwnsApplication($db, $application_id, $evaluator_id)
  * @param string $evaluator_email
  * @return array{ok:bool, reason?:string, holder_name?:string|null, status?:string, already_owned?:bool}
  */
-function claimApplication($db, $application_id, $evaluator_id, $evaluator_email)
+function claimApplication(mysqli $db, int $application_id, int $evaluator_id, string $evaluator_email): array
 {
     $application_id = (int) $application_id;
     $evaluator_id = (int) $evaluator_id;
@@ -194,6 +217,12 @@ function claimApplication($db, $application_id, $evaluator_id, $evaluator_email)
             'holder_name' => $row['holder_name'],
             'status' => $row['status'],
         ];
+    }
+
+    // On leave or deactivated evaluators cannot pick up new work.
+    if (!isEvaluatorAvailable($db, $evaluator_id)) {
+        $db->rollback();
+        return ['ok' => false, 'reason' => 'unavailable'];
     }
 
     $from_status = $row['status'];
@@ -261,7 +290,7 @@ function claimApplication($db, $application_id, $evaluator_id, $evaluator_email)
  * @param string|null $reason
  * @return bool
  */
-function sendToCompliance($db, $application_id, $evaluator_id, $evaluator_email, $reason = null)
+function sendToCompliance(mysqli $db, int $application_id, int $evaluator_id, string $evaluator_email, ?string $reason = null): bool
 {
     $application_id = (int) $application_id;
     $evaluator_id = (int) $evaluator_id;
@@ -311,30 +340,30 @@ function sendToCompliance($db, $application_id, $evaluator_id, $evaluator_email,
  */
 function releaseResubmissionsToEvaluator($db, $application_id = null)
 {
+    // Only hand a resubmission back to an evaluator who can actually work it.
+    // Otherwise it stays unowned (handling_party empty) and shows in the shared
+    // Open for Evaluation queue and in the admin's Resubmitted list.
+    $sql = "
+        UPDATE applications a
+        JOIN evaluators e ON e.eid = a.current_evaluator_id
+        JOIN webuser w ON w.email = e.email
+        SET a.handling_party = 'evaluator'
+        WHERE a.status = 'resubmitted'
+          AND (a.handling_party IS NULL OR a.handling_party <> 'evaluator')
+          AND w.is_active = 1
+          AND NOT " . SQL_EVALUATOR_ON_LEAVE;
+
     if ($application_id !== null) {
         $application_id = (int) $application_id;
         if (!$application_id) return;
-        $stmt = $db->prepare("
-            UPDATE applications
-            SET handling_party = 'evaluator'
-            WHERE id = ?
-              AND status = 'resubmitted'
-              AND current_evaluator_id IS NOT NULL
-              AND (handling_party IS NULL OR handling_party <> 'evaluator')
-        ");
+        $stmt = $db->prepare($sql . " AND a.id = ?");
         $stmt->bind_param('i', $application_id);
         $stmt->execute();
         $stmt->close();
         return;
     }
 
-    $db->query("
-        UPDATE applications
-        SET handling_party = 'evaluator'
-        WHERE status = 'resubmitted'
-          AND current_evaluator_id IS NOT NULL
-          AND (handling_party IS NULL OR handling_party <> 'evaluator')
-    ");
+    $db->query($sql);
 }
 
 /**
@@ -349,7 +378,7 @@ function releaseResubmissionsToEvaluator($db, $application_id = null)
  * @param string|null $comments
  * @return bool
  */
-function adminEvaluateDirectly($db, $application_id, $admin_id, $admin_email, $decision, $comments = null)
+function adminEvaluateDirectly(mysqli $db, int $application_id, int $admin_id, string $admin_email, string $decision, ?string $comments = null): bool
 {
     $application_id = (int) $application_id;
     $admin_id = (int) $admin_id;
@@ -412,7 +441,7 @@ function adminEvaluateDirectly($db, $application_id, $admin_id, $admin_email, $d
  * @param string $admin_email
  * @return bool
  */
-function adminReassignApplication($db, $application_id, $new_evaluator_id, $admin_email)
+function adminReassignApplication(mysqli $db, int $application_id, int $new_evaluator_id, string $admin_email): bool
 {
     $application_id = (int) $application_id;
     $new_evaluator_id = (int) $new_evaluator_id;
@@ -468,7 +497,7 @@ function adminReassignApplication($db, $application_id, $new_evaluator_id, $admi
  * @param string|null $type
  * @return bool
  */
-function notify_client_for_application($db, $application_id, $title, $message, $type = 'application_status')
+function notify_client_for_application(mysqli $db, int $application_id, string $title, string $message, ?string $type = 'application_status'): bool
 {
     $application_id = (int) $application_id;
     $title = trim((string) $title);
@@ -504,6 +533,136 @@ function notify_client_for_application($db, $application_id, $title, $message, $
 }
 
 /**
+ * When a job order has no slots left, tell every submitted applicant who was
+ * not approved. Application status is left unchanged. Each applicant is
+ * notified once (in-app + email); a later fill of the same job order does
+ * not send the notice again.
+ */
+function notify_unaccommodated_when_slots_full(mysqli $db, int $rsf_id): void
+{
+    $rsf_id = (int) $rsf_id;
+    if ($rsf_id <= 0) {
+        return;
+    }
+
+    try {
+        $stmt = $db->prepare("
+            SELECT rsf_number, position_title, employer_name, worksite_country, slots_available
+            FROM rsf_job_orders
+            WHERE id = ?
+            LIMIT 1
+        ");
+        if (!$stmt) {
+            return;
+        }
+        $stmt->bind_param('i', $rsf_id);
+        $stmt->execute();
+        $job = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        // NULL means the job order does not track a slot limit.
+        if (!$job || $job['slots_available'] === null || (int) $job['slots_available'] > 0) {
+            return;
+        }
+
+        $stmt = $db->prepare("
+            SELECT a.id, a.submitted_at, c.email, c.first_name, c.middle_name, c.last_name, c.suffix
+            FROM applications a
+            JOIN clients c ON a.client_id = c.cid
+            WHERE a.rsf_id = ?
+              AND a.status NOT IN ('draft', 'approved', 'disapproved')
+              AND c.email IS NOT NULL AND c.email <> ''
+        ");
+        if (!$stmt) {
+            return;
+        }
+        $stmt->bind_param('i', $rsf_id);
+        $stmt->execute();
+        $applicants = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        if (!$applicants) {
+            return;
+        }
+
+        $position = trim((string) ($job['position_title'] ?? ''));
+        $employer = trim((string) ($job['employer_name'] ?? ''));
+        $country  = trim((string) ($job['worksite_country'] ?? ''));
+        $where = $position !== '' ? $position : 'the position you applied for';
+        if ($employer !== '') {
+            $where .= ' at ' . $employer;
+        }
+        if ($country !== '') {
+            $where .= ' (' . $country . ')';
+        }
+
+        $title = 'Job Order Slots Fully Occupied';
+        $message = 'Unfortunately, the job order you applied for (' . $where . ') has reached its maximum slot capacity. '
+            . 'Your application cannot be accommodated because all available slots are now occupied. '
+            . 'Your application record and its current status are unchanged. '
+            . 'You may wait for new job opportunities or apply to other available positions.';
+
+        $dup = $db->prepare("
+            SELECT 1 FROM notifications
+            WHERE application_id = ? AND usertype = 'client' AND type = 'slots_full'
+            LIMIT 1
+        ");
+        if (!$dup) {
+            return;
+        }
+
+        require_once __DIR__ . '/mailer.php';
+        require_once __DIR__ . '/mail_templates.php';
+
+        foreach ($applicants as $app) {
+            $appId = (int) $app['id'];
+            $dup->bind_param('i', $appId);
+            $dup->execute();
+            $dupResult = $dup->get_result();
+            $already = $dupResult ? $dupResult->fetch_row() : null;
+            if ($dupResult) {
+                $dupResult->free();
+            }
+            if ($already) {
+                continue;
+            }
+
+            if (!notify_client_for_application($db, $appId, $title, $message, 'slots_full')) {
+                continue;
+            }
+
+            $fullName = trim(
+                ($app['first_name'] ?? '') . ' ' .
+                (!empty($app['middle_name']) ? $app['middle_name'] . ' ' : '') .
+                ($app['last_name'] ?? '') .
+                (!empty($app['suffix']) ? ' ' . $app['suffix'] : '')
+            );
+            $submittedAt = $app['submitted_at'] ?: date('Y-m-d H:i:s');
+            $refNo = 'APP-' . date('Y', strtotime($submittedAt)) . '-' . str_pad((string) $appId, 6, '0', STR_PAD_LEFT);
+
+            $html = dmw_email_body_slots_full([
+                'applicant_name'   => $fullName !== '' ? $fullName : 'Applicant',
+                'ref_no'           => $refNo,
+                'position_title'   => $position,
+                'employer_name'    => $employer,
+                'worksite_country' => $country,
+                'rsf_number'       => $job['rsf_number'] ?? '',
+                'submitted_at'     => $submittedAt,
+            ]);
+            send_html_mail(
+                $db,
+                (string) $app['email'],
+                $fullName !== '' ? $fullName : null,
+                "DMW AMS — Job Order Slots Fully Occupied ({$refNo})",
+                $html
+            );
+        }
+        $dup->close();
+    } catch (Throwable $e) {
+        error_log('DMW slots-full notice failed for job order #' . $rsf_id . ': ' . $e->getMessage());
+    }
+}
+
+/**
  * Create an evaluator notification for a specific application.
  * Notifies the assigned evaluator about application updates.
  *
@@ -514,7 +673,7 @@ function notify_client_for_application($db, $application_id, $title, $message, $
  * @param string|null $type
  * @return bool
  */
-function notify_evaluator_for_application($db, $application_id, $title, $message, $type = 'application_update')
+function notify_evaluator_for_application(mysqli $db, int $application_id, string $title, string $message, ?string $type = 'application_update'): bool
 {
     $application_id = (int) $application_id;
     $title = trim((string) $title);
@@ -561,7 +720,7 @@ function notify_evaluator_for_application($db, $application_id, $title, $message
  * @param int|null $application_id Optional application context
  * @return bool
  */
-function notify_admins($db, $title, $message, $type = 'system', $application_id = null)
+function notify_admins(mysqli $db, string $title, string $message, ?string $type = 'system', ?int $application_id = null): bool
 {
     $title = trim((string) $title);
     $message = trim((string) $message);
@@ -609,7 +768,7 @@ function notify_admins($db, $title, $message, $type = 'system', $application_id 
  * @param int $application_id
  * @return string
  */
-function get_applicant_name($db, $application_id)
+function get_applicant_name(mysqli $db, int $application_id): string
 {
     $application_id = (int) $application_id;
     $name = 'the applicant';
@@ -644,15 +803,21 @@ function get_applicant_name($db, $application_id)
  * @param int|null $application_id Optional application context
  * @return bool
  */
-function notify_evaluators($db, $title, $message, $type = 'system', $application_id = null)
+function notify_evaluators(mysqli $db, string $title, string $message, ?string $type = 'system', ?int $application_id = null): bool
 {
     $title = trim((string) $title);
     $message = trim((string) $message);
     $type = $type !== null ? trim((string) $type) : null;
     if ($title === '' || $message === '') return false;
 
-    // Get all evaluator emails
-    $stmt = $db->prepare("SELECT email FROM evaluators");
+    // Get emails of evaluators who are active and not on leave
+    $stmt = $db->prepare("
+        SELECT e.email
+        FROM evaluators e
+        JOIN webuser w ON w.email = e.email
+        WHERE w.is_active = 1
+          AND NOT " . SQL_EVALUATOR_ON_LEAVE . "
+    ");
     if (!$stmt) return false;
     $stmt->execute();
     $result = $stmt->get_result();
@@ -730,4 +895,400 @@ function app_uploads_complete(array $uploads, array $requiredDocs): bool
         if (empty($uploads[$key]['file_path'])) return false;
     }
     return true;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   EVALUATOR AVAILABILITY & WORKLOAD HANDOVER
+   ═══════════════════════════════════════════════════════════ */
+
+/** Statuses that count as an evaluator's "open" cases. */
+const EVALUATOR_OPEN_STATUSES = ['assign', 'assigned', 'under_evaluation', 'for_compliance', 'resubmitted'];
+
+/** SQL fragment: evaluator row aliased `e` is currently on an active leave. */
+const SQL_EVALUATOR_ON_LEAVE = "
+    EXISTS (
+        SELECT 1 FROM evaluator_unavailability u
+        WHERE u.evaluator_id = e.eid
+          AND u.status = 'active'
+          AND u.start_at <= NOW()
+          AND (u.end_at IS NULL OR u.end_at > NOW())
+    )";
+
+function evaluator_open_status_sql(): string
+{
+    return "'" . implode("','", EVALUATOR_OPEN_STATUSES) . "'";
+}
+
+/**
+ * Available = account active AND not on an active leave right now.
+ */
+function isEvaluatorAvailable(mysqli $db, int $evaluator_id): bool
+{
+    $evaluator_id = (int) $evaluator_id;
+    if (!$evaluator_id) return false;
+
+    $stmt = $db->prepare(
+        "SELECT 1
+         FROM evaluators e
+         JOIN webuser w ON w.email = e.email
+         WHERE e.eid = ? AND w.is_active = 1
+           AND NOT " . SQL_EVALUATOR_ON_LEAVE . "
+         LIMIT 1"
+    );
+    $stmt->bind_param("i", $evaluator_id);
+    $stmt->execute();
+    $ok = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    return $ok;
+}
+
+/**
+ * Open cases owned by an evaluator (used by the request form and admin preview).
+ */
+function getOpenCasesForEvaluator(mysqli $db, int $evaluator_id): array
+{
+    $evaluator_id = (int) $evaluator_id;
+    $stmt = $db->prepare("
+        SELECT a.id, a.status, a.handling_party, a.updated_at,
+               r.position_title, r.rsf_number,
+               CONCAT(c.first_name, ' ', c.last_name) AS applicant_name
+        FROM applications a
+        JOIN rsf_job_orders r ON a.rsf_id = r.id
+        LEFT JOIN clients c ON a.client_id = c.cid
+        WHERE a.current_evaluator_id = ?
+          AND a.status IN (" . evaluator_open_status_sql() . ")
+        ORDER BY a.updated_at ASC
+    ");
+    $stmt->bind_param("i", $evaluator_id);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    return $rows;
+}
+
+/**
+ * Evaluators who can receive cases, least-busy first
+ * (tie-break: whoever was assigned a case longest ago).
+ */
+function getAvailableEvaluatorsWithWorkload(mysqli $db, int $exclude_evaluator_id = 0): array
+{
+    $exclude = (int) $exclude_evaluator_id;
+    $stmt = $db->prepare("
+        SELECT e.eid, e.full_name, e.email,
+               (SELECT COUNT(*) FROM applications a
+                 WHERE a.current_evaluator_id = e.eid
+                   AND a.status IN (" . evaluator_open_status_sql() . ")) AS open_cases,
+               (SELECT MAX(asg.assigned_at) FROM assignments asg
+                 WHERE asg.evaluator_id = e.eid) AS last_assigned
+        FROM evaluators e
+        JOIN webuser w ON w.email = e.email
+        WHERE w.is_active = 1
+          AND e.eid <> ?
+          AND NOT " . SQL_EVALUATOR_ON_LEAVE . "
+        ORDER BY open_cases ASC, last_assigned ASC, e.eid ASC
+    ");
+    $stmt->bind_param("i", $exclude);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    return $rows;
+}
+
+/**
+ * Propose a least-workload split. Running counts are updated after each
+ * case so one evaluator doesn't receive the whole batch.
+ *
+ * @param int[] $application_ids
+ * @return array<int,int|null> application_id => proposed evaluator eid (null if nobody is available)
+ */
+function proposeHandoverSplit(mysqli $db, array $application_ids, int $source_evaluator_id): array
+{
+    $pool = getAvailableEvaluatorsWithWorkload($db, $source_evaluator_id);
+    $plan = [];
+    foreach ($application_ids as $app_id) {
+        $app_id = (int) $app_id;
+        if (!$pool) {
+            $plan[$app_id] = null;
+            continue;
+        }
+        $best = 0;
+        foreach ($pool as $i => $ev) {
+            if ((int) $ev['open_cases'] < (int) $pool[$best]['open_cases']) $best = $i;
+        }
+        $plan[$app_id] = (int) $pool[$best]['eid'];
+        $pool[$best]['open_cases']++;
+    }
+    return $plan;
+}
+
+/**
+ * Move ONE open case from one evaluator to another, atomically.
+ * Status is preserved (a for_compliance case stays with the admin/applicant
+ * flow); only ownership changes. Skips safely if the case changed meanwhile.
+ *
+ * @return array{ok:bool, reason?:string}
+ */
+function handoverApplication(
+    mysqli $db,
+    int $application_id,
+    int $from_evaluator_id,
+    int $to_evaluator_id,
+    string $admin_email,
+    string $reason
+): array {
+    $application_id    = (int) $application_id;
+    $from_evaluator_id = (int) $from_evaluator_id;
+    $to_evaluator_id   = (int) $to_evaluator_id;
+    if (!$application_id || !$from_evaluator_id || !$to_evaluator_id || $from_evaluator_id === $to_evaluator_id) {
+        return ['ok' => false, 'reason' => 'invalid'];
+    }
+    if (!isEvaluatorAvailable($db, $to_evaluator_id)) {
+        return ['ok' => false, 'reason' => 'target_unavailable'];
+    }
+
+    try {
+        $db->begin_transaction();
+
+        $stmt = $db->prepare("SELECT status, handling_party, current_evaluator_id FROM applications WHERE id = ? FOR UPDATE");
+        $stmt->bind_param("i", $application_id);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if (
+            !$row
+            || (int) $row['current_evaluator_id'] !== $from_evaluator_id
+            || !in_array($row['status'], EVALUATOR_OPEN_STATUSES, true)
+        ) {
+            $db->rollback();
+            return ['ok' => false, 'reason' => 'changed'];
+        }
+
+        $status = $row['status'];
+        // for_compliance stays with Admin; everything else goes to the new evaluator's queue.
+        $party = ($status === 'for_compliance') ? $row['handling_party'] : 'evaluator';
+
+        $stmt = $db->prepare("
+            UPDATE applications
+            SET current_evaluator_id = ?, handling_party = ?, locked_at = NOW(), updated_at = NOW()
+            WHERE id = ?
+        ");
+        $stmt->bind_param("isi", $to_evaluator_id, $party, $application_id);
+        $stmt->execute();
+        $stmt->close();
+
+        $stmt = $db->prepare("UPDATE assignments SET status = 'reassigned' WHERE application_id = ? AND status = 'active'");
+        $stmt->bind_param("i", $application_id);
+        $stmt->execute();
+        $stmt->close();
+
+        $stmt = $db->prepare("INSERT INTO assignments (application_id, evaluator_id, assigned_at, status) VALUES (?, ?, NOW(), 'active')");
+        $stmt->bind_param("ii", $application_id, $to_evaluator_id);
+        $stmt->execute();
+        $stmt->close();
+
+        $stmt = $db->prepare("
+            INSERT INTO status_history (application_id, from_status, to_status, changed_by, reason)
+            VALUES (?, ?, ?, ?, ?)
+        ");
+        $stmt->bind_param("issss", $application_id, $status, $status, $admin_email, $reason);
+        $stmt->execute();
+        $stmt->close();
+
+        $stmt = $db->prepare("SELECT c.email FROM applications a JOIN clients c ON a.client_id = c.cid WHERE a.id = ? LIMIT 1");
+        $stmt->bind_param("i", $application_id);
+        $stmt->execute();
+        $client_email = $stmt->get_result()->fetch_assoc()['email'] ?? null;
+        $stmt->close();
+
+        $db->commit();
+        return ['ok' => true, 'client_email' => $client_email];
+    } catch (Throwable $e) {
+        $db->rollback();
+        error_log('handoverApplication failed: ' . $e->getMessage());
+        return ['ok' => false, 'reason' => 'error'];
+    }
+}
+
+/** Notify one evaluator by eid (for summary messages). */
+function notify_evaluator_by_id(
+    mysqli $db,
+    int $evaluator_id,
+    string $title,
+    string $message,
+    string $type = 'application_update',
+    ?int $application_id = null
+): bool {
+    $evaluator_id = (int) $evaluator_id;
+    $stmt = $db->prepare("SELECT email FROM evaluators WHERE eid = ? LIMIT 1");
+    $stmt->bind_param("i", $evaluator_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) return false;
+
+    $email = (string) $row['email'];
+    $usertype = 'evaluator';
+    $application_id = $application_id ? (int) $application_id : null;
+    $stmt = $db->prepare("
+        INSERT INTO notifications (user_email, usertype, application_id, title, message, type, is_read)
+        VALUES (?, ?, ?, ?, ?, ?, 0)
+    ");
+    $stmt->bind_param("ssisss", $email, $usertype, $application_id, $title, $message, $type);
+    $ok = $stmt->execute();
+    $stmt->close();
+    return $ok;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   REASSIGNMENT REQUESTS (evaluator side)
+   ═══════════════════════════════════════════════════════════ */
+
+const EVALUATOR_LEAVE_REASONS = [
+    'emergency'  => 'Personal / family emergency',
+    'sick_leave' => 'Sick leave',
+    'vacation'   => 'Vacation / planned leave',
+    'training'   => 'Training / official duty',
+    'other'      => 'Other',
+];
+
+/** The evaluator's current active leave row, or null. */
+function getActiveLeave(mysqli $db, int $evaluator_id): ?array
+{
+    $evaluator_id = (int) $evaluator_id;
+    $stmt = $db->prepare("
+        SELECT id, reason_category, start_at, end_at
+        FROM evaluator_unavailability
+        WHERE evaluator_id = ? AND status = 'active' AND start_at <= NOW()
+          AND (end_at IS NULL OR end_at > NOW())
+        ORDER BY start_at DESC
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $evaluator_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: null;
+}
+
+/** The evaluator's pending reassignment request, or null. */
+function getPendingReassignmentRequest(mysqli $db, int $evaluator_id): ?array
+{
+    $evaluator_id = (int) $evaluator_id;
+    $stmt = $db->prepare("
+                SELECT r.id, r.scope, r.reason_category, r.reason_other, r.expected_return, r.requested_at,
+               (SELECT COUNT(*) FROM reassignment_request_items i WHERE i.request_id = r.id) AS item_count
+        FROM reassignment_requests r
+        WHERE r.evaluator_id = ? AND r.status = 'pending'
+        ORDER BY r.id DESC
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $evaluator_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ?: null;
+}
+
+/**
+ * Create a reassignment request plus one item per application.
+ * 'all' snapshots every open case (may be zero: the evaluator is only
+ * asking to be marked unavailable). 'selected' needs at least one case.
+ *
+ * @param int[] $selected_ids
+ * @return array{ok:bool, reason?:string, request_id?:int, count?:int}
+ */
+function createReassignmentRequest(
+    mysqli $db,
+    int $evaluator_id,
+    string $scope,
+    string $reason,
+    ?string $expected_return,
+    array $selected_ids,
+    ?string $reason_other = null
+): array {
+    $evaluator_id = (int) $evaluator_id;
+    if (!$evaluator_id || !in_array($scope, ['all', 'selected'], true) || !isset(EVALUATOR_LEAVE_REASONS[$reason])) {
+        return ['ok' => false, 'reason' => 'invalid'];
+    }
+    $reason_other = trim((string) $reason_other);
+    if ($reason === 'other') {
+        if ($reason_other === '' || mb_strlen($reason_other) > 255) {
+            return ['ok' => false, 'reason' => 'invalid'];
+        }
+    } else {
+        $reason_other = null;
+    }
+    $reason_other = $reason_other === '' ? null : $reason_other;
+    if (getPendingReassignmentRequest($db, $evaluator_id)) {
+        return ['ok' => false, 'reason' => 'pending_exists'];
+    }
+
+    $open_ids = array_map('intval', array_column(getOpenCasesForEvaluator($db, $evaluator_id), 'id'));
+    $ids = $scope === 'all'
+        ? $open_ids
+        : array_values(array_intersect($open_ids, array_map('intval', $selected_ids)));
+
+    if ($scope === 'selected' && !$ids) {
+        return ['ok' => false, 'reason' => 'no_cases'];
+    }
+
+    try {
+        $db->begin_transaction();
+
+        $stmt = $db->prepare("
+            INSERT INTO reassignment_requests (evaluator_id, scope, reason_category, reason_other, expected_return)
+            VALUES (?, ?, ?, ?, ?)
+        ");
+        $stmt->bind_param("issss", $evaluator_id, $scope, $reason, $reason_other, $expected_return);
+        $stmt->execute();
+        $request_id = (int) $db->insert_id;
+        $stmt->close();
+
+        $stmt = $db->prepare("INSERT INTO reassignment_request_items (request_id, application_id) VALUES (?, ?)");
+        foreach ($ids as $app_id) {
+            $stmt->bind_param("ii", $request_id, $app_id);
+            $stmt->execute();
+        }
+        $stmt->close();
+
+        $db->commit();
+        return ['ok' => true, 'request_id' => $request_id, 'count' => count($ids)];
+    } catch (Throwable $e) {
+        $db->rollback();
+        error_log('createReassignmentRequest failed: ' . $e->getMessage());
+        return ['ok' => false, 'reason' => 'error'];
+    }
+}
+
+/** Evaluator withdraws their own pending request. */
+function cancelReassignmentRequest(mysqli $db, int $request_id, int $evaluator_id): bool
+{
+    $request_id = (int) $request_id;
+    $evaluator_id = (int) $evaluator_id;
+    $stmt = $db->prepare("
+        UPDATE reassignment_requests SET status = 'cancelled'
+        WHERE id = ? AND evaluator_id = ? AND status = 'pending'
+    ");
+    $stmt->bind_param("ii", $request_id, $evaluator_id);
+    $stmt->execute();
+    $ok = $stmt->affected_rows === 1;
+    $stmt->close();
+    return $ok;
+}
+
+/** "I'm back": end the evaluator's active leave. */
+function endActiveLeave(mysqli $db, int $evaluator_id, string $by_email): bool
+{
+    $evaluator_id = (int) $evaluator_id;
+    $stmt = $db->prepare("
+        UPDATE evaluator_unavailability
+        SET status = 'ended', ended_by = ?, ended_at = NOW()
+        WHERE evaluator_id = ? AND status = 'active'
+    ");
+    $stmt->bind_param("si", $by_email, $evaluator_id);
+    $stmt->execute();
+    $ok = $stmt->affected_rows > 0;
+    $stmt->close();
+    return $ok;
 }

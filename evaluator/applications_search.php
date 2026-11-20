@@ -4,6 +4,7 @@
 // data (no HTML) so the front end can render results without a page reload.
 session_start();
 require_once '../db.php';
+require_once '../includes/app-helpers.php';
 header('Content-Type: application/json');
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evaluator') {
@@ -24,12 +25,38 @@ if ($ev_result->num_rows === 1) {
 }
 $stmt_ev->close();
 
+// Deactivated or on-leave evaluators cannot claim, so the shared queue is empty for them.
+$can_claim = $evaluator_id ? isEvaluatorAvailable($database, $evaluator_id) : false;
+
 $valid_statuses = ['available', 'assign', 'assigned', 'under_evaluation', 'for_compliance', 'approved', 'disapproved', 'resubmitted'];
 $status_filter  = $_GET['status'] ?? '';
 $status_filter  = in_array($status_filter, $valid_statuses, true) ? $status_filter : '';
 
 // Search box — matches applicant name, email, position, or employer.
 $search_filter = trim($_GET['q'] ?? '');
+
+// Month (submission date, YYYY-MM) and Country (RSF worksite country) —
+// same rules as evaluator/applications.php.
+$month_filter = trim($_GET['month'] ?? '');
+$month_filter = preg_match('/^\d{4}-\d{2}$/', $month_filter) ? $month_filter : '';
+$country_filter = trim($_GET['country'] ?? '');
+
+$filterWhere  = '';
+$filterTypes  = '';
+$filterParams = [];
+if ($month_filter !== '') {
+    $start = $month_filter . '-01 00:00:00';
+    $end   = date('Y-m-t 23:59:59', strtotime($start));
+    $filterWhere   .= " AND a.submitted_at BETWEEN ? AND ?";
+    $filterTypes   .= 'ss';
+    $filterParams[] = $start;
+    $filterParams[] = $end;
+}
+if ($country_filter !== '') {
+    $filterWhere   .= " AND r.worksite_country = ?";
+    $filterTypes   .= 's';
+    $filterParams[] = $country_filter;
+}
 
 // Pagination
 $show_all = isset($_GET['all']) && $_GET['all'] === '1';
@@ -40,10 +67,12 @@ $applications   = [];
 $total_filtered = 0;
 $total_pages    = 1;
 
-if ($status_filter === 'available') {
+if ($status_filter === 'available' && !$can_claim) {
+    // Nothing to show: this evaluator cannot claim from the shared queue right now.
+} elseif ($status_filter === 'available') {
     $sql = "
-        SELECT a.id, a.status, a.updated_at,
-               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
+                SELECT a.id, a.status, a.updated_at,
+               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name, r.deadline,
                CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
                c.email AS applicant_email,
                c.profile_picture AS applicant_picture
@@ -51,7 +80,7 @@ if ($status_filter === 'available') {
         JOIN rsf_job_orders r ON a.rsf_id = r.id
         LEFT JOIN clients   c ON a.client_id = c.cid
         WHERE a.handling_party IS NULL
-          AND a.status IN ('pending','assign','assigned','resubmitted')
+          AND a.status IN ('pending','assign','assigned','resubmitted') {$filterWhere}
     ";
     $countSql = "
         SELECT COUNT(*) AS cnt
@@ -59,10 +88,10 @@ if ($status_filter === 'available') {
         JOIN rsf_job_orders r ON a.rsf_id = r.id
         LEFT JOIN clients   c ON a.client_id = c.cid
         WHERE a.handling_party IS NULL
-          AND a.status IN ('pending','assign','assigned','resubmitted')
+          AND a.status IN ('pending','assign','assigned','resubmitted') {$filterWhere}
     ";
-    $params = [];
-    $types  = "";
+    $params = $filterParams;
+    $types  = $filterTypes;
 
     if ($search_filter !== '') {
         $searchCond = " AND (
@@ -91,13 +120,13 @@ if ($status_filter === 'available') {
     if ($show_all) {
         $total_pages = 1;
         $page = 1;
-        $sql .= " ORDER BY a.updated_at ASC";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline') . ", a.updated_at ASC";
     } else {
         $total_pages = max(1, (int) ceil($total_filtered / $per_page));
         if ($page > $total_pages) $page = $total_pages;
         $offset = ($page - 1) * $per_page;
 
-        $sql .= " ORDER BY a.updated_at ASC LIMIT ? OFFSET ?";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline') . ", a.updated_at ASC LIMIT ? OFFSET ?";
         $params[] = $per_page;
         $params[] = $offset;
         $types   .= "ii";
@@ -112,25 +141,25 @@ if ($status_filter === 'available') {
     $stmt->close();
 } elseif ($evaluator_id) {
     $sql = "
-        SELECT a.id, a.status, a.updated_at, a.handling_party,
-               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
+                SELECT a.id, a.status, a.updated_at, a.handling_party,
+               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name, r.deadline,
                CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
                c.email AS applicant_email,
                c.profile_picture AS applicant_picture
         FROM applications a
         JOIN rsf_job_orders  r ON a.rsf_id           = r.id
         LEFT JOIN clients    c ON a.client_id        = c.cid
-        WHERE a.current_evaluator_id = ?
+        WHERE a.current_evaluator_id = ? {$filterWhere}
     ";
     $countSql = "
         SELECT COUNT(*) AS cnt
         FROM applications a
         JOIN rsf_job_orders  r ON a.rsf_id           = r.id
         LEFT JOIN clients    c ON a.client_id        = c.cid
-        WHERE a.current_evaluator_id = ?
+        WHERE a.current_evaluator_id = ? {$filterWhere}
     ";
-    $params = [$evaluator_id];
-    $types  = "i";
+    $params = array_merge([$evaluator_id], $filterParams);
+    $types  = "i" . $filterTypes;
 
     if ($status_filter === 'assign' || $status_filter === 'assigned') {
         $sql      .= " AND a.status IN ('assign','assigned')";
@@ -167,13 +196,13 @@ if ($status_filter === 'available') {
     if ($show_all) {
         $total_pages = 1;
         $page = 1;
-        $sql .= " ORDER BY a.updated_at DESC";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline', "a.status NOT IN ('approved','disapproved','draft')") . ", a.updated_at DESC";
     } else {
         $total_pages = max(1, (int) ceil($total_filtered / $per_page));
         if ($page > $total_pages) $page = $total_pages;
         $offset = ($page - 1) * $per_page;
 
-        $sql .= " ORDER BY a.updated_at DESC LIMIT ? OFFSET ?";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline', "a.status NOT IN ('approved','disapproved','draft')") . ", a.updated_at DESC LIMIT ? OFFSET ?";
         $params[] = $per_page;
         $params[] = $offset;
         $types   .= "ii";
@@ -196,6 +225,7 @@ $out = array_map(function ($app) {
         'position_title'    => $app['position_title'],
         'country'           => $app['country'],
         'employer_name'     => $app['employer_name'],
+        'deadline'          => $app['deadline'] ?? null,
         'applicant_name'    => $app['applicant_name'],
         'applicant_email'   => $app['applicant_email'],
         'applicant_picture' => $app['applicant_picture'] ?? null,
@@ -207,5 +237,6 @@ echo json_encode([
     'total'        => $total_filtered,
     'page'         => $page,
     'total_pages'  => $total_pages,
+    'can_claim'    => $can_claim,
     'applications' => $out,
 ]);

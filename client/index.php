@@ -33,7 +33,7 @@ if ($row) {
     $cnt = $database->query("SELECT COUNT(*) as c FROM applications WHERE client_id = $client_id");
     if ($cnt) $app_count = (int)$cnt->fetch_assoc()['c'];
     $res = $database->query("
-        SELECT a.id, a.status, a.updated_at, r.position_title, r.worksite_country, r.rsf_number
+        SELECT a.id, a.status, a.updated_at, r.position_title, r.worksite_country, r.rsf_number, r.slots_available
         FROM applications a
         JOIN rsf_job_orders r ON a.rsf_id = r.id
         WHERE a.client_id = $client_id
@@ -168,7 +168,13 @@ if ($client_id && !empty($my_apps)) {
     $reassignments = array_slice($reassignments, 0, 3, true);
 }
 
-$latest_status = !empty($my_apps) ? $my_apps[0]['status'] : null;
+$latest_app = !empty($my_apps) ? $my_apps[0] : null;
+$latest_status = $latest_app['status'] ?? null;
+// Open application whose job order can no longer take anyone else.
+$latest_slots_full = $latest_app
+    && $latest_app['slots_available'] !== null
+    && (int) $latest_app['slots_available'] <= 0
+    && !in_array($latest_status, ['draft', 'approved', 'disapproved'], true);
 
 // ── Profile completeness gate ────────────────────────────────────────────────
 $profile_complete = false;
@@ -821,13 +827,19 @@ $first    = $parts[0] ?: $client_name;
                             $latest_status === 'disapproved'                           => 'Your application was not approved. You may apply for other positions.',
                             default                                                    => 'Track your application progress in My Applications.',
                         };
+                        if ($latest_slots_full) {
+                            $slotJob = trim((string) ($latest_app['position_title'] ?? ''));
+                            $slotWhere = $slotJob !== '' ? $slotJob : 'the position you applied for';
+                            $bannerColor = ['bg' => '#fffbeb', 'border' => '#fde68a', 'h' => '#92400e', 'p' => '#78350f', 'dbg' => 'rgba(217,119,6,.12)', 'dbd' => 'rgba(251,191,36,.35)', 'dh' => '#fbbf24', 'dp' => '#fcd34d'];
+                            $bannerMsg = 'Unfortunately, the job order you applied for (' . $slotWhere . ') has reached its maximum slot capacity. Your application cannot be accommodated because all available slots are now occupied. Your current status is unchanged. You may wait for new job opportunities or apply to other available positions.';
+                        }
                         ?>
                         <div class="status-banner-box mx-4 my-4 rounded-xl py-3.5 px-4 border"
                             style="--sb-bg:<?= $bannerColor['bg'] ?>;--sb-border:<?= $bannerColor['border'] ?>;--sb-dbg:<?= $bannerColor['dbg'] ?>;--sb-dbd:<?= $bannerColor['dbd'] ?>;background:var(--sb-bg);border-color:var(--sb-border);">
                             <h4 class="status-banner-h text-[12.5px] font-extrabold mb-1" style="--sb-h:<?= $bannerColor['h'] ?>;--sb-dh:<?= $bannerColor['dh'] ?>;color:var(--sb-h);">
-                                Latest Status: <?= htmlspecialchars(ucwords(str_replace('_', ' ', $latest_status))) ?>
+                                Latest Status: <?= htmlspecialchars(ucwords(str_replace('_', ' ', $latest_status))) ?><?= $latest_slots_full ? ' — Slots Fully Occupied' : '' ?>
                             </h4>
-                            <p class="status-banner-p text-[11.5px] font-medium leading-relaxed" style="--sb-p:<?= $bannerColor['p'] ?>;--sb-dp:<?= $bannerColor['dp'] ?>;color:var(--sb-p);"><?= $bannerMsg ?></p>
+                            <p class="status-banner-p text-[11.5px] font-medium leading-relaxed" style="--sb-p:<?= $bannerColor['p'] ?>;--sb-dp:<?= $bannerColor['dp'] ?>;color:var(--sb-p);"><?= htmlspecialchars($bannerMsg) ?></p>
                             <div class="flex flex-wrap gap-2 mt-3">
                                 <a href="my-applications.php" class="inline-flex items-center gap-1.5 py-2 px-4 rounded-[9px] text-[11.5px] font-bold no-underline transition-opacity hover:opacity-85" style="background:#0b1f4b;color:#ffffff;">
                                     <i class="fas fa-file-lines"></i> View My Applications

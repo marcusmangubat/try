@@ -1,5 +1,6 @@
 <?php
 require_once 'db.php'; // adjust to your actual connection file
+require_once 'includes/app-helpers.php';
 
 function render_job_card(array $job): string
 {
@@ -22,10 +23,15 @@ function render_job_card(array $job): string
 
     $daysLeft = '';
     if ($deadline) {
-        $diff = (strtotime($deadline) - strtotime(date('Y-m-d'))) / 86400;
-        $daysLeft = $diff >= 0
-            ? '<span class="inline-block px-3 py-1 bg-navy-50 text-navy-700 border border-navy-200 text-xs font-medium rounded-full">' . (int)$diff . ' days left to apply</span>'
-            : '<span class="inline-block px-3 py-1 bg-gray-200 text-gray-600 text-xs font-medium rounded-full">Closed</span>';
+        $diff = (int) floor((strtotime($deadline) - strtotime(date('Y-m-d'))) / 86400);
+        if ($diff < 0) {
+            $daysLeft = '<span class="inline-block px-3 py-1 bg-gray-200 text-gray-600 text-xs font-medium rounded-full">Closed</span>';
+        } elseif ($diff <= JOB_CLOSING_SOON_DAYS) {
+            $label = $diff === 0 ? 'Closes today' : ($diff === 1 ? '1 day left to apply' : $diff . ' days left to apply');
+            $daysLeft = '<span class="inline-block px-3 py-1 bg-amber-100 text-amber-800 border border-amber-300 text-xs font-semibold rounded-full">' . $label . '</span>';
+        } else {
+            $daysLeft = '<span class="inline-block px-3 py-1 bg-navy-50 text-navy-700 border border-navy-200 text-xs font-medium rounded-full">' . $diff . ' days left to apply</span>';
+        }
     }
 
     $viewBtn = $pdfPath
@@ -67,7 +73,7 @@ $sql = "SELECT r.*, js.subcategory_name, jc.category_name
         LEFT JOIN job_categories jc ON js.category_id = jc.id
         WHERE (r.deadline IS NULL OR r.deadline >= CURDATE())
         AND (r.slots_available IS NULL OR r.slots_available > 0)
-        ORDER BY r.created_at DESC";
+        ORDER BY " . sql_deadline_priority('r.deadline') . ", r.created_at DESC";
 $result = $database->query($sql);
 
 $jobsByYear = [];

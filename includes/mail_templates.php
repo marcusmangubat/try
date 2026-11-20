@@ -218,3 +218,51 @@ function dmw_email_body_compliance(array $d): string
 
     return dmw_email_shell('linear-gradient(135deg,#0b1f4b,#d97706)', 'Compliance Required', 'Action Needed on Your Application', $inner);
 }
+
+/**
+ * Sent when a job order's slots are full and this applicant was not accommodated.
+ * $d keys: applicant_name, ref_no, position_title, employer_name, worksite_country, rsf_number, submitted_at
+ */
+function dmw_email_body_slots_full(array $d): string
+{
+    $submitted = !empty($d['submitted_at'])
+        ? date('F d, Y g:i a', strtotime($d['submitted_at']))
+        : '—';
+
+    $inner = "
+        <p style='font-size:13.5px; line-height:1.6;'>
+            Dear <strong>" . htmlspecialchars($d['applicant_name']) . "</strong>,<br><br>
+            Unfortunately, the job order you applied for has reached its maximum slot capacity.
+            Your application cannot be accommodated because every available slot is now occupied.
+        </p>
+
+        <div style='background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:12px 16px; margin:16px 0; font-size:12.5px; color:#92400e; line-height:1.6;'>
+            Your application record is still on file and its current status has not been changed.
+            This notice only means the position can no longer take additional applicants.
+        </div>
+
+        <h3 style='font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; color:#0b1f4b; margin:20px 0 4px; border-bottom:2px solid #d97706; padding-bottom:4px;'>Job Order</h3>"
+        . dmw_email_info_table([
+            'Application Reference No.' => $d['ref_no'] ?? '',
+            'Position Applied For'      => $d['position_title'] ?? '',
+            'Employer / Company'        => $d['employer_name'] ?? '',
+            'Worksite Country'          => $d['worksite_country'] ?? '',
+            'RSF Number'                => $d['rsf_number'] ?? '',
+            'Date Submitted'            => $submitted,
+        ]) . "
+
+        <h3 style='font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; color:#0b1f4b; margin:20px 0 8px; border-bottom:2px solid #d97706; padding-bottom:4px;'>What You Can Do</h3>
+        <ol style='font-size:12.5px; line-height:1.7; color:#374151; padding-left:18px; margin:0;'>
+            <li>Wait for new job opportunities that match your profile.</li>
+            <li>Log in and browse other open job orders that still have available slots.</li>
+            <li>Submit an application to another position. This notice does not prevent you from applying elsewhere.</li>
+        </ol>
+    " . dmw_email_login_link_block('#d97706', 'Log In to Browse Other Job Orders');
+
+    return dmw_email_shell(
+        'linear-gradient(135deg,#0b1f4b,#d97706)',
+        'Job Order Slots Fully Occupied',
+        'Your application cannot be accommodated',
+        $inner
+    );
+}

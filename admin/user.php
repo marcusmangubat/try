@@ -3,6 +3,7 @@
 session_start();
 require_once '../db.php';
 require_once '../includes/mailer.php';
+require_once '../includes/handover-helpers.php';
 
 if (!defined('DMW_LOGIN_URL')) {
     define('DMW_LOGIN_URL', 'http://localhost/try/login.php');
@@ -31,13 +32,63 @@ $success = '';
 
 // Post/Redirect/Get (PRG) helper — prevents duplicate form submissions
 // (deactivation, reactivation, invites, etc.) when the user refreshes the page.
-function pg_redirect_with_flash($success = '', $error = '')
+function pg_redirect_with_flash($success = '', $error = '', $tab = '')
 {
     if ($success !== '') $_SESSION['flash_success'] = $success;
     if ($error !== '')   $_SESSION['flash_error']   = $error;
+    if ($tab !== '')     $_SESSION['flash_tab']     = $tab;
     header("Location: " . strtok($_SERVER['REQUEST_URI'], '?'));
     exit();
 }
+
+// Adds rsf_number, submitted_at and updated_at to reassignment cases (read-only lookup)
+function reassign_enrich_cases(mysqli $db, array $cases): array
+{
+    $ids = array_values(array_unique(array_map('intval', array_column($cases, 'id'))));
+    if (!$ids) return $cases;
+
+    $ph   = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $db->prepare("SELECT a.id, a.submitted_at, a.updated_at, r.rsf_number
+                          FROM applications a
+                          JOIN rsf_job_orders r ON r.id = a.rsf_id
+                          WHERE a.id IN ($ph)");
+    $stmt->bind_param(str_repeat('i', count($ids)), ...$ids);
+    $stmt->execute();
+    $map = [];
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
+        $map[(int)$row['id']] = $row;
+    }
+    $stmt->close();
+
+    foreach ($cases as &$c) {
+        $m = $map[(int)$c['id']] ?? null;
+        $c['rsf_number']   = $m['rsf_number']   ?? null;
+        $c['submitted_at'] = $m['submitted_at'] ?? null;
+        $c['updated_at']   = $m['updated_at']   ?? null;
+    }
+    unset($c);
+    return $cases;
+}
+
+// CSRF: one token per session, required on every POST
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf = $_SESSION['csrf_token'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $sent = $_POST['csrf_token'] ?? '';
+    if (!is_string($sent) || !hash_equals($csrf, $sent)) {
+        pg_redirect_with_flash('', 'Your session expired. Please try again.');
+    }
+}
+
+$leave_reasons = [
+    'emergency' => 'Emergency',
+    'sick_leave' => 'Sick leave',
+    'vacation'  => 'Vacation',
+    'training'  => 'Training',
+    'other'     => 'Other',
+];
 
 // Preset reasons allowed for account deactivation, split by account type
 $deactivation_reasons_by_type = [
@@ -172,7 +223,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $stmt->execute();
                     $active_assign = (int)($stmt->get_result()->fetch_assoc()['c'] ?? 0);
 
-                    $stmt = $database->prepare("SELECT COUNT(*) AS c FROM applications WHERE current_evaluator_id = ? AND handling_party = 'evaluator'");
+                    $stmt = $database->prepare("SELECT COUNT(*) AS c FROM applications WHERE current_evaluator_id = ? AND status IN (" . evaluator_open_status_sql() . ")");
                     $stmt->bind_param("i", $eid);
                     $stmt->execute();
                     $active_apps = (int)($stmt->get_result()->fetch_assoc()['c'] ?? 0);
@@ -449,6 +500,242 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     pg_redirect_with_flash($success, $error);
 }
+
+// ── LEAVE / REASSIGNMENT ──────────────────────────────────────────────
+
+// Admin starts a leave on behalf of an evaluator (with handover request, or leave only)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', ['create_leave_request', 'set_unavailability'], true)) {
+    $act    = $_POST['action'];
+    $eid    = (int)($_POST['evaluator_id'] ?? 0);
+    $reason = (string)($_POST['reason_category'] ?? '');
+    $return = handover_parse_return_date($_POST['expected_return'] ?? '');
+    $ev     = $eid > 0 ? handover_get_evaluator($database, $eid) : null;
+
+    if (!$ev) {
+        $error = "Evaluator not found.";
+    } elseif (!isset($leave_reasons[$reason])) {
+        $error = "Please select a valid reason category.";
+    } elseif ($return === false) {
+        $error = "Expected return must be a valid date, today or later.";
+    } elseif ((int)$ev['is_active'] !== 1) {
+        $error = "This evaluator is deactivated.";
+    } elseif (!isEvaluatorAvailable($database, $eid)) {
+        $error = "This evaluator is already on leave.";
+    } elseif ($act === 'create_leave_request') {
+        $stmt = $database->prepare("SELECT id FROM reassignment_requests WHERE evaluator_id = ? AND status = 'pending' LIMIT 1");
+        $stmt->bind_param('i', $eid);
+        $stmt->execute();
+        $exists = $stmt->get_result()->num_rows > 0;
+        $stmt->close();
+        if ($exists) {
+            $error = "This evaluator already has a pending reassignment request.";
+        } else {
+            $stmt = $database->prepare("INSERT INTO reassignment_requests (evaluator_id, scope, reason_category, expected_return, status)
+                                        VALUES (?, 'all', ?, ?, 'pending')");
+            $stmt->bind_param('iss', $eid, $reason, $return);
+            $stmt->execute();
+            $stmt->close();
+            $success = "Request created for <strong>" . htmlspecialchars($ev['full_name']) . "</strong>. Review the proposed split below.";
+        }
+    } else {
+        if (handover_create_unavailability($database, $eid, $reason, $return, $_SESSION['user_email'])) {
+            $until = $return ? date('M d, Y', strtotime($return)) : 'further notice';
+            handover_notify(
+                $database,
+                $ev['email'],
+                'evaluator',
+                null,
+                'Marked as Unavailable',
+                "You are marked as unavailable until {$until}. You will not receive new cases during this time.",
+                'account_status'
+            );
+            $success = "<strong>" . htmlspecialchars($ev['full_name']) . "</strong> is now marked as on leave.";
+        } else {
+            $error = "Failed to record leave. Please try again.";
+        }
+    }
+    pg_redirect_with_flash($success, $error, 'leave');
+}
+
+// Admin ends an evaluator's leave early
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'end_unavailability') {
+    $eid = (int)($_POST['evaluator_id'] ?? 0);
+    $ev  = $eid > 0 ? handover_get_evaluator($database, $eid) : null;
+    if (!$ev) {
+        $error = "Evaluator not found.";
+    } else {
+        $stmt = $database->prepare("UPDATE evaluator_unavailability SET status = 'ended', ended_by = ?, ended_at = NOW()
+                                    WHERE evaluator_id = ? AND status = 'active'");
+        $stmt->bind_param('si', $_SESSION['user_email'], $eid);
+        $stmt->execute();
+        $stmt->close();
+        handover_notify(
+            $database,
+            $ev['email'],
+            'evaluator',
+            null,
+            'Leave Ended',
+            'Your leave has been ended by the Admin. You can claim and evaluate cases again.',
+            'account_status'
+        );
+        $success = "Leave ended for <strong>" . htmlspecialchars($ev['full_name']) . "</strong>.";
+    }
+    pg_redirect_with_flash($success, $error, 'leave');
+}
+
+// Approve a reassignment request: each case moves in its own transaction
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'approve_reassignment') {
+    $rid     = (int)($_POST['request_id'] ?? 0);
+    $assign  = is_array($_POST['assign'] ?? null) ? $_POST['assign'] : [];
+    $comment = trim($_POST['admin_comment'] ?? '');
+
+    $stmt = $database->prepare("SELECT rr.*, e.full_name, e.email AS ev_email
+                                FROM reassignment_requests rr JOIN evaluators e ON e.eid = rr.evaluator_id
+                                WHERE rr.id = ?");
+    $stmt->bind_param('i', $rid);
+    $stmt->execute();
+    $req = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (!$req) {
+        $error = "Request not found.";
+    } elseif ($req['status'] !== 'pending') {
+        $error = "This request has already been reviewed.";
+    } elseif (!getAvailableEvaluatorsWithWorkload($database, (int)$req['evaluator_id']) && getOpenCasesForEvaluator($database, (int)$req['evaluator_id'])) {
+        $error = "No other evaluator is available right now, so these cases cannot be reassigned yet.";
+    } else {
+        // Claim the request first so two admins cannot approve it twice
+        $cmt = $comment !== '' ? $comment : null;
+        $stmt = $database->prepare("UPDATE reassignment_requests
+                                    SET status = 'approved', reviewed_by = ?, admin_comment = ?, reviewed_at = NOW()
+                                    WHERE id = ? AND status = 'pending'");
+        $stmt->bind_param('ssi', $_SESSION['user_email'], $cmt, $rid);
+        $stmt->execute();
+        $claimed = $stmt->affected_rows > 0;
+        $stmt->close();
+
+        if (!$claimed) {
+            $error = "This request has already been reviewed.";
+        } else {
+            $src = (int)$req['evaluator_id'];
+            if ($req['scope'] === 'all') {
+                handover_sync_items($database, $rid, $src);
+            }
+            $stmt = $database->prepare("SELECT id, application_id FROM reassignment_request_items WHERE request_id = ? AND outcome = 'pending'");
+            $stmt->bind_param('i', $rid);
+            $stmt->execute();
+            $items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            $reason_text = 'Handover (' . ($leave_reasons[$req['reason_category']] ?? 'Other') . ') approved by admin';
+            $moved = 0;
+            $skipped = 0;
+            $per_target = [];
+            $names = [];
+
+            foreach ($items as $it) {
+                $app_id = (int)$it['application_id'];
+                $to     = (int)($assign[$app_id] ?? 0);
+                $res    = $to > 0 ? handoverApplication($database, $app_id, $src, $to, $_SESSION['user_email'], $reason_text)
+                    : ['ok' => false];
+
+                if (!empty($res['ok'])) {
+                    $moved++;
+                    $per_target[$to] = ($per_target[$to] ?? 0) + 1;
+                    if (!isset($names[$to])) {
+                        $names[$to] = handover_get_evaluator($database, $to)['full_name'] ?? 'another evaluator';
+                    }
+                    handover_notify(
+                        $database,
+                        $res['client_email'],
+                        'client',
+                        $app_id,
+                        'Application Reassigned',
+                        'Your application has been reassigned to evaluator ' . $names[$to] . '.',
+                        'application_status'
+                    );
+                    $stmt = $database->prepare("UPDATE reassignment_request_items SET new_evaluator_id = ?, outcome = 'reassigned' WHERE id = ?");
+                    $stmt->bind_param('ii', $to, $it['id']);
+                } else {
+                    $skipped++;
+                    $stmt = $database->prepare("UPDATE reassignment_request_items SET outcome = 'skipped' WHERE id = ?");
+                    $stmt->bind_param('i', $it['id']);
+                }
+                $stmt->execute();
+                $stmt->close();
+            }
+
+            $leave_note = '';
+            if ($req['scope'] === 'all') {
+                handover_create_unavailability($database, $src, $req['reason_category'], $req['expected_return'], $_SESSION['user_email']);
+                $leave_note = ' You are now marked as unavailable and will not receive new cases.';
+            }
+            foreach ($per_target as $to => $n) {
+                notify_evaluator_by_id(
+                    $database,
+                    $to,
+                    'Cases Reassigned to You',
+                    "{$n} case(s) from {$req['full_name']} have been reassigned to you by Admin.",
+                    'application_update'
+                );
+            }
+            handover_notify(
+                $database,
+                $req['ev_email'],
+                'evaluator',
+                null,
+                'Reassignment Request Approved',
+                "Your request was approved: {$moved} case(s) reassigned, {$skipped} skipped." . $leave_note,
+                'application_update'
+            );
+
+            $success = "Request approved: <strong>{$moved}</strong> case(s) reassigned, <strong>{$skipped}</strong> skipped.";
+        }
+    }
+    pg_redirect_with_flash($success, $error, 'leave');
+}
+
+// Reject a reassignment request
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reject_reassignment') {
+    $rid     = (int)($_POST['request_id'] ?? 0);
+    $comment = trim($_POST['admin_comment'] ?? '');
+
+    if (mb_strlen($comment) < 5) {
+        $error = "Please provide a reason (at least 5 characters).";
+    } else {
+        $stmt = $database->prepare("SELECT e.email AS ev_email FROM reassignment_requests rr
+                                    JOIN evaluators e ON e.eid = rr.evaluator_id WHERE rr.id = ?");
+        $stmt->bind_param('i', $rid);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        $stmt = $database->prepare("UPDATE reassignment_requests
+                                    SET status = 'rejected', reviewed_by = ?, admin_comment = ?, reviewed_at = NOW()
+                                    WHERE id = ? AND status = 'pending'");
+        $stmt->bind_param('ssi', $_SESSION['user_email'], $comment, $rid);
+        $stmt->execute();
+        $done = $stmt->affected_rows > 0;
+        $stmt->close();
+
+        if ($done && $row) {
+            handover_notify(
+                $database,
+                $row['ev_email'],
+                'evaluator',
+                null,
+                'Reassignment Request Rejected',
+                'Your reassignment request was not approved. Reason: ' . $comment,
+                'application_update'
+            );
+            $success = "Request rejected.";
+        } else {
+            $error = "This request has already been reviewed.";
+        }
+    }
+    pg_redirect_with_flash($success, $error, 'leave');
+}
+
 // Recover flash messages set by the PRG redirect above (if any)
 if (isset($_SESSION['flash_success'])) {
     $success = $_SESSION['flash_success'];
@@ -458,13 +745,20 @@ if (isset($_SESSION['flash_error'])) {
     $error = $_SESSION['flash_error'];
     unset($_SESSION['flash_error']);
 }
+$flash_tab = $_SESSION['flash_tab'] ?? '';
+unset($_SESSION['flash_tab']);
 
 // Fetch Evaluators (with derived account status)
-$stmt = $database->prepare("SELECT e.full_name, e.email, e.phone, e.created_at,
+$open_st = evaluator_open_status_sql();
+$leave_cond = "eu.evaluator_id = e.eid AND eu.status = 'active' AND eu.start_at <= NOW() AND (eu.end_at IS NULL OR eu.end_at > NOW())";
+$stmt = $database->prepare("SELECT e.eid, e.full_name, e.email, e.phone, e.created_at,
                             w.is_active, w.deactivated_at, w.deactivation_reason, w.deactivated_by,
-                            rr.status AS pending_status
+                            rr.status AS pending_status,
+                            (SELECT COUNT(*) FROM applications a WHERE a.current_evaluator_id = e.eid AND a.status IN ($open_st)) AS open_cases,
+                            (SELECT eu.id FROM evaluator_unavailability eu WHERE $leave_cond ORDER BY eu.start_at DESC LIMIT 1) AS leave_id,
+                            (SELECT eu.end_at FROM evaluator_unavailability eu WHERE $leave_cond ORDER BY eu.start_at DESC LIMIT 1) AS leave_end
                             FROM evaluators e
-                            JOIN webuser w ON e.email = w.email 
+                            JOIN webuser w ON e.email = w.email
                             LEFT JOIN reactivation_requests rr ON rr.email = e.email AND rr.status = 'pending'
                             ORDER BY e.created_at DESC");
 $stmt->execute();
@@ -481,6 +775,32 @@ $stmt = $database->prepare("SELECT c.cid, c.first_name, c.middle_name, c.last_na
                             ORDER BY c.created_at DESC");
 $stmt->execute();
 $applicants = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+// Pending reassignment requests, each with a proposed least-workload split
+$stmt = $database->prepare("SELECT rr.*, e.full_name, e.email AS ev_email
+                            FROM reassignment_requests rr JOIN evaluators e ON e.eid = rr.evaluator_id
+                            WHERE rr.status = 'pending' ORDER BY rr.requested_at ASC");
+$stmt->execute();
+$leave_requests = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+foreach ($leave_requests as &$lr) {
+    $lr['cases']    = reassign_enrich_cases($database, handover_request_cases($database, $lr));
+    $lr['targets']  = getAvailableEvaluatorsWithWorkload($database, (int)$lr['evaluator_id']);
+    $lr['proposal'] = proposeHandoverSplit($database, array_column($lr['cases'], 'id'), (int)$lr['evaluator_id']);
+}
+unset($lr);
+$leave_requests_count = count($leave_requests);
+
+// Evaluators currently on leave
+$stmt = $database->prepare("SELECT eu.evaluator_id, eu.reason_category, eu.start_at, eu.end_at, e.full_name, e.email,
+                            (SELECT rr.reason_other FROM reassignment_requests rr
+                              WHERE rr.evaluator_id = eu.evaluator_id AND rr.status = 'approved'
+                                AND rr.reason_category = eu.reason_category AND rr.reason_other IS NOT NULL
+                              ORDER BY rr.reviewed_at DESC, rr.id DESC LIMIT 1) AS reason_other
+                            FROM evaluator_unavailability eu JOIN evaluators e ON e.eid = eu.evaluator_id
+                            WHERE eu.status = 'active' AND eu.start_at <= NOW() AND (eu.end_at IS NULL OR eu.end_at > NOW())
+                            ORDER BY eu.start_at DESC");
+$stmt->execute();
+$on_leave = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
 
 // Fetch pending invitations
@@ -546,6 +866,47 @@ foreach ($applicants as $a) {
     if ((int)$a['is_active'] === 1) $active_applicants_count++;
 }
 $deactivated_applicants_count = $total_applicants - $active_applicants_count;
+
+// ── VIEW ONLY: reusable Tailwind class strings (presentation, no logic) ──
+$badge_base = 'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10.5px] font-bold';
+$btn_base   = 'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border px-3.5 py-1.5 text-[11.5px] font-bold transition';
+$tw = [
+    'card'      => 'overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800',
+    'cardHead'  => 'flex items-center gap-3.5 border-b border-slate-200 bg-gradient-to-br from-slate-50 to-blue-50 px-4 py-4 dark:border-slate-700 dark:from-slate-800 dark:to-slate-700/40 sm:px-6',
+    'title'     => 'text-[15px] font-extrabold text-blue-950 dark:text-blue-400',
+    'sub'       => 'mt-0.5 text-xs font-medium text-slate-400',
+    'badgeOk'   => "$badge_base border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-400/30 dark:bg-emerald-500/15 dark:text-emerald-400",
+    'badgeWarn' => "$badge_base border-amber-200 bg-amber-50 text-amber-600 dark:border-amber-400/30 dark:bg-amber-500/15 dark:text-amber-400",
+    'badgeBad'  => "$badge_base border-red-200 bg-red-50 text-red-600 dark:border-red-400/30 dark:bg-red-500/15 dark:text-red-400",
+    'badgeInfo' => "$badge_base border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-400/30 dark:bg-blue-500/15 dark:text-blue-400",
+    'btnRed'    => "$btn_base border-red-200 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-400/30 dark:bg-red-500/15 dark:text-red-400 dark:hover:bg-red-500/25",
+    'btnGreen'  => "$btn_base border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 dark:border-emerald-400/30 dark:bg-emerald-500/15 dark:text-emerald-400 dark:hover:bg-emerald-500/25",
+    'btnBlue'   => "$btn_base border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-400/30 dark:bg-blue-500/15 dark:text-blue-400 dark:hover:bg-blue-500/25",
+    'btnPrimary' => 'inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-blue-700 to-indigo-600 px-5 py-2.5 text-[13px] font-bold text-white shadow-lg shadow-blue-700/30 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50',
+    'btnDanger' => 'inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-red-600 to-red-800 px-5 py-2.5 text-[13px] font-bold text-white transition hover:opacity-90',
+    'btnCancel' => 'rounded-xl border-[1.5px] border-slate-200 bg-slate-50 px-5 py-2.5 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-700',
+    'input'     => 'w-full rounded-xl border-[1.5px] border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[13px] text-slate-900 transition focus:border-blue-400 focus:bg-white focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:bg-slate-800',
+    'label'     => 'mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400',
+    'hint'      => 'mt-1.5 text-[11px] text-slate-400',
+    'avatar'    => 'flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full bg-cover bg-center text-[13px] font-extrabold text-white',
+    'search'    => 'w-full max-w-sm rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3.5 text-[12.5px] text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-400/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100',
+    'empty'     => 'px-6 py-14 text-center',
+    'emptyIcon' => 'mx-auto mb-4 flex h-[72px] w-[72px] items-center justify-center rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 text-[28px] text-blue-400 dark:from-slate-800 dark:to-slate-700',
+    'emptyTitle' => 'mb-1.5 text-base font-extrabold text-slate-900 dark:text-slate-100',
+    'emptySub'  => 'mb-5 text-[13px] text-slate-400',
+    'row'       => 'flex flex-wrap items-center gap-3.5 border-b border-slate-200 px-4 py-3.5 last:border-b-0 dark:border-slate-700 sm:px-5',
+    // responsive table: stacked cards below md, real table from md up
+    'table'     => 'block w-full md:table',
+    'thead'     => 'hidden md:table-header-group',
+    'th'        => 'border-b border-slate-200 bg-slate-50 px-5 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:border-slate-700 dark:bg-slate-900',
+    'tbody'     => 'block md:table-row-group',
+    'tr'        => 'block border-b border-slate-200 px-4 py-3 last:border-b-0 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700/30 md:table-row md:p-0',
+    'td0'       => 'block py-1 text-[13px] text-slate-600 dark:text-slate-400 md:table-cell md:px-5 md:py-3.5 md:align-middle',
+    'td'        => 'block py-1 text-[13px] text-slate-600 before:mb-0.5 before:block before:text-[10px] before:font-bold before:uppercase before:tracking-wider before:text-slate-400 before:content-[attr(data-label)] dark:text-slate-400 md:table-cell md:px-5 md:py-3.5 md:align-middle md:before:hidden',
+];
+$tab_btn = 'flex shrink-0 items-center gap-2 rounded-[10px] px-4 py-2 text-[12.5px] font-semibold text-slate-400 transition aria-selected:bg-white aria-selected:text-blue-950 aria-selected:shadow dark:aria-selected:bg-slate-800 dark:aria-selected:text-white';
+$tab_count = 'rounded-full bg-indigo-100 px-2 py-px text-[10px] font-bold text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300';
+$tab_alert = 'rounded-full bg-amber-600 px-2 py-px text-[10px] font-bold text-white';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -555,6 +916,18 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Evaluators – DMW RO IV-A Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]'],
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Sora', 'sans-serif']
+                    }
+                }
+            }
+        };
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
@@ -563,855 +936,13 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <link rel="stylesheet" href="../css/dashboard.css">
     <style>
-        :root {
-            --navy: #0b1f4b;
-            --blue: #1d4ed8;
-            --blue-lt: #3b82f6;
-            --indigo: #4f46e5;
-            --green: #059669;
-            --amber: #d97706;
-            --red: #dc2626;
-            --card: #ffffff;
-            --surface: #f8fafc;
-            --border: #e2e8f0;
-            --text1: #0f172a;
-            --text2: #475569;
-            --text3: #94a3b8;
-        }
-
-        [data-theme="dark"] {
-            --navy: #3b82f6;
-            --blue: #3b82f6;
-            --blue-lt: #60a5fa;
-            --indigo: #818cf8;
-            --green: #34d399;
-            --amber: #fbbf24;
-            --red: #f87171;
-            --card: #1e293b;
-            --surface: #0f172a;
-            --border: #2d3748;
-            --text1: #e2e8f0;
-            --text2: #94a3b8;
-            --text3: #64748b;
-        }
-
-        [data-theme="dark"] .stat-icon.blue {
-            background: rgba(59, 130, 246, .15);
-        }
-
-        [data-theme="dark"] .stat-icon.green {
-            background: rgba(16, 185, 129, .15);
-        }
-
-        [data-theme="dark"] .stat-icon.amber {
-            background: rgba(217, 119, 6, .15);
-        }
-
-        [data-theme="dark"] .tab-btn.active {
-            background: var(--card);
-            color: #fff;
-            box-shadow: 0 1px 6px rgba(0, 0, 0, .35);
-        }
-
-        [data-theme="dark"] .main-card-head {
-            background: linear-gradient(135deg, #1a2332 0%, #1e2b45 100%);
-        }
-
-        [data-theme="dark"] tbody tr:hover {
-            background: #202a3d;
-        }
-
-        [data-theme="dark"] .modal-input {
-            background: var(--surface);
-            color: var(--text1);
-            border-color: var(--border);
-        }
-
-        [data-theme="dark"] .modal-input:focus {
-            background: #1a2332;
-        }
-
-        [data-theme="dark"] .badge-active {
-            background: rgba(16, 185, 129, .15);
-            border-color: rgba(52, 211, 153, .35);
-        }
-
-        [data-theme="dark"] .badge-pending,
-        [data-theme="dark"] .badge-reactivation-pending {
-            background: rgba(217, 119, 6, .15);
-            border-color: rgba(251, 191, 36, .35);
-        }
-
-        [data-theme="dark"] .badge-expired,
-        [data-theme="dark"] .badge-deactivated {
-            background: rgba(220, 38, 38, .15);
-            border-color: rgba(248, 113, 113, .35);
-        }
-
-        [data-theme="dark"] .btn-action-deactivate {
-            background: rgba(220, 38, 38, .15);
-            border-color: rgba(248, 113, 113, .35);
-        }
-
-        [data-theme="dark"] .btn-action-deactivate:hover {
-            background: rgba(220, 38, 38, .25);
-        }
-
-        [data-theme="dark"] .btn-action-reactivate {
-            background: rgba(16, 185, 129, .15);
-            border-color: rgba(52, 211, 153, .35);
-        }
-
-        [data-theme="dark"] .btn-action-reactivate:hover {
-            background: rgba(16, 185, 129, .25);
-        }
-
-        [data-theme="dark"] .empty-icon {
-            background: linear-gradient(135deg, #1a2332, #202a45);
-        }
-
-        [data-theme="dark"] .alert-error {
-            background: rgba(220, 38, 38, .12);
-            border-color: rgba(248, 113, 113, .35);
-        }
-
-        [data-theme="dark"] .alert-success {
-            background: rgba(16, 185, 129, .12);
-            border-color: rgba(52, 211, 153, .35);
-            color: #34d399;
-        }
-
-        [data-theme="dark"] .inv-row {
-            border-color: var(--border);
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: 'Sora', sans-serif;
-            background: var(--surface);
-            color: var(--text1);
-        }
-
-        .stats-strip {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 14px;
-            margin-bottom: 22px;
-        }
-
-        .stat-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 20px 22px;
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            position: relative;
-            overflow: hidden;
-            animation: fadeUp .4s both;
-        }
-
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 3px;
-        }
-
-        .stat-card.blue::before {
-            background: linear-gradient(90deg, var(--blue), var(--blue-lt));
-        }
-
-        .stat-card.green::before {
-            background: linear-gradient(90deg, var(--green), #34d399);
-        }
-
-        .stat-card.amber::before {
-            background: linear-gradient(90deg, var(--amber), #fbbf24);
-        }
-
-        .stat-icon {
-            width: 46px;
-            height: 46px;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            flex-shrink: 0;
-        }
-
-        .stat-icon.blue {
-            background: #eff6ff;
-            color: var(--blue);
-        }
-
-        .stat-icon.green {
-            background: #ecfdf5;
-            color: var(--green);
-        }
-
-        .stat-icon.amber {
-            background: #fffbeb;
-            color: var(--amber);
-        }
-
-        .stat-value {
-            font-size: 28px;
-            font-weight: 800;
-            color: var(--text1);
-            line-height: 1;
-        }
-
-        .stat-label {
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--text3);
-            text-transform: uppercase;
-            letter-spacing: .06em;
-            margin-top: 4px;
-        }
-
-        .tab-bar {
-            display: flex;
-            gap: 4px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 5px;
-            margin-bottom: 18px;
-            width: fit-content;
-            flex-wrap: wrap;
-        }
-
-        .tab-btn {
-            padding: 8px 20px;
-            border-radius: 10px;
-            border: none;
-            cursor: pointer;
-            font-family: 'Sora', sans-serif;
-            font-size: 12.5px;
-            font-weight: 600;
-            color: var(--text3);
-            background: transparent;
-            transition: all .2s;
-            display: flex;
-            align-items: center;
-            gap: 7px;
-        }
-
-        .tab-btn.active {
-            background: var(--card);
-            color: var(--navy);
-            box-shadow: 0 1px 6px rgba(0, 0, 0, .08);
-        }
-
-        .tab-badge {
-            background: var(--amber);
-            color: #fff;
-            border-radius: 20px;
-            padding: 1px 7px;
-            font-size: 10px;
-            font-weight: 700;
-        }
-
-        .tab-count-badge {
-            background: #e0e7ff;
-            color: var(--indigo);
-        }
-
-        [data-theme="dark"] .tab-count-badge {
-            background: rgba(99, 102, 241, .18);
-        }
-
-        [data-theme="dark"] .tab-count-badge {
-            background: rgba(99, 102, 241, .18);
-        }
-
-        .tab-expired-badge {
-            background: #fee2e2;
-            color: var(--red);
-        }
-
-        [data-theme="dark"] .tab-expired-badge {
-            background: rgba(220, 38, 38, .18);
-        }
-
-        .main-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            overflow: hidden;
-            animation: fadeUp .5s .1s both;
-        }
-
-        .main-card-head {
-            padding: 18px 24px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
-        }
-
-        .main-card-title {
-            font-size: 15px;
-            font-weight: 800;
-            color: var(--navy);
-        }
-
-        .main-card-sub {
-            font-size: 11.5px;
-            color: var(--text3);
-            font-weight: 500;
-            margin-top: 1px;
-        }
-
-        .search-wrap {
-            padding: 14px 20px;
-            border-bottom: 1px solid var(--border);
-            background: var(--surface);
-        }
-
-        .search-input {
-            width: 100%;
-            max-width: 340px;
-            padding: 9px 14px 9px 38px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-family: 'Sora', sans-serif;
-            font-size: 12.5px;
-            background: var(--card);
-            color: var(--text1);
-            position: relative;
-        }
-
-        .search-wrap {
-            position: relative;
-        }
-
-        .search-wrap i {
-            position: absolute;
-            left: 34px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text3);
-            font-size: 12px;
-            pointer-events: none;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        thead th {
-            padding: 12px 20px;
-            text-align: left;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: .07em;
-            text-transform: uppercase;
-            color: var(--text3);
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-        }
-
-        tbody tr {
-            border-bottom: 1px solid var(--border);
-            transition: background .15s;
-        }
-
-        tbody tr:last-child {
-            border-bottom: none;
-        }
-
-        tbody tr:hover {
-            background: #f8faff;
-        }
-
-        tbody td {
-            padding: 14px 20px;
-            font-size: 13px;
-            color: var(--text2);
-            vertical-align: middle;
-        }
-
-        .ev-avatar {
-            width: 38px;
-            height: 38px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 13px;
-            font-weight: 800;
-            color: #fff;
-            flex-shrink: 0;
-            background: linear-gradient(135deg, var(--blue), var(--indigo));
-        }
-
-        .ev-name {
-            font-weight: 700;
-            font-size: 13.5px;
-            color: var(--text1);
-        }
-
-        .ev-email {
-            font-size: 11.5px;
-            color: var(--text3);
-            margin-top: 1px;
-        }
-
-        .badge-active {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            background: #ecfdf5;
-            color: var(--green);
-            border: 1px solid #a7f3d0;
-            border-radius: 20px;
-            padding: 3px 10px;
-            font-size: 10.5px;
-            font-weight: 700;
-        }
-
-        .badge-active::before {
-            content: '';
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--green);
-            animation: pulse-dot 2s infinite;
-        }
-
-        .badge-pending {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            background: #fffbeb;
-            color: var(--amber);
-            border: 1px solid #fde68a;
-            border-radius: 20px;
-            padding: 3px 10px;
-            font-size: 10.5px;
-            font-weight: 700;
-        }
-
-        .badge-expired {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            background: #fef2f2;
-            color: var(--red);
-            border: 1px solid #fecaca;
-            border-radius: 20px;
-            padding: 3px 10px;
-            font-size: 10.5px;
-            font-weight: 700;
-        }
-
-        .badge-deactivated {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            background: #fef2f2;
-            color: var(--red);
-            border: 1px solid #fecaca;
-            border-radius: 20px;
-            padding: 3px 10px;
-            font-size: 10.5px;
-            font-weight: 700;
-        }
-
-        .badge-reactivation-pending {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            background: #fffbeb;
-            color: var(--amber);
-            border: 1px solid #fde68a;
-            border-radius: 20px;
-            padding: 3px 10px;
-            font-size: 10.5px;
-            font-weight: 700;
-        }
-
-        .btn-action-deactivate {
-            padding: 6px 14px;
-            border-radius: 8px;
-            border: 1px solid #fecaca;
-            background: #fef2f2;
-            color: var(--red);
-            font-family: 'Sora', sans-serif;
-            font-size: 11.5px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all .2s;
-            white-space: nowrap;
-        }
-
-        .btn-action-deactivate:hover {
-            background: #fee2e2;
-        }
-
-        .btn-action-reactivate {
-            padding: 6px 14px;
-            border-radius: 8px;
-            border: 1px solid #a7f3d0;
-            background: #ecfdf5;
-            color: var(--green);
-            font-family: 'Sora', sans-serif;
-            font-size: 11.5px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all .2s;
-            white-space: nowrap;
-        }
-
-        .btn-action-reactivate:hover {
-            background: #d1fae5;
-        }
-
-        .empty-state {
-            padding: 60px 24px;
-            text-align: center;
-        }
-
-        .empty-icon {
-            width: 72px;
-            height: 72px;
-            border-radius: 20px;
-            background: linear-gradient(135deg, #eff6ff, #eef2ff);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 28px;
-            color: var(--blue-lt);
-            margin: 0 auto 18px;
-        }
-
-        .empty-title {
-            font-size: 16px;
-            font-weight: 800;
-            color: var(--text1);
-            margin-bottom: 6px;
-        }
-
-        .empty-sub {
-            font-size: 13px;
-            color: var(--text3);
-            margin-bottom: 22px;
-        }
-
-        .invite-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: linear-gradient(135deg, var(--blue), var(--indigo));
-            color: #fff;
-            padding: 10px 22px;
-            border-radius: 12px;
-            font-family: 'Sora', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
-            border: none;
-            cursor: pointer;
-            transition: all .2s;
-            box-shadow: 0 4px 14px rgba(29, 78, 216, .3);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .invite-btn::after {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 60%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .15), transparent);
-            transform: skewX(-20deg);
-            animation: shimmer 3s infinite;
-        }
-
-        @keyframes shimmer {
-            to {
-                left: 160%;
-            }
-        }
-
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(11, 31, 75, .55);
-            backdrop-filter: blur(4px);
-            z-index: 300;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-
-        .modal-overlay.open {
-            display: flex;
-        }
-
-        .modal-box {
-            background: var(--card);
-            border-radius: 22px;
-            width: 100%;
-            max-width: 460px;
-            overflow: hidden;
-            box-shadow: 0 24px 64px rgba(0, 0, 0, .18);
-            animation: modalPop .25s cubic-bezier(.34, 1.56, .64, 1);
-        }
-
-        @keyframes modalPop {
-            from {
-                opacity: 0;
-                transform: scale(.92) translateY(20px);
-            }
-
-            to {
-                opacity: 1;
-                transform: scale(1) translateY(0);
-            }
-        }
-
-        .modal-header {
-            padding: 22px 26px 18px;
-            background: linear-gradient(135deg, var(--navy) 0%, #1e3a8a 100%);
-            position: relative;
-        }
-
-        .modal-header h3 {
-            font-size: 17px;
-            font-weight: 800;
-            color: #fff;
-        }
-
-        .modal-header p {
-            font-size: 12px;
-            color: rgba(255, 255, 255, .6);
-            margin-top: 3px;
-        }
-
-        .modal-close {
-            position: absolute;
-            top: 18px;
-            right: 20px;
-            width: 30px;
-            height: 30px;
-            border-radius: 8px;
-            background: rgba(255, 255, 255, .15);
-            border: none;
-            cursor: pointer;
-            color: #fff;
-            font-size: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background .2s;
-        }
-
-        .modal-close:hover {
-            background: rgba(255, 255, 255, .25);
-        }
-
-        .modal-body {
-            padding: 24px 26px;
-        }
-
-        .modal-field {
-            margin-bottom: 18px;
-        }
-
-        .modal-label {
-            display: block;
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: .06em;
-            color: var(--text3);
-            margin-bottom: 7px;
-        }
-
-        .modal-input {
-            width: 100%;
-            padding: 11px 14px;
-            border: 1.5px solid var(--border);
-            border-radius: 11px;
-            font-family: 'Sora', sans-serif;
-            font-size: 13px;
-            color: var(--text1);
-            background: var(--surface);
-            transition: border-color .2s;
-        }
-
-        .modal-input:focus {
-            outline: none;
-            border-color: var(--blue-lt);
-            background: #fff;
-        }
-
-        .modal-hint {
-            font-size: 11px;
-            color: var(--text3);
-            margin-top: 5px;
-        }
-
-        .modal-footer {
-            padding: 16px 26px 22px;
-            border-top: 1px solid var(--border);
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-        }
-
-        .btn-cancel {
-            padding: 10px 20px;
-            border-radius: 10px;
-            border: 1.5px solid var(--border);
-            background: var(--surface);
-            color: var(--text2);
-            font-family: 'Sora', sans-serif;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all .2s;
-        }
-
-        .btn-cancel:hover {
-            background: var(--border);
-        }
-
-        .btn-send {
-            padding: 10px 24px;
-            border-radius: 10px;
-            background: linear-gradient(135deg, var(--blue), var(--indigo));
-            color: #fff;
-            border: none;
-            font-family: 'Sora', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: opacity .2s;
-        }
-
-        .btn-send:hover {
-            opacity: .9;
-        }
-
-        .alert {
-            padding: 13px 16px;
-            border-radius: 12px;
-            font-size: 13px;
-            margin-bottom: 18px;
-            display: flex;
-            gap: 10px;
-            align-items: flex-start;
-            animation: fadeUp .3s both;
-        }
-
-        .alert-error {
-            background: #fef2f2;
-            border: 1px solid #fecaca;
-            color: var(--red);
-        }
-
-        .alert-success {
-            background: #ecfdf5;
-            border: 1px solid #bbf7d0;
-            color: #065f46;
-        }
-
-        .inv-row {
-            padding: 14px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        .inv-row:last-child {
-            border-bottom: none;
-        }
-
-        .inv-avatar {
-            width: 38px;
-            height: 38px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 13px;
-            font-weight: 800;
-            color: #fff;
-            flex-shrink: 0;
-            background: linear-gradient(135deg, var(--amber), #f59e0b);
-        }
-
-        @keyframes fadeUp {
-            from {
-                opacity: 0;
-                transform: translateY(12px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes pulse-dot {
-
-            0%,
-            100% {
-                opacity: 1;
-            }
-
-            50% {
-                opacity: .4;
-            }
-        }
-
-        .tab-content {
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
-        }
-
-        @media (max-width: 640px) {
-            .stats-strip {
-                grid-template-columns: 1fr;
-            }
-
-            .stat-value {
-                font-size: 22px;
-            }
-        }
-
+        /* Only what Tailwind cannot express: shared topbar logo sizing */
         .topbar-brand img {
             width: 42px;
             height: auto;
             display: block;
             background: transparent;
             filter: none;
-
         }
     </style>
     <script>
@@ -1422,7 +953,7 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
     </script>
 </head>
 
-<body>
+<body class="bg-slate-50 font-sans text-slate-900 dark:bg-slate-900 dark:text-slate-200">
 
     <!-- TOP BAR -->
     <header class="topbar">
@@ -1462,291 +993,303 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
     <div class="main">
 
         <?php if ($error): ?>
-            <div class="alert alert-error"><i class="fas fa-circle-exclamation"></i> <?= htmlspecialchars($error) ?></div>
+            <div class="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-600 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-400">
+                <i class="fas fa-circle-exclamation mt-0.5"></i> <span><?= htmlspecialchars($error) ?></span>
+            </div>
         <?php endif; ?>
         <?php if ($success): ?>
-            <div class="alert alert-success"><i class="fas fa-circle-check"></i> <?= $success ?></div>
+            <div class="mb-4 flex items-start gap-2.5 rounded-xl border border-green-200 bg-emerald-50 px-4 py-3 text-[13px] text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-400">
+                <i class="fas fa-circle-check mt-0.5"></i> <span><?= $success ?></span>
+            </div>
         <?php endif; ?>
 
-        <div class="stats-strip">
-            <div class="stat-card blue" style="animation-delay:.05s">
-                <div class="stat-icon blue"><i class="fas fa-users-gear"></i></div>
-                <div>
-                    <div class="stat-value"><?= $active_evaluators_count ?></div>
-                    <div class="stat-label">Active Evaluators</div>
+        <!-- Stats -->
+        <div class="mb-5 grid grid-cols-1 gap-3.5 sm:grid-cols-3">
+            <?php
+            $stats = [
+                ['Active Evaluators', $active_evaluators_count, 'fa-users-gear', 'from-blue-700 to-blue-400', 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400'],
+                ['Active Applicants', $active_applicants_count, 'fa-user-group', 'from-emerald-600 to-emerald-400', 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400'],
+                ['Pending Invitations', $pending_count, 'fa-envelope-open-text', 'from-amber-600 to-amber-400', 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400'],
+            ];
+            foreach ($stats as [$s_label, $s_val, $s_icon, $s_bar, $s_icon_cls]): ?>
+                <div class="relative flex items-center gap-4 overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-800">
+                    <div class="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r <?= $s_bar ?>"></div>
+                    <div class="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-xl text-lg <?= $s_icon_cls ?>"><i class="fas <?= $s_icon ?>"></i></div>
+                    <div>
+                        <div class="text-2xl font-extrabold leading-none sm:text-[28px]"><?= (int)$s_val ?></div>
+                        <div class="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400"><?= $s_label ?></div>
+                    </div>
                 </div>
-            </div>
-            <div class="stat-card green" style="animation-delay:.1s">
-                <div class="stat-icon green"><i class="fas fa-user-group"></i></div>
-                <div>
-                    <div class="stat-value"><?= $active_applicants_count ?></div>
-                    <div class="stat-label">Active Applicants</div>
-                </div>
-            </div>
-            <div class="stat-card amber" style="animation-delay:.15s">
-                <div class="stat-icon amber"><i class="fas fa-envelope-open-text"></i></div>
-                <div>
-                    <div class="stat-value"><?= $pending_count ?></div>
-                    <div class="stat-label">Pending Invitations</div>
-                </div>
-            </div>
+            <?php endforeach; ?>
         </div>
 
         <!-- Tabs + Invite Button Row -->
-        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:18px;">
-            <div class="tab-bar">
-                <button class="tab-btn active" onclick="switchTab('registered', this)">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-1.5 dark:border-slate-700 dark:bg-slate-900" role="tablist">
+                <button type="button" role="tab" aria-selected="true" class="tab-btn <?= $tab_btn ?>" onclick="switchTab('registered', this)">
                     <i class="fas fa-users"></i> Evaluators
-                    <span class="tab-count-badge" style="border-radius:20px;padding:1px 8px;font-size:10px;font-weight:700;"><?= $total_evaluators ?></span>
+                    <span class="<?= $tab_count ?>"><?= $total_evaluators ?></span>
                 </button>
-                <button class="tab-btn" onclick="switchTab('applicants', this)">
+                <button type="button" role="tab" aria-selected="false" class="tab-btn <?= $tab_btn ?>" onclick="switchTab('applicants', this)">
                     <i class="fas fa-user-group"></i> Applicants
-                    <span class="tab-count-badge" style="border-radius:20px;padding:1px 8px;font-size:10px;font-weight:700;"><?= $total_applicants ?></span>
+                    <span class="<?= $tab_count ?>"><?= $total_applicants ?></span>
                 </button>
-                <button class="tab-btn" onclick="switchTab('pending', this)">
+                <button type="button" role="tab" aria-selected="false" class="tab-btn <?= $tab_btn ?>" onclick="switchTab('pending', this)">
                     <i class="fas fa-clock"></i> Pending Invites
-                    <?php if ($pending_count > 0): ?>
-                        <span class="tab-badge"><?= $pending_count ?></span>
-                    <?php endif; ?>
+                    <?php if ($pending_count > 0): ?><span class="<?= $tab_alert ?>"><?= $pending_count ?></span><?php endif; ?>
                 </button>
-                <button class="tab-btn" onclick="switchTab('expired', this)">
+                <button type="button" role="tab" aria-selected="false" class="tab-btn <?= $tab_btn ?>" onclick="switchTab('expired', this)">
                     <i class="fas fa-ban"></i> Expired
                     <?php if ($expired_count > 0): ?>
-                        <span class="tab-expired-badge" style="border-radius:20px;padding:1px 8px;font-size:10px;font-weight:700;"><?= $expired_count ?></span>
+                        <span class="rounded-full bg-red-100 px-2 py-px text-[10px] font-bold text-red-600 dark:bg-red-500/20"><?= $expired_count ?></span>
                     <?php endif; ?>
                 </button>
-                <button class="tab-btn" onclick="switchTab('reactivation', this)">
+                <button type="button" role="tab" aria-selected="false" class="tab-btn <?= $tab_btn ?>" onclick="switchTab('reactivation', this)">
                     <i class="fas fa-rotate-left"></i> Reactivation Requests
-                    <?php if ($reactivation_requests_count > 0): ?>
-                        <span class="tab-badge"><?= $reactivation_requests_count ?></span>
-                    <?php endif; ?>
+                    <?php if ($reactivation_requests_count > 0): ?><span class="<?= $tab_alert ?>"><?= $reactivation_requests_count ?></span><?php endif; ?>
+                </button>
+                <button type="button" role="tab" aria-selected="false" class="tab-btn <?= $tab_btn ?>" id="tabBtnLeave" onclick="switchTab('leave', this)">
+                    <i class="fas fa-plane-departure"></i> Leave &amp; Reassignment
+                    <?php if ($leave_requests_count > 0): ?><span class="<?= $tab_alert ?>"><?= $leave_requests_count ?></span><?php endif; ?>
                 </button>
             </div>
-            <button class="invite-btn" onclick="showInviteModal()">
+            <button type="button" class="<?= $tw['btnPrimary'] ?> w-full sm:w-auto" onclick="showInviteModal()">
                 <i class="fas fa-paper-plane"></i> Send Invitation
             </button>
         </div>
 
         <!-- TAB: Registered Evaluators -->
-        <div id="tab-registered" class="tab-content active">
-            <div class="main-card">
-                <div class="main-card-head">
+        <div id="tab-registered" class="tab-content">
+            <div class="<?= $tw['card'] ?>">
+                <div class="<?= $tw['cardHead'] ?>">
                     <div>
-                        <div class="main-card-title">Registered Evaluators</div>
-                        <div class="main-card-sub"><?= $total_evaluators ?> account<?= $total_evaluators !== 1 ? 's' : '' ?> · <?= $active_evaluators_count ?> active, <?= $deactivated_evaluators_count ?> deactivated</div>
+                        <div class="<?= $tw['title'] ?>">Registered Evaluators</div>
+                        <div class="<?= $tw['sub'] ?>"><?= $total_evaluators ?> account<?= $total_evaluators !== 1 ? 's' : '' ?> · <?= $active_evaluators_count ?> active, <?= $deactivated_evaluators_count ?> deactivated</div>
                     </div>
                 </div>
 
-                <div class="search-wrap">
-                    <i class="fas fa-search"></i>
-                    <input type="text" class="search-input" id="evalSearch" placeholder="Search by name or email..." oninput="filterTable()">
+                <div class="relative border-b border-slate-200 bg-slate-50 px-4 py-3.5 dark:border-slate-700 dark:bg-slate-900 sm:px-5">
+                    <i class="fas fa-search pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 text-xs text-slate-400 sm:left-8"></i>
+                    <input type="text" class="<?= $tw['search'] ?>" id="evalSearch" placeholder="Search by name or email..." oninput="filterTable()">
                 </div>
 
                 <?php if (empty($evaluators)): ?>
-                    <div class="empty-state">
-                        <div class="empty-icon"><i class="fas fa-users-slash"></i></div>
-                        <div class="empty-title">No evaluators yet</div>
-                        <div class="empty-sub">Send your first invitation to get started.</div>
-                        <button class="invite-btn" onclick="showInviteModal()" style="margin:0 auto;">
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyIcon'] ?>"><i class="fas fa-users-slash"></i></div>
+                        <div class="<?= $tw['emptyTitle'] ?>">No evaluators yet</div>
+                        <div class="<?= $tw['emptySub'] ?>">Send your first invitation to get started.</div>
+                        <button type="button" class="<?= $tw['btnPrimary'] ?>" onclick="showInviteModal()">
                             <i class="fas fa-paper-plane"></i> Send First Invitation
                         </button>
                     </div>
                 <?php else: ?>
-                    <div style="overflow-x:auto;">
-                        <table id="evalTable">
-                            <thead>
-                                <tr>
-                                    <th>Evaluator</th>
-                                    <th>Phone</th>
-                                    <th>Status</th>
-                                    <th>Joined</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($evaluators as $e): ?>
-                                    <?php
-                                    $parts = explode(' ', trim($e['full_name'] ?? 'EV'));
-                                    $initials = strtoupper(count($parts) >= 2
-                                        ? substr($parts[0], 0, 1) . substr(end($parts), 0, 1)
-                                        : substr($e['full_name'], 0, 2));
-                                    $is_active = (int)($e['is_active'] ?? 1) === 1;
-                                    $has_pending_request = !empty($e['pending_status']);
-                                    ?>
-                                    <tr class="ev-row">
-                                        <td>
-                                            <div style="display:flex;align-items:center;gap:12px;">
-                                                <div class="ev-avatar"><?= $initials ?></div>
-                                                <div>
-                                                    <div class="ev-name"><?= htmlspecialchars($e['full_name'] ?? '—') ?></div>
-                                                    <div class="ev-email"><?= htmlspecialchars($e['email']) ?></div>
-                                                </div>
+                    <table id="evalTable" class="<?= $tw['table'] ?>">
+                        <thead class="<?= $tw['thead'] ?>">
+                            <tr>
+                                <th class="<?= $tw['th'] ?>">Evaluator</th>
+                                <th class="<?= $tw['th'] ?>">Phone</th>
+                                <th class="<?= $tw['th'] ?>">Status</th>
+                                <th class="<?= $tw['th'] ?>">Joined</th>
+                                <th class="<?= $tw['th'] ?>">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="<?= $tw['tbody'] ?>">
+                            <?php foreach ($evaluators as $e): ?>
+                                <?php
+                                $parts = explode(' ', trim($e['full_name'] ?? 'EV'));
+                                $initials = strtoupper(count($parts) >= 2
+                                    ? substr($parts[0], 0, 1) . substr(end($parts), 0, 1)
+                                    : substr($e['full_name'], 0, 2));
+                                $is_active = (int)($e['is_active'] ?? 1) === 1;
+                                $has_pending_request = !empty($e['pending_status']);
+                                $on_leave_now = !empty($e['leave_id']);
+                                ?>
+                                <tr class="ev-row <?= $tw['tr'] ?>">
+                                    <td class="<?= $tw['td0'] ?>">
+                                        <div class="flex items-center gap-3">
+                                            <div class="<?= $tw['avatar'] ?> bg-gradient-to-br from-blue-700 to-indigo-600"><?= $initials ?></div>
+                                            <div class="min-w-0">
+                                                <div class="text-[13.5px] font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($e['full_name'] ?? '—') ?></div>
+                                                <div class="break-all text-[11.5px] text-slate-400"><?= htmlspecialchars($e['email']) ?></div>
+                                                <div class="text-[11.5px] text-slate-400"><?= (int)$e['open_cases'] ?> open case<?= (int)$e['open_cases'] !== 1 ? 's' : '' ?></div>
                                             </div>
-                                        </td>
-                                        <td><?= htmlspecialchars($e['phone'] ?? '—') ?></td>
-                                        <td>
+                                        </div>
+                                    </td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Phone"><?= htmlspecialchars($e['phone'] ?? '—') ?></td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Status">
+                                        <div class="flex flex-wrap items-center gap-1">
                                             <?php if ($is_active): ?>
-                                                <span class="badge-active">Active</span>
+                                                <span class="<?= $tw['badgeOk'] ?>"><span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"></span>Active</span>
+                                                <?php if ($on_leave_now): ?>
+                                                    <span class="<?= $tw['badgeInfo'] ?>"><i class="fas fa-plane-departure"></i> On leave<?= $e['leave_end'] ? ' until ' . date('M d', strtotime($e['leave_end'])) : '' ?></span>
+                                                <?php endif; ?>
                                             <?php elseif ($has_pending_request): ?>
-                                                <span class="badge-reactivation-pending"><i class="fas fa-hourglass-half"></i> Reactivation Pending</span>
+                                                <span class="<?= $tw['badgeWarn'] ?>"><i class="fas fa-hourglass-half"></i> Reactivation Pending</span>
                                             <?php else: ?>
-                                                <span class="badge-deactivated" style="cursor:pointer;"
+                                                <span class="<?= $tw['badgeBad'] ?> cursor-pointer"
                                                     onclick='showDeactivationReason(<?= json_encode($e['deactivation_reason'] ?: 'No reason recorded.') ?>, <?= json_encode($e['deactivated_at'] ? date('M d, Y g:i a', strtotime($e['deactivated_at'])) : '—') ?>, <?= json_encode($e['deactivated_by'] ?: null) ?>)'>
-                                                    <i class="fas fa-ban"></i> Deactivated <i class="fas fa-circle-info" style="font-size:9px;margin-left:2px;"></i>
+                                                    <i class="fas fa-ban"></i> Deactivated <i class="fas fa-circle-info ml-0.5 text-[9px]"></i>
                                                 </span>
                                             <?php endif; ?>
-                                        </td>
-                                        <td style="font-size:12px;color:var(--text3);">
-                                            <div><?= date('M d, Y', strtotime($e['created_at'])) ?></div>
-                                            <div style="font-size:10.5px;"><?= date('g:i a', strtotime($e['created_at'])) ?></div>
-                                        </td>
-                                        <td>
+                                        </div>
+                                    </td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Joined">
+                                        <div class="text-xs text-slate-400"><?= date('M d, Y', strtotime($e['created_at'])) ?></div>
+                                        <div class="text-[10.5px] text-slate-400"><?= date('g:i a', strtotime($e['created_at'])) ?></div>
+                                    </td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Actions">
+                                        <div class="flex flex-wrap gap-1.5">
                                             <?php if ($is_active): ?>
-                                                <button type="button" class="btn-action-deactivate"
+                                                <?php if ($on_leave_now): ?>
+                                                    <button type="button" class="<?= $tw['btnGreen'] ?>" onclick="endLeave(<?= (int)$e['eid'] ?>)">
+                                                        <i class="fas fa-plane-arrival"></i> End leave
+                                                    </button>
+                                                <?php else: ?>
+                                                    <button type="button" class="<?= $tw['btnBlue'] ?>" data-eid="<?= (int)$e['eid'] ?>"
+                                                        data-name="<?= htmlspecialchars($e['full_name'] ?? $e['email'], ENT_QUOTES) ?>"
+                                                        onclick="showLeaveModal(this)">
+                                                        <i class="fas fa-plane-departure"></i> Leave
+                                                    </button>
+                                                <?php endif; ?>
+                                                <button type="button" class="<?= $tw['btnRed'] ?>"
                                                     onclick="showDeactivateModal('<?= htmlspecialchars($e['email'], ENT_QUOTES) ?>', 'evaluator', '<?= htmlspecialchars($e['full_name'] ?? $e['email'], ENT_QUOTES) ?>')">
                                                     <i class="fas fa-user-slash"></i> Deactivate
                                                 </button>
                                             <?php else: ?>
-                                                <button type="button" class="btn-action-reactivate"
+                                                <button type="button" class="<?= $tw['btnGreen'] ?>"
                                                     onclick="reactivateUser('<?= htmlspecialchars($e['email'], ENT_QUOTES) ?>', 'evaluator')">
                                                     <i class="fas fa-user-check"></i> Reactivate
                                                 </button>
                                             <?php endif; ?>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                        <div id="no-results" style="display:none;padding:40px;text-align:center;color:var(--text3);font-size:13px;">
-                            <i class="fas fa-search" style="font-size:24px;margin-bottom:10px;display:block;"></i>
-                            No evaluators match your search.
-                        </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <div id="no-results" class="hidden p-10 text-center text-[13px] text-slate-400">
+                        <i class="fas fa-search mb-2.5 block text-2xl"></i>
+                        No evaluators match your search.
                     </div>
                 <?php endif; ?>
             </div>
         </div>
 
         <!-- TAB: Registered Applicants -->
-        <div id="tab-applicants" class="tab-content">
-            <div class="main-card">
-                <div class="main-card-head">
+        <div id="tab-applicants" class="tab-content hidden">
+            <div class="<?= $tw['card'] ?>">
+                <div class="<?= $tw['cardHead'] ?>">
                     <div>
-                        <div class="main-card-title">Registered Applicants</div>
-                        <div class="main-card-sub"><?= $total_applicants ?> account<?= $total_applicants !== 1 ? 's' : '' ?> · <?= $active_applicants_count ?> active, <?= $deactivated_applicants_count ?> deactivated</div>
+                        <div class="<?= $tw['title'] ?>">Registered Applicants</div>
+                        <div class="<?= $tw['sub'] ?>"><?= $total_applicants ?> account<?= $total_applicants !== 1 ? 's' : '' ?> · <?= $active_applicants_count ?> active, <?= $deactivated_applicants_count ?> deactivated</div>
                     </div>
                 </div>
 
-                <div class="search-wrap">
-                    <i class="fas fa-search"></i>
-                    <input type="text" class="search-input" id="applicantSearch" placeholder="Search by name or email..." oninput="filterApplicantTable()">
+                <div class="relative border-b border-slate-200 bg-slate-50 px-4 py-3.5 dark:border-slate-700 dark:bg-slate-900 sm:px-5">
+                    <i class="fas fa-search pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 text-xs text-slate-400 sm:left-8"></i>
+                    <input type="text" class="<?= $tw['search'] ?>" id="applicantSearch" placeholder="Search by name or email..." oninput="filterApplicantTable()">
                 </div>
 
                 <?php if (empty($applicants)): ?>
-                    <div class="empty-state">
-                        <div class="empty-icon"><i class="fas fa-user-group"></i></div>
-                        <div class="empty-title">No applicants yet</div>
-                        <div class="empty-sub">Registered applicants will appear here.</div>
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyIcon'] ?>"><i class="fas fa-user-group"></i></div>
+                        <div class="<?= $tw['emptyTitle'] ?>">No applicants yet</div>
+                        <div class="<?= $tw['emptySub'] ?>">Registered applicants will appear here.</div>
                     </div>
                 <?php else: ?>
-                    <div style="overflow-x:auto;">
-                        <table id="applicantTable">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>Phone</th>
-                                    <th>Status</th>
-                                    <th>Joined</th>
-                                    <th>Actions</th>
+                    <table id="applicantTable" class="<?= $tw['table'] ?>">
+                        <thead class="<?= $tw['thead'] ?>">
+                            <tr>
+                                <th class="<?= $tw['th'] ?>">Applicant</th>
+                                <th class="<?= $tw['th'] ?>">Phone</th>
+                                <th class="<?= $tw['th'] ?>">Status</th>
+                                <th class="<?= $tw['th'] ?>">Joined</th>
+                                <th class="<?= $tw['th'] ?>">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="<?= $tw['tbody'] ?>">
+                            <?php foreach ($applicants as $a): ?>
+                                <?php
+                                $full_name = trim(preg_replace('/\s+/', ' ', $a['first_name'] . ' ' . ($a['middle_name'] ?? '') . ' ' . $a['last_name']));
+                                $aparts = explode(' ', $full_name !== '' ? $full_name : 'AP');
+                                $ainitials = strtoupper(count($aparts) >= 2
+                                    ? substr($aparts[0], 0, 1) . substr(end($aparts), 0, 1)
+                                    : substr($full_name, 0, 2));
+                                $is_active = (int)($a['is_active'] ?? 1) === 1;
+                                $has_pending_request = !empty($a['pending_status']);
+                                $a_has_pic = !empty($a['profile_picture']);
+                                $a_pic_url = $a_has_pic ? '../' . $a['profile_picture'] : null;
+                                ?>
+                                <tr class="ap-row <?= $tw['tr'] ?>">
+                                    <td class="<?= $tw['td0'] ?>">
+                                        <div class="flex items-center gap-3">
+                                            <div class="<?= $tw['avatar'] ?> <?= $a_has_pic ? '' : 'bg-gradient-to-br from-emerald-600 to-emerald-400' ?>"
+                                                <?= $a_has_pic ? "style=\"background-image:url('" . htmlspecialchars($a_pic_url) . "')\" title=\"" . htmlspecialchars($full_name !== '' ? $full_name : $a['email'], ENT_QUOTES) . '"' : '' ?>>
+                                                <?= $a_has_pic ? '' : $ainitials ?>
+                                            </div>
+                                            <div class="min-w-0">
+                                                <div class="text-[13.5px] font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($full_name !== '' ? $full_name : '—') ?></div>
+                                                <div class="break-all text-[11.5px] text-slate-400"><?= htmlspecialchars($a['email']) ?></div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Phone"><?= htmlspecialchars($a['phone'] ?? '—') ?></td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Status">
+                                        <?php if ($is_active): ?>
+                                            <span class="<?= $tw['badgeOk'] ?>"><span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"></span>Active</span>
+                                        <?php elseif ($has_pending_request): ?>
+                                            <span class="<?= $tw['badgeWarn'] ?>"><i class="fas fa-hourglass-half"></i> Reactivation Pending</span>
+                                        <?php else: ?>
+                                            <span class="<?= $tw['badgeBad'] ?> cursor-pointer"
+                                                onclick='showDeactivationReason(<?= json_encode($a['deactivation_reason'] ?: 'No reason recorded.') ?>, <?= json_encode($a['deactivated_at'] ? date('M d, Y g:i a', strtotime($a['deactivated_at'])) : '—') ?>, <?= json_encode($a['deactivated_by'] ?: null) ?>)'>
+                                                <i class="fas fa-ban"></i> Deactivated <i class="fas fa-circle-info ml-0.5 text-[9px]"></i>
+                                            </span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Joined">
+                                        <div class="text-xs text-slate-400"><?= date('M d, Y', strtotime($a['created_at'])) ?></div>
+                                        <div class="text-[10.5px] text-slate-400"><?= date('g:i a', strtotime($a['created_at'])) ?></div>
+                                    </td>
+                                    <td class="<?= $tw['td'] ?>" data-label="Actions">
+                                        <?php if ($is_active): ?>
+                                            <button type="button" class="<?= $tw['btnRed'] ?>"
+                                                onclick="showDeactivateModal('<?= htmlspecialchars($a['email'], ENT_QUOTES) ?>', 'client', '<?= htmlspecialchars($full_name !== '' ? $full_name : $a['email'], ENT_QUOTES) ?>')">
+                                                <i class="fas fa-user-slash"></i> Deactivate
+                                            </button>
+                                        <?php else: ?>
+                                            <button type="button" class="<?= $tw['btnGreen'] ?>"
+                                                onclick="reactivateUser('<?= htmlspecialchars($a['email'], ENT_QUOTES) ?>', 'client')">
+                                                <i class="fas fa-user-check"></i> Reactivate
+                                            </button>
+                                        <?php endif; ?>
+                                    </td>
                                 </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($applicants as $a): ?>
-                                    <?php
-                                    $full_name = trim(preg_replace('/\s+/', ' ', $a['first_name'] . ' ' . ($a['middle_name'] ?? '') . ' ' . $a['last_name']));
-                                    $aparts = explode(' ', $full_name !== '' ? $full_name : 'AP');
-                                    $ainitials = strtoupper(count($aparts) >= 2
-                                        ? substr($aparts[0], 0, 1) . substr(end($aparts), 0, 1)
-                                        : substr($full_name, 0, 2));
-                                    $is_active = (int)($a['is_active'] ?? 1) === 1;
-                                    $has_pending_request = !empty($a['pending_status']);
-                                    $a_has_pic = !empty($a['profile_picture']);
-                                    $a_pic_url = $a_has_pic ? '../' . $a['profile_picture'] : null;
-                                    ?>
-                                    <tr class="ap-row">
-                                        <td>
-                                            <div style="display:flex;align-items:center;gap:12px;">
-                                                <div class="ev-avatar"
-                                                    style="<?= $a_has_pic
-                                                                ? "background-image:url('" . htmlspecialchars($a_pic_url) . "');background-size:cover;background-position:center;"
-                                                                : 'background:linear-gradient(135deg,#059669,#34d399);' ?>"
-                                                    <?= $a_has_pic ? 'title="' . htmlspecialchars($full_name !== '' ? $full_name : $a['email'], ENT_QUOTES) . '"' : '' ?>>
-                                                    <?= $a_has_pic ? '' : $ainitials ?>
-                                                </div>
-                                                <div>
-                                                    <div class="ev-name"><?= htmlspecialchars($full_name !== '' ? $full_name : '—') ?></div>
-                                                    <div class="ev-email"><?= htmlspecialchars($a['email']) ?></div>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td><?= htmlspecialchars($a['phone'] ?? '—') ?></td>
-                                        <td>
-                                            <?php if ($is_active): ?>
-                                                <span class="badge-active">Active</span>
-                                            <?php elseif ($has_pending_request): ?>
-                                                <span class="badge-reactivation-pending"><i class="fas fa-hourglass-half"></i> Reactivation Pending</span>
-                                            <?php else: ?>
-                                                <span class="badge-deactivated" style="cursor:pointer;"
-                                                    onclick='showDeactivationReason(<?= json_encode($a['deactivation_reason'] ?: 'No reason recorded.') ?>, <?= json_encode($a['deactivated_at'] ? date('M d, Y g:i a', strtotime($a['deactivated_at'])) : '—') ?>, <?= json_encode($a['deactivated_by'] ?: null) ?>)'>
-                                                    <i class="fas fa-ban"></i> Deactivated <i class="fas fa-circle-info" style="font-size:9px;margin-left:2px;"></i>
-                                                </span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td style="font-size:12px;color:var(--text3);">
-                                            <div><?= date('M d, Y', strtotime($a['created_at'])) ?></div>
-                                            <div style="font-size:10.5px;"><?= date('g:i a', strtotime($a['created_at'])) ?>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <?php if ($is_active): ?>
-                                                <button type="button" class="btn-action-deactivate"
-                                                    onclick="showDeactivateModal('<?= htmlspecialchars($a['email'], ENT_QUOTES) ?>', 'client', '<?= htmlspecialchars($full_name !== '' ? $full_name : $a['email'], ENT_QUOTES) ?>')">
-                                                    <i class="fas fa-user-slash"></i> Deactivate
-                                                </button>
-                                            <?php else: ?>
-                                                <button type="button" class="btn-action-reactivate"
-                                                    onclick="reactivateUser('<?= htmlspecialchars($a['email'], ENT_QUOTES) ?>', 'client')">
-                                                    <i class="fas fa-user-check"></i> Reactivate
-                                                </button>
-                                            <?php endif; ?>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                        <div id="no-applicant-results" style="display:none;padding:40px;text-align:center;color:var(--text3);font-size:13px;">
-                            <i class="fas fa-search" style="font-size:24px;margin-bottom:10px;display:block;"></i>
-                            No applicants match your search.
-                        </div>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <div id="no-applicant-results" class="hidden p-10 text-center text-[13px] text-slate-400">
+                        <i class="fas fa-search mb-2.5 block text-2xl"></i>
+                        No applicants match your search.
                     </div>
                 <?php endif; ?>
             </div>
         </div>
 
         <!-- TAB: Pending Invitations -->
-        <div id="tab-pending" class="tab-content">
-            <div class="main-card">
-                <div class="main-card-head">
+        <div id="tab-pending" class="tab-content hidden">
+            <div class="<?= $tw['card'] ?>">
+                <div class="<?= $tw['cardHead'] ?>">
                     <div>
-                        <div class="main-card-title">Pending Invitations</div>
-                        <div class="main-card-sub">Invites awaiting acceptance · expires after 24 hours</div>
+                        <div class="<?= $tw['title'] ?>">Pending Invitations</div>
+                        <div class="<?= $tw['sub'] ?>">Invites awaiting acceptance · expires after 24 hours</div>
                     </div>
                 </div>
 
                 <?php if (empty($pending_invitations)): ?>
-                    <div class="empty-state">
-                        <div class="empty-icon"><i class="fas fa-envelope-circle-check"></i></div>
-                        <div class="empty-title">All caught up!</div>
-                        <div class="empty-sub">No pending invitations at the moment.</div>
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyIcon'] ?>"><i class="fas fa-envelope-circle-check"></i></div>
+                        <div class="<?= $tw['emptyTitle'] ?>">All caught up!</div>
+                        <div class="<?= $tw['emptySub'] ?>">No pending invitations at the moment.</div>
                     </div>
                 <?php else: ?>
                     <?php foreach ($pending_invitations as $inv): ?>
@@ -1757,21 +1300,19 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
                             : substr($inv['full_name'], 0, 2));
                         $expired = strtotime($inv['expires_at']) < time();
                         ?>
-                        <div class="inv-row">
-                            <div class="inv-avatar"><?= $iinit ?></div>
-                            <div style="flex:1;min-width:0;">
-                                <div style="font-weight:700;font-size:13.5px;color:var(--text1);"><?= htmlspecialchars($inv['full_name']) ?></div>
-                                <div style="font-size:12px;color:var(--text3);"><?= htmlspecialchars($inv['email']) ?></div>
+                        <div class="<?= $tw['row'] ?>">
+                            <div class="<?= $tw['avatar'] ?> bg-gradient-to-br from-amber-600 to-amber-400"><?= $iinit ?></div>
+                            <div class="min-w-0 flex-1">
+                                <div class="text-[13.5px] font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($inv['full_name']) ?></div>
+                                <div class="break-all text-xs text-slate-400"><?= htmlspecialchars($inv['email']) ?></div>
                             </div>
-                            <div style="text-align:right;flex-shrink:0;">
+                            <div class="shrink-0 sm:text-right">
                                 <?php if ($expired): ?>
-                                    <span class="badge-expired"><i class="fas fa-clock"></i> Expired</span>
+                                    <span class="<?= $tw['badgeBad'] ?>"><i class="fas fa-clock"></i> Expired</span>
                                 <?php else: ?>
-                                    <span class="badge-pending"><i class="fas fa-hourglass-half"></i> Pending</span>
+                                    <span class="<?= $tw['badgeWarn'] ?>"><i class="fas fa-hourglass-half"></i> Pending</span>
                                 <?php endif; ?>
-                                <div style="font-size:10.5px;color:var(--text3);margin-top:4px;">
-                                    Sent <?= date('M d, Y', strtotime($inv['created_at'])) ?>
-                                </div>
+                                <div class="mt-1 text-[10.5px] text-slate-400">Sent <?= date('M d, Y', strtotime($inv['created_at'])) ?></div>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -1780,20 +1321,20 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
         </div>
 
         <!-- TAB: Expired Invitations -->
-        <div id="tab-expired" class="tab-content">
-            <div class="main-card">
-                <div class="main-card-head">
+        <div id="tab-expired" class="tab-content hidden">
+            <div class="<?= $tw['card'] ?>">
+                <div class="<?= $tw['cardHead'] ?>">
                     <div>
-                        <div class="main-card-title">Expired Invitations</div>
-                        <div class="main-card-sub">These invites were not accepted within 24 hours</div>
+                        <div class="<?= $tw['title'] ?>">Expired Invitations</div>
+                        <div class="<?= $tw['sub'] ?>">These invites were not accepted within 24 hours</div>
                     </div>
                 </div>
 
                 <?php if (empty($expired_invitations)): ?>
-                    <div class="empty-state">
-                        <div class="empty-icon"><i class="fas fa-ban"></i></div>
-                        <div class="empty-title">No expired invitations</div>
-                        <div class="empty-sub">All invitations are still active or have been accepted.</div>
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyIcon'] ?>"><i class="fas fa-ban"></i></div>
+                        <div class="<?= $tw['emptyTitle'] ?>">No expired invitations</div>
+                        <div class="<?= $tw['emptySub'] ?>">All invitations are still active or have been accepted.</div>
                     </div>
                 <?php else: ?>
                     <?php foreach ($expired_invitations as $inv): ?>
@@ -1803,17 +1344,15 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
                             ? substr($iparts[0], 0, 1) . substr(end($iparts), 0, 1)
                             : substr($inv['full_name'], 0, 2));
                         ?>
-                        <div class="inv-row" style="opacity:0.75;">
-                            <div class="inv-avatar" style="background:#fee2e2;color:var(--red);"><?= $iinit ?></div>
-                            <div style="flex:1;min-width:0;">
-                                <div style="font-weight:700;font-size:13.5px;color:var(--text1);"><?= htmlspecialchars($inv['full_name']) ?></div>
-                                <div style="font-size:12px;color:var(--text3);"><?= htmlspecialchars($inv['email']) ?></div>
-                                <div style="font-size:10.5px;color:var(--red);margin-top:4px;">
-                                    Expired <?= date('M d, Y g:i a', strtotime($inv['expires_at'])) ?>
-                                </div>
+                        <div class="<?= $tw['row'] ?> opacity-75">
+                            <div class="<?= $tw['avatar'] ?> bg-red-100 !text-red-600"><?= $iinit ?></div>
+                            <div class="min-w-0 flex-1">
+                                <div class="text-[13.5px] font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($inv['full_name']) ?></div>
+                                <div class="break-all text-xs text-slate-400"><?= htmlspecialchars($inv['email']) ?></div>
+                                <div class="mt-1 text-[10.5px] text-red-600">Expired <?= date('M d, Y g:i a', strtotime($inv['expires_at'])) ?></div>
                             </div>
-                            <div style="text-align:right;flex-shrink:0;">
-                                <span class="badge-expired"><i class="fas fa-ban"></i> Expired</span>
+                            <div class="shrink-0">
+                                <span class="<?= $tw['badgeBad'] ?>"><i class="fas fa-ban"></i> Expired</span>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -1822,20 +1361,20 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
         </div>
 
         <!-- TAB: Reactivation Requests -->
-        <div id="tab-reactivation" class="tab-content">
-            <div class="main-card">
-                <div class="main-card-head">
+        <div id="tab-reactivation" class="tab-content hidden">
+            <div class="<?= $tw['card'] ?>">
+                <div class="<?= $tw['cardHead'] ?>">
                     <div>
-                        <div class="main-card-title">Reactivation Requests</div>
-                        <div class="main-card-sub"><?= $reactivation_requests_count ?> pending request<?= $reactivation_requests_count !== 1 ? 's' : '' ?> awaiting review</div>
+                        <div class="<?= $tw['title'] ?>">Reactivation Requests</div>
+                        <div class="<?= $tw['sub'] ?>"><?= $reactivation_requests_count ?> pending request<?= $reactivation_requests_count !== 1 ? 's' : '' ?> awaiting review</div>
                     </div>
                 </div>
 
                 <?php if (empty($reactivation_requests)): ?>
-                    <div class="empty-state">
-                        <div class="empty-icon"><i class="fas fa-inbox"></i></div>
-                        <div class="empty-title">No pending requests</div>
-                        <div class="empty-sub">Deactivated users who ask to be reactivated will appear here.</div>
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyIcon'] ?>"><i class="fas fa-inbox"></i></div>
+                        <div class="<?= $tw['emptyTitle'] ?>">No pending requests</div>
+                        <div class="<?= $tw['emptySub'] ?>">Deactivated users who ask to be reactivated will appear here.</div>
                     </div>
                 <?php else: ?>
                     <?php foreach ($reactivation_requests as $rr): ?>
@@ -1850,34 +1389,29 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
                         $rr_has_pic = $rr['usertype'] === 'client' && !empty($rr['profile_picture']);
                         $rr_pic_url = $rr_has_pic ? '../' . $rr['profile_picture'] : null;
                         ?>
-                        <div class="inv-row" style="align-items:flex-start;">
-                            <div class="inv-avatar"
-                                style="<?= $rr_has_pic
-                                            ? "background-image:url('" . htmlspecialchars($rr_pic_url) . "');background-size:cover;background-position:center;"
-                                            : 'background:linear-gradient(135deg,#4f46e5,#818cf8);' ?>"
-                                <?= $rr_has_pic ? 'title="' . htmlspecialchars($display_name !== '' ? $display_name : $rr['email'], ENT_QUOTES) . '"' : '' ?>>
+                        <div class="<?= $tw['row'] ?> items-start">
+                            <div class="<?= $tw['avatar'] ?> <?= $rr_has_pic ? '' : 'bg-gradient-to-br from-indigo-600 to-indigo-400' ?>"
+                                <?= $rr_has_pic ? "style=\"background-image:url('" . htmlspecialchars($rr_pic_url) . "')\" title=\"" . htmlspecialchars($display_name !== '' ? $display_name : $rr['email'], ENT_QUOTES) . '"' : '' ?>>
                                 <?= $rr_has_pic ? '' : htmlspecialchars($rinit) ?>
                             </div>
-                            <div style="flex:1;min-width:0;">
-                                <div style="font-weight:700;font-size:13.5px;color:var(--text1);">
+                            <div class="min-w-0 flex-1 basis-60">
+                                <div class="text-[13.5px] font-bold text-slate-900 dark:text-slate-100">
                                     <?= htmlspecialchars($display_name !== '' ? $display_name : $rr['email']) ?>
-                                    <span style="font-weight:600;font-size:10.5px;color:var(--text3);margin-left:6px;">(<?= htmlspecialchars($roleLabel) ?>)</span>
+                                    <span class="ml-1.5 text-[10.5px] font-semibold text-slate-400">(<?= htmlspecialchars($roleLabel) ?>)</span>
                                 </div>
-                                <div style="font-size:12px;color:var(--text3);"><?= htmlspecialchars($rr['email']) ?></div>
-                                <div style="font-size:12px;color:var(--text2);margin-top:6px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
-                                    <i class="fas fa-quote-left" style="font-size:9px;color:var(--text3);margin-right:4px;"></i>
+                                <div class="break-all text-xs text-slate-400"><?= htmlspecialchars($rr['email']) ?></div>
+                                <div class="mt-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                                    <i class="fas fa-quote-left mr-1 text-[9px] text-slate-400"></i>
                                     <?= nl2br(htmlspecialchars($rr['reason'])) ?>
                                 </div>
-                                <div style="font-size:10.5px;color:var(--text3);margin-top:6px;">
-                                    Requested <?= date('M d, Y g:i a', strtotime($rr['requested_at'])) ?>
-                                </div>
+                                <div class="mt-1.5 text-[10.5px] text-slate-400">Requested <?= date('M d, Y g:i a', strtotime($rr['requested_at'])) ?></div>
                             </div>
-                            <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
-                                <button type="button" class="btn-action-reactivate"
+                            <div class="flex w-full shrink-0 gap-1.5 sm:w-auto sm:flex-col">
+                                <button type="button" class="<?= $tw['btnGreen'] ?> flex-1"
                                     onclick="approveReactivation(<?= (int)$rr['id'] ?>, '<?= htmlspecialchars($rr['email'], ENT_QUOTES) ?>')">
                                     <i class="fas fa-check"></i> Approve
                                 </button>
-                                <button type="button" class="btn-action-deactivate"
+                                <button type="button" class="<?= $tw['btnRed'] ?> flex-1"
                                     onclick="showRejectReactivationModal(<?= (int)$rr['id'] ?>, '<?= htmlspecialchars($rr['email'], ENT_QUOTES) ?>')">
                                     <i class="fas fa-xmark"></i> Reject
                                 </button>
@@ -1885,6 +1419,155 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
                         </div>
                     <?php endforeach; ?>
                 <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- TAB: Leave & Reassignment -->
+        <div id="tab-leave" class="tab-content hidden">
+            <div class="<?= $tw['card'] ?> mb-5">
+                <div class="<?= $tw['cardHead'] ?>">
+                    <div>
+                        <div class="<?= $tw['title'] ?>">Reassignment Requests</div>
+                        <div class="<?= $tw['sub'] ?>"><?= $leave_requests_count ?> pending · the split below is proposed by least workload, you can change any row</div>
+                    </div>
+                </div>
+
+                <?php if (empty($leave_requests)): ?>
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyIcon'] ?>"><i class="fas fa-inbox"></i></div>
+                        <div class="<?= $tw['emptyTitle'] ?>">No pending requests</div>
+                        <div class="<?= $tw['emptySub'] ?>">Use “Leave” on an evaluator to start one on their behalf.</div>
+                    </div>
+                    <?php else: foreach ($leave_requests as $lr): ?>
+                        <?php $form_id = 'reassignForm' . (int)$lr['id'];
+                        $no_target = empty($lr['targets']); ?>
+                        <form method="POST" id="<?= $form_id ?>" class="border-b border-slate-200 px-4 py-4 last:border-b-0 dark:border-slate-700 sm:px-5">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                            <input type="hidden" name="action" value="approve_reassignment">
+                            <input type="hidden" name="request_id" value="<?= (int)$lr['id'] ?>">
+
+                            <div class="mb-2.5">
+                                <div class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($lr['full_name']) ?>
+                                    <span class="text-[10.5px] font-semibold text-slate-400">(<?= $lr['scope'] === 'all' ? 'all open cases' : 'selected cases' ?>)</span>
+                                </div>
+                                <div class="text-xs text-slate-400">
+                                    <?= htmlspecialchars($leave_reasons[$lr['reason_category']] ?? 'Other') ?><?= !empty($lr['reason_other']) ? ' — “' . htmlspecialchars($lr['reason_other']) . '”' : '' ?> ·
+                                    <?= $lr['expected_return'] ? 'back ' . date('M d, Y', strtotime($lr['expected_return'])) : 'no return date' ?> ·
+                                    requested <?= date('M d, Y g:i a', strtotime($lr['requested_at'])) ?>
+                                </div>
+                            </div>
+
+                            <?php if ($no_target): ?>
+                                <div class="mb-3 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-600 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-400">
+                                    <i class="fas fa-triangle-exclamation mt-0.5"></i> No other evaluator is available. The request stays pending until one is.
+                                </div>
+                            <?php endif; ?>
+
+                            <?php if (empty($lr['cases'])): ?>
+                                <div class="mb-2.5 text-[12.5px] text-slate-400">This evaluator has no open cases. Approving will only mark them as on leave.</div>
+                            <?php else: ?>
+                                <div class="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+                                    <table class="<?= $tw['table'] ?>">
+                                        <thead class="<?= $tw['thead'] ?>">
+                                            <tr>
+                                                <th class="<?= $tw['th'] ?>">RSF Number</th>
+                                                <th class="<?= $tw['th'] ?>">Applicant</th>
+                                                <th class="<?= $tw['th'] ?>">Position</th>
+                                                <th class="<?= $tw['th'] ?>">Status</th>
+                                                <th class="<?= $tw['th'] ?>">Date Submitted / Updated</th>
+                                                <th class="<?= $tw['th'] ?>">New evaluator</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="<?= $tw['tbody'] ?>">
+                                            <?php foreach ($lr['cases'] as $c): $aid = (int)$c['id']; ?>
+                                                <tr class="<?= $tw['tr'] ?>">
+                                                    <td class="<?= $tw['td'] ?>" data-label="RSF Number">
+                                                        <a href="view-application.php?id=<?= $aid ?>" target="_self" rel="noopener"
+                                                            class="font-bold text-blue-700 hover:underline dark:text-blue-400"
+                                                            title="View application #<?= $aid ?>">
+                                                            <?= htmlspecialchars($c['rsf_number'] ?? ('#' . $aid)) ?>
+                                                        </a>
+                                                    </td>
+                                                    <td class="<?= $tw['td'] ?>" data-label="Applicant"><?= htmlspecialchars($c['applicant_name'] ?? '—') ?></td>
+                                                    <td class="<?= $tw['td'] ?>" data-label="Position"><?= htmlspecialchars($c['position_title'] ?? '—') ?></td>
+                                                    <td class="<?= $tw['td'] ?>" data-label="Status"><?= htmlspecialchars(str_replace('_', ' ', $c['status'] ?? '')) ?></td>
+                                                    <td class="<?= $tw['td'] ?>" data-label="Date Submitted / Updated">
+                                                        <?php
+                                                        $sub_ts = !empty($c['submitted_at']) ? strtotime($c['submitted_at']) : null;
+                                                        $upd_ts = !empty($c['updated_at'])   ? strtotime($c['updated_at'])   : null;
+                                                        ?>
+                                                        <?php if ($sub_ts): ?>
+                                                            <div class="text-xs text-slate-600 dark:text-slate-300">
+                                                                <span class="text-[10px] font-bold uppercase text-slate-400">Submitted</span>
+                                                                <?= date('M d, Y g:i a', $sub_ts) ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <?php if ($upd_ts && (!$sub_ts || $upd_ts > $sub_ts)): ?>
+                                                            <div class="text-xs text-slate-600 dark:text-slate-300">
+                                                                <span class="text-[10px] font-bold uppercase text-slate-400">Updated</span>
+                                                                <?= date('M d, Y g:i a', $upd_ts) ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <?php if (!$sub_ts && !$upd_ts): ?>—<?php endif; ?>
+                                                    </td>
+                                                    <td class="<?= $tw['td'] ?>" data-label="New evaluator">
+                                                        <select name="assign[<?= $aid ?>]" class="<?= $tw['input'] ?> !py-2">
+                                                            <option value="0">— Skip (leave as is) —</option>
+                                                            <?php foreach ($lr['targets'] as $t): ?>
+                                                                <option value="<?= (int)$t['eid'] ?>" <?= ($lr['proposal'][$aid] ?? 0) === (int)$t['eid'] ? 'selected' : '' ?>>
+                                                                    <?= htmlspecialchars($t['full_name']) ?> (<?= (int)$t['open_cases'] ?> open)
+                                                                </option>
+                                                            <?php endforeach; ?>
+                                                        </select>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            <?php endif; ?>
+
+                            <div class="mt-3.5">
+                                <label class="<?= $tw['label'] ?>">Admin note (optional)</label>
+                                <input type="text" name="admin_comment" class="<?= $tw['input'] ?>" maxlength="500">
+                            </div>
+                            <div class="mt-3.5 flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
+                                <button type="button" class="<?= $tw['btnRed'] ?> !py-2.5" onclick="rejectReassignment(<?= (int)$lr['id'] ?>)"><i class="fas fa-xmark"></i> Reject</button>
+                                <button type="button" class="<?= $tw['btnPrimary'] ?>" <?= $no_target ? 'disabled' : '' ?>
+                                    onclick="approveReassignment('<?= $form_id ?>', <?= count($lr['cases']) ?>)"><i class="fas fa-check"></i> Approve &amp; reassign</button>
+                            </div>
+                        </form>
+                <?php endforeach;
+                endif; ?>
+            </div>
+
+            <div class="<?= $tw['card'] ?>">
+                <div class="<?= $tw['cardHead'] ?>">
+                    <div>
+                        <div class="<?= $tw['title'] ?>">Currently on Leave</div>
+                        <div class="<?= $tw['sub'] ?>"><?= count($on_leave) ?> evaluator<?= count($on_leave) !== 1 ? 's' : '' ?> unavailable for new cases</div>
+                    </div>
+                </div>
+                <?php if (empty($on_leave)): ?>
+                    <div class="<?= $tw['empty'] ?>">
+                        <div class="<?= $tw['emptyTitle'] ?> !mb-0">Everyone is available</div>
+                    </div>
+                    <?php else: foreach ($on_leave as $ol): ?>
+                        <div class="<?= $tw['row'] ?>">
+                            <div class="min-w-0 flex-1 basis-52">
+                                <div class="text-[13.5px] font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($ol['full_name']) ?></div>
+                                <div class="text-xs text-slate-400">
+                                    <?= htmlspecialchars($leave_reasons[$ol['reason_category']] ?? 'Other') ?><?= ($ol['reason_category'] === 'other' && !empty($ol['reason_other'])) ? ' — “' . htmlspecialchars($ol['reason_other']) . '”' : '' ?> ·
+                                    since <?= date('M d, Y', strtotime($ol['start_at'])) ?> ·
+                                    <?= $ol['end_at'] ? 'back ' . date('M d, Y', strtotime($ol['end_at'])) : 'no return date' ?>
+                                </div>
+                            </div>
+                            <button type="button" class="<?= $tw['btnGreen'] ?>" onclick="endLeave(<?= (int)$ol['evaluator_id'] ?>)">
+                                <i class="fas fa-plane-arrival"></i> End leave
+                            </button>
+                        </div>
+                <?php endforeach;
+                endif; ?>
             </div>
         </div>
     </div><!-- /main -->
@@ -1956,119 +1639,169 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
     </div>
 
     <!-- ── INVITE MODAL ── -->
-    <div id="inviteModal" class="modal-overlay">
-        <div class="modal-box">
-            <div class="modal-header">
-                <h3><i class="fas fa-paper-plane" style="margin-right:8px;opacity:.8;"></i>Send Evaluator Invitation</h3>
-                <p>An email will be sent with a secure setup link.</p>
-                <button class="modal-close" onclick="hideInviteModal()">×</button>
+    <div id="inviteModal" class="modal-overlay fixed inset-0 z-[300] hidden items-center justify-center bg-blue-950/55 p-4 backdrop-blur-sm sm:p-5">
+        <div class="max-h-[92vh] w-full max-w-[460px] overflow-y-auto rounded-3xl bg-white shadow-2xl dark:bg-slate-800">
+            <div class="relative bg-gradient-to-br from-blue-950 to-blue-900 px-6 pb-4 pt-5">
+                <h3 class="pr-8 text-[17px] font-extrabold text-white"><i class="fas fa-paper-plane mr-2 opacity-80"></i>Send Evaluator Invitation</h3>
+                <p class="mt-1 text-xs text-white/60">An email will be sent with a secure setup link.</p>
+                <button type="button" class="absolute right-5 top-4 flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-white/15 text-base text-white hover:bg-white/25" onclick="hideInviteModal()">×</button>
             </div>
             <form method="POST" id="inviteForm">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="invite">
-                <div class="modal-body">
-                    <div class="modal-field">
-                        <label class="modal-label">Email Address</label>
-                        <input type="email" name="email" required class="modal-input" placeholder="evaluator@dmw.gov.ph">
+                <div class="space-y-4 px-6 py-6">
+                    <div>
+                        <label class="<?= $tw['label'] ?>">Email Address</label>
+                        <input type="email" name="email" required class="<?= $tw['input'] ?>" placeholder="evaluator@dmw.gov.ph">
                     </div>
-                    <div class="modal-field">
-                        <label class="modal-label">Full Name</label>
-                        <input type="text" name="full_name" required class="modal-input" placeholder="Juan Dela Cruz">
+                    <div>
+                        <label class="<?= $tw['label'] ?>">Full Name</label>
+                        <input type="text" name="full_name" required class="<?= $tw['input'] ?>" placeholder="Juan Dela Cruz">
                     </div>
-                    <div class="modal-field">
-                        <label class="modal-label">Cellphone Number</label>
-                        <input type="tel" name="phone" required class="modal-input" placeholder="09171234567"
+                    <div>
+                        <label class="<?= $tw['label'] ?>">Cellphone Number</label>
+                        <input type="tel" name="phone" required class="<?= $tw['input'] ?>" placeholder="09171234567"
                             inputmode="numeric" maxlength="11" minlength="11"
                             pattern="09[0-9]{9}"
                             title="Enter an 11-digit mobile number starting with 09 (e.g., 09171234567)"
                             autocomplete="off"
                             oninput="this.value = this.value.replace(/\D/g, '').slice(0, 11)">
-                        <div class="modal-hint"><i class="fas fa-info-circle"></i> Format: 09171234567 (11 digits, numbers only)</div>
+                        <div class="<?= $tw['hint'] ?>"><i class="fas fa-info-circle"></i> Format: 09171234567 (11 digits, numbers only)</div>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn-cancel" onclick="hideInviteModal()">Cancel</button>
-                    <button type="submit" class="btn-send">
-                        <i class="fas fa-paper-plane"></i> Send Invitation
-                    </button>
+                <div class="flex flex-col-reverse gap-2.5 border-t border-slate-200 px-6 pb-5 pt-4 dark:border-slate-700 sm:flex-row sm:justify-end">
+                    <button type="button" class="<?= $tw['btnCancel'] ?>" onclick="hideInviteModal()">Cancel</button>
+                    <button type="submit" class="<?= $tw['btnPrimary'] ?>"><i class="fas fa-paper-plane"></i> Send Invitation</button>
                 </div>
             </form>
         </div>
     </div>
 
     <!-- ── DEACTIVATE ACCOUNT MODAL ── -->
-    <div id="deactivateModal" class="modal-overlay">
-        <div class="modal-box">
-            <div class="modal-header" style="background:linear-gradient(135deg, #dc2626 0%, #991b1b 100%);">
-                <h3><i class="fas fa-user-slash" style="margin-right:8px;opacity:.8;"></i>Deactivate Account</h3>
-                <p id="deactivateModalSub">This will immediately prevent the user from logging in.</p>
-                <button class="modal-close" onclick="hideDeactivateModal()">×</button>
+    <div id="deactivateModal" class="modal-overlay fixed inset-0 z-[300] hidden items-center justify-center bg-blue-950/55 p-4 backdrop-blur-sm sm:p-5">
+        <div class="max-h-[92vh] w-full max-w-[460px] overflow-y-auto rounded-3xl bg-white shadow-2xl dark:bg-slate-800">
+            <div class="relative bg-gradient-to-br from-red-600 to-red-800 px-6 pb-4 pt-5">
+                <h3 class="pr-8 text-[17px] font-extrabold text-white"><i class="fas fa-user-slash mr-2 opacity-80"></i>Deactivate Account</h3>
+                <p id="deactivateModalSub" class="mt-1 text-xs text-white/70">This will immediately prevent the user from logging in.</p>
+                <button type="button" class="absolute right-5 top-4 flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-white/15 text-base text-white hover:bg-white/25" onclick="hideDeactivateModal()">×</button>
             </div>
             <form method="POST" id="deactivateForm">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="deactivate_user">
                 <input type="hidden" name="target_email" id="deactivate_target_email">
                 <input type="hidden" name="target_usertype" id="deactivate_target_usertype">
-                <div class="modal-body">
-                    <div class="modal-field">
-                        <label class="modal-label">Reason for Deactivation</label>
-                        <select name="reason_preset" id="reason_preset" class="modal-input" required onchange="toggleOtherReason()">
+                <div class="space-y-4 px-6 py-6">
+                    <div>
+                        <label class="<?= $tw['label'] ?>">Reason for Deactivation</label>
+                        <select name="reason_preset" id="reason_preset" class="<?= $tw['input'] ?>" required onchange="toggleOtherReason()">
                             <option value="">— Select a reason —</option>
                         </select>
                     </div>
-                    <div class="modal-field" id="otherReasonField" style="display:none;">
-                        <label class="modal-label">Please Specify</label>
-                        <input type="text" name="reason_other" id="reason_other" class="modal-input" placeholder="Enter specific reason...">
+                    <div id="otherReasonField" class="hidden">
+                        <label class="<?= $tw['label'] ?>">Please Specify</label>
+                        <input type="text" name="reason_other" id="reason_other" class="<?= $tw['input'] ?>" placeholder="Enter specific reason...">
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn-cancel" onclick="hideDeactivateModal()">Cancel</button>
-                    <button type="submit" class="btn-send" style="background:linear-gradient(135deg, #dc2626, #991b1b);">
-                        <i class="fas fa-user-slash"></i> Deactivate Account
-                    </button>
+                <div class="flex flex-col-reverse gap-2.5 border-t border-slate-200 px-6 pb-5 pt-4 dark:border-slate-700 sm:flex-row sm:justify-end">
+                    <button type="button" class="<?= $tw['btnCancel'] ?>" onclick="hideDeactivateModal()">Cancel</button>
+                    <button type="submit" class="<?= $tw['btnDanger'] ?>"><i class="fas fa-user-slash"></i> Deactivate Account</button>
                 </div>
             </form>
         </div>
     </div>
 
     <!-- Hidden form for Reactivate action (submitted via JS after confirmation) -->
-    <form method="POST" id="reactivateForm" style="display:none;">
+    <form method="POST" id="reactivateForm" class="hidden">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
         <input type="hidden" name="action" value="reactivate_user">
         <input type="hidden" name="target_email" id="reactivate_target_email">
         <input type="hidden" name="target_usertype" id="reactivate_target_usertype">
     </form>
 
     <!-- Hidden form for Approve Reactivation Request (submitted via JS after confirmation) -->
-    <form method="POST" id="approveReactivationForm" style="display:none;">
+    <form method="POST" id="approveReactivationForm" class="hidden">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
         <input type="hidden" name="action" value="approve_reactivation">
         <input type="hidden" name="request_id" id="approve_request_id">
     </form>
 
     <!-- ── REJECT REACTIVATION REQUEST MODAL ── -->
-    <div id="rejectReactivationModal" class="modal-overlay">
-        <div class="modal-box">
-            <div class="modal-header" style="background:linear-gradient(135deg, #dc2626 0%, #991b1b 100%);">
-                <h3><i class="fas fa-xmark" style="margin-right:8px;opacity:.8;"></i>Reject Reactivation Request</h3>
-                <p id="rejectReactivationModalSub">Let the user know why this request is being declined.</p>
-                <button class="modal-close" onclick="hideRejectReactivationModal()">×</button>
+    <div id="rejectReactivationModal" class="modal-overlay fixed inset-0 z-[300] hidden items-center justify-center bg-blue-950/55 p-4 backdrop-blur-sm sm:p-5">
+        <div class="max-h-[92vh] w-full max-w-[460px] overflow-y-auto rounded-3xl bg-white shadow-2xl dark:bg-slate-800">
+            <div class="relative bg-gradient-to-br from-red-600 to-red-800 px-6 pb-4 pt-5">
+                <h3 class="pr-8 text-[17px] font-extrabold text-white"><i class="fas fa-xmark mr-2 opacity-80"></i>Reject Reactivation Request</h3>
+                <p id="rejectReactivationModalSub" class="mt-1 text-xs text-white/70">Let the user know why this request is being declined.</p>
+                <button type="button" class="absolute right-5 top-4 flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-white/15 text-base text-white hover:bg-white/25" onclick="hideRejectReactivationModal()">×</button>
             </div>
             <form method="POST" id="rejectReactivationForm">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="reject_reactivation">
                 <input type="hidden" name="request_id" id="reject_request_id">
-                <div class="modal-body">
-                    <div class="modal-field">
-                        <label class="modal-label">Reason for Rejection</label>
-                        <textarea name="admin_comment" id="reject_admin_comment" class="modal-input" rows="4" style="resize:vertical;" placeholder="Explain why this reactivation request is being declined..." required></textarea>
-                        <div class="modal-hint"><i class="fas fa-info-circle"></i> This message will be sent to the user.</div>
-                    </div>
+                <div class="px-6 py-6">
+                    <label class="<?= $tw['label'] ?>">Reason for Rejection</label>
+                    <textarea name="admin_comment" id="reject_admin_comment" class="<?= $tw['input'] ?> resize-y" rows="4" placeholder="Explain why this reactivation request is being declined..." required></textarea>
+                    <div class="<?= $tw['hint'] ?>"><i class="fas fa-info-circle"></i> This message will be sent to the user.</div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn-cancel" onclick="hideRejectReactivationModal()">Cancel</button>
-                    <button type="submit" class="btn-send" style="background:linear-gradient(135deg, #dc2626, #991b1b);">
-                        <i class="fas fa-xmark"></i> Reject Request
-                    </button>
+                <div class="flex flex-col-reverse gap-2.5 border-t border-slate-200 px-6 pb-5 pt-4 dark:border-slate-700 sm:flex-row sm:justify-end">
+                    <button type="button" class="<?= $tw['btnCancel'] ?>" onclick="hideRejectReactivationModal()">Cancel</button>
+                    <button type="submit" class="<?= $tw['btnDanger'] ?>"><i class="fas fa-xmark"></i> Reject Request</button>
                 </div>
             </form>
         </div>
     </div>
+
+    <!-- ── LEAVE MODAL ── -->
+    <div id="leaveModal" class="modal-overlay fixed inset-0 z-[300] hidden items-center justify-center bg-blue-950/55 p-4 backdrop-blur-sm sm:p-5">
+        <div class="max-h-[92vh] w-full max-w-[460px] overflow-y-auto rounded-3xl bg-white shadow-2xl dark:bg-slate-800">
+            <div class="relative bg-gradient-to-br from-blue-950 to-blue-900 px-6 pb-4 pt-5">
+                <h3 class="pr-8 text-[17px] font-extrabold text-white"><i class="fas fa-plane-departure mr-2 opacity-80"></i>Set Evaluator Leave</h3>
+                <p id="leaveModalSub" class="mt-1 text-xs text-white/60"></p>
+                <button type="button" class="absolute right-5 top-4 flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-white/15 text-base text-white hover:bg-white/25" onclick="hideLeaveModal()">×</button>
+            </div>
+            <form method="POST" id="leaveForm">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                <input type="hidden" name="evaluator_id" id="leave_evaluator_id">
+                <div class="space-y-4 px-6 py-6">
+                    <div>
+                        <label class="<?= $tw['label'] ?>">What should happen?</label>
+                        <select name="action" id="leave_action" class="<?= $tw['input'] ?>">
+                            <option value="create_leave_request">Reassign open cases and mark as on leave</option>
+                            <option value="set_unavailability">Mark as on leave only (keep their cases)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="<?= $tw['label'] ?>">Reason category</label>
+                        <select name="reason_category" class="<?= $tw['input'] ?>" required>
+                            <?php foreach ($leave_reasons as $k => $label): ?>
+                                <option value="<?= $k ?>"><?= htmlspecialchars($label) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <div class="<?= $tw['hint'] ?>"><i class="fas fa-info-circle"></i> Category only. Do not record medical or family details.</div>
+                    </div>
+                    <div>
+                        <label class="<?= $tw['label'] ?>">Expected return (optional)</label>
+                        <input type="date" name="expected_return" class="<?= $tw['input'] ?>" min="<?= date('Y-m-d') ?>">
+                    </div>
+                </div>
+                <div class="flex flex-col-reverse gap-2.5 border-t border-slate-200 px-6 pb-5 pt-4 dark:border-slate-700 sm:flex-row sm:justify-end">
+                    <button type="button" class="<?= $tw['btnCancel'] ?>" onclick="hideLeaveModal()">Cancel</button>
+                    <button type="submit" class="<?= $tw['btnPrimary'] ?>"><i class="fas fa-check"></i> Continue</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <form method="POST" id="endLeaveForm" class="hidden">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+        <input type="hidden" name="action" value="end_unavailability">
+        <input type="hidden" name="evaluator_id" id="end_leave_evaluator_id">
+    </form>
+    <form method="POST" id="rejectReassignForm" class="hidden">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+        <input type="hidden" name="action" value="reject_reassignment">
+        <input type="hidden" name="request_id" id="reject_reassign_id">
+        <input type="hidden" name="admin_comment" id="reject_reassign_comment">
+    </form>
 
     <script>
         function updateLiveDateTime() {
@@ -2097,37 +1830,51 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
         updateLiveDateTime();
         setInterval(updateLiveDateTime, 1000);
 
+        // Modal helpers (Tailwind: hidden <-> flex)
+        function openModal(id) {
+            const m = document.getElementById(id);
+            m.classList.remove('hidden');
+            m.classList.add('flex');
+        }
+
+        function closeModal(id) {
+            const m = document.getElementById(id);
+            m.classList.add('hidden');
+            m.classList.remove('flex');
+        }
+        document.querySelectorAll('.modal-overlay').forEach(m => {
+            m.addEventListener('click', e => {
+                if (e.target === m) closeModal(m.id);
+            });
+        });
+
         function switchTab(name, btn) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-            document.getElementById('tab-' + name).classList.add('active');
-            btn.classList.add('active');
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.setAttribute('aria-selected', 'false'));
+            document.getElementById('tab-' + name).classList.remove('hidden');
+            btn.setAttribute('aria-selected', 'true');
+        }
+        // Show the default tab on load
+        document.getElementById('tab-registered').classList.remove('hidden');
+
+        function filterRows(inputId, rowSelector, emptyId) {
+            const q = document.getElementById(inputId).value.toLowerCase();
+            let visible = 0;
+            document.querySelectorAll(rowSelector).forEach(row => {
+                const show = row.textContent.toLowerCase().includes(q);
+                // Rows use block/table-row via classes; toggle with `hidden`
+                row.classList.toggle('hidden', !show);
+                if (show) visible++;
+            });
+            document.getElementById(emptyId).classList.toggle('hidden', visible !== 0);
         }
 
         function filterTable() {
-            const q = document.getElementById('evalSearch').value.toLowerCase();
-            const rows = document.querySelectorAll('.ev-row');
-            let visible = 0;
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                const show = text.includes(q);
-                row.style.display = show ? '' : 'none';
-                if (show) visible++;
-            });
-            document.getElementById('no-results').style.display = visible === 0 ? 'block' : 'none';
+            filterRows('evalSearch', '.ev-row', 'no-results');
         }
 
         function filterApplicantTable() {
-            const q = document.getElementById('applicantSearch').value.toLowerCase();
-            const rows = document.querySelectorAll('.ap-row');
-            let visible = 0;
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                const show = text.includes(q);
-                row.style.display = show ? '' : 'none';
-                if (show) visible++;
-            });
-            document.getElementById('no-applicant-results').style.display = visible === 0 ? 'block' : 'none';
+            filterRows('applicantSearch', '.ap-row', 'no-applicant-results');
         }
 
         function toggleFlyout(e, id) {
@@ -2142,15 +1889,12 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
         });
 
         function showInviteModal() {
-            document.getElementById('inviteModal').classList.add('open');
+            openModal('inviteModal');
         }
 
         function hideInviteModal() {
-            document.getElementById('inviteModal').classList.remove('open');
+            closeModal('inviteModal');
         }
-        document.getElementById('inviteModal').addEventListener('click', function(e) {
-            if (e.target === this) hideInviteModal();
-        });
 
         // Reasons available per account type — mirrors $deactivation_reasons_by_type in PHP
         const reasonsByType = <?= json_encode($deactivation_reasons_by_type) ?>;
@@ -2168,20 +1912,17 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
                 reasons.map(r => `<option value="${r.replace(/"/g, '&quot;')}">${r}</option>`).join('');
 
             document.getElementById('reason_other').value = '';
-            document.getElementById('otherReasonField').style.display = 'none';
-            document.getElementById('deactivateModal').classList.add('open');
+            document.getElementById('otherReasonField').classList.add('hidden');
+            openModal('deactivateModal');
         }
 
         function hideDeactivateModal() {
-            document.getElementById('deactivateModal').classList.remove('open');
+            closeModal('deactivateModal');
         }
-        document.getElementById('deactivateModal').addEventListener('click', function(e) {
-            if (e.target === this) hideDeactivateModal();
-        });
 
         function toggleOtherReason() {
             const val = document.getElementById('reason_preset').value;
-            document.getElementById('otherReasonField').style.display = (val === 'Other') ? 'block' : 'none';
+            document.getElementById('otherReasonField').classList.toggle('hidden', val !== 'Other');
         }
 
         function showDeactivationReason(reason, date, deactivatedBy) {
@@ -2254,15 +1995,12 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
             document.getElementById('rejectReactivationModalSub').textContent =
                 `You are about to reject the reactivation request from ${email}. Please provide a reason.`;
             document.getElementById('reject_admin_comment').value = '';
-            document.getElementById('rejectReactivationModal').classList.add('open');
+            openModal('rejectReactivationModal');
         }
 
         function hideRejectReactivationModal() {
-            document.getElementById('rejectReactivationModal').classList.remove('open');
+            closeModal('rejectReactivationModal');
         }
-        document.getElementById('rejectReactivationModal').addEventListener('click', function(e) {
-            if (e.target === this) hideRejectReactivationModal();
-        });
 
         document.getElementById('rejectReactivationForm').addEventListener('submit', function(e) {
             const comment = document.getElementById('reject_admin_comment').value.trim();
@@ -2271,6 +2009,69 @@ $deactivated_applicants_count = $total_applicants - $active_applicants_count;
                 Swal.fire('Missing reason', 'Please provide a reason (at least 5 characters) for the user.', 'warning');
             }
         });
+
+        function showLeaveModal(btn) {
+            document.getElementById('leave_evaluator_id').value = btn.dataset.eid;
+            document.getElementById('leaveModalSub').textContent = 'Set leave for ' + btn.dataset.name + '. They will stop receiving new cases.';
+            openModal('leaveModal');
+        }
+
+        function hideLeaveModal() {
+            closeModal('leaveModal');
+        }
+
+        function endLeave(eid) {
+            Swal.fire({
+                title: 'End this leave?',
+                text: 'The evaluator can claim and evaluate cases again.',
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, end leave',
+                confirmButtonColor: '#059669'
+            }).then(r => {
+                if (r.isConfirmed) {
+                    document.getElementById('end_leave_evaluator_id').value = eid;
+                    document.getElementById('endLeaveForm').submit();
+                }
+            });
+        }
+
+        function approveReassignment(formId, count) {
+            Swal.fire({
+                title: 'Approve this request?',
+                text: count + ' case(s) will be moved as shown. Rows set to “Skip” stay with the current evaluator.',
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, approve',
+                confirmButtonColor: '#059669'
+            }).then(r => {
+                if (r.isConfirmed) document.getElementById(formId).submit();
+            });
+        }
+
+        function rejectReassignment(id) {
+            Swal.fire({
+                title: 'Reject this request?',
+                input: 'textarea',
+                inputLabel: 'Reason (sent to the evaluator)',
+                inputAttributes: {
+                    maxlength: 500
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Reject',
+                confirmButtonColor: '#dc2626',
+                preConfirm: v => (v && v.trim().length >= 5) ? v.trim() : Swal.showValidationMessage('Please enter at least 5 characters.')
+            }).then(r => {
+                if (r.isConfirmed) {
+                    document.getElementById('reject_reassign_id').value = id;
+                    document.getElementById('reject_reassign_comment').value = r.value;
+                    document.getElementById('rejectReassignForm').submit();
+                }
+            });
+        }
+        <?php if (($flash_tab ?? '') === 'leave'): ?>
+            switchTab('leave', document.getElementById('tabBtnLeave'));
+        <?php endif; ?>
 
         <?php if ($success || $error): ?>
             Swal.fire({

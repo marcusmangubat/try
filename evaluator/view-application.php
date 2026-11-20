@@ -6,6 +6,8 @@ require_once '../includes/app-helpers.php';
 require_once '../includes/matching.php';
 require_once '../includes/status_email.php';
 require_once '../includes/activity_logger.php';
+require_once '../includes/handover-helpers.php';
+
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evaluator') {
     header('Location: ../login.php');
@@ -49,7 +51,12 @@ if (!$evaluator_id) {
 
 releaseResubmissionsToEvaluator($database, $app_id);
 
-$claim = claimApplication($database, $app_id, $evaluator_id, $evaluator_email);
+// On leave: the case stays viewable, but nothing can be claimed or decided.
+$onLeave = !isEvaluatorAvailable($database, $evaluator_id);
+
+$claim = $onLeave
+    ? ['ok' => false, 'reason' => 'unavailable']
+    : claimApplication($database, $app_id, $evaluator_id, $evaluator_email);
 if (!$claim['ok'] && ($claim['reason'] ?? '') === 'not_found') {
     header('Location: applications.php?error=not_found');
     exit;
@@ -72,7 +79,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $eval_error = $msg;
     };
 
-    if (!evaluatorOwnsApplication($database, $app_id, $evaluator_id)) {
+    if ($onLeave) {
+        $fail('You are on leave and cannot comment on documents.');
+    } elseif (!evaluatorOwnsApplication($database, $app_id, $evaluator_id)) {
         $fail('Only the assigned evaluator can comment on this application.');
     } elseif ($document_id <= 0 || $doc_comment === '') {
         $fail('Please enter a comment before submitting.');
@@ -145,7 +154,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $decision = trim($_POST['decision'] ?? '');
     $comments = trim($_POST['comments'] ?? '');
 
-    if (!evaluatorOwnsApplication($database, $app_id, $evaluator_id)) {
+    if ($onLeave) {
+        $eval_error = 'You are on leave and cannot submit evaluations.';
+    } elseif (!evaluatorOwnsApplication($database, $app_id, $evaluator_id)) {
         log_activity(
             $database,
             $evaluator_email,
@@ -406,7 +417,7 @@ if ($fit_client_id && $fit_rsf_id) {
 }
 // Notify the applicant the first time this case is claimed (not on every
 // subsequent visit by the same evaluator).
-if (empty($claim['already_owned'])) {
+if (!empty($claim['ok']) && empty($claim['already_owned'])) {
     log_activity(
         $database,
         $evaluator_email,
@@ -626,7 +637,7 @@ $app_pic_url = $app_has_pic ? '../' . $app['profile_picture'] : null;
 // Evaluation actions stay with the assigned evaluator. Every status can
 // still be opened and read.
 $ownsCase = evaluatorOwnsApplication($database, $app_id, (int) $evaluator_id);
-$isActionable = $ownsCase && in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true);
+$isActionable = $ownsCase && !$onLeave && in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1030,6 +1041,13 @@ $isActionable = $ownsCase && in_array($app['status'], ['assign', 'assigned', 'un
                 <i class="fas fa-arrow-left"></i> Back
             </a>
         </div>
+
+        <?php if ($onLeave): ?>
+            <div class="alert !flex items-center gap-2.5 !bg-amber-50 !border !border-amber-300 !text-amber-800 text-[12.5px] dark:!bg-amber-500/10 dark:!border-amber-500/45 dark:!text-amber-300 fade-in d1">
+                <i class="fas fa-plane-departure"></i>
+                <span>You are marked as on leave. You can read this case, but you cannot claim it, comment on documents, or submit a decision until your leave ends.</span>
+            </div>
+        <?php endif; ?>
 
         <!-- Alerts -->
         <?php if ($correctedCount > 0): ?>

@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once '../db.php';
+require_once '../includes/app-helpers.php';
 require_once '../includes/matching.php';
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'client') {
@@ -144,7 +145,7 @@ $query = "
     SELECT * 
     FROM rsf_job_orders 
     WHERE (deadline IS NULL OR deadline >= CURDATE())
-    ORDER BY created_at DESC
+    ORDER BY " . sql_deadline_priority('deadline') . ", created_at DESC
 ";
 $jobOrders = [];
 $result = @$database->query($query);
@@ -1289,6 +1290,11 @@ $client_initials = $initials;
                     $hasApplied = $jobStatus !== null && !$isDraft;
                     $slotsLeft = max(0, (int) ($job['slots_available'] ?? 0));
                     $isFull = $slotsLeft <= 0;
+                    $deadlineDays = null;
+                    if (!empty($job['deadline'])) {
+                        $deadlineDays = (int) floor((strtotime($job['deadline']) - strtotime(date('Y-m-d'))) / 86400);
+                    }
+                    $closingSoon = $deadlineDays !== null && $deadlineDays <= JOB_CLOSING_SOON_DAYS;
                     $qualEligible = $job['qual_eligible'];
                     $hasQuals     = $job['has_quals'];
                     $topStripe = $isGov ? 'before:bg-[var(--green)]' : 'before:bg-[var(--blue-lt)]';
@@ -1382,6 +1388,11 @@ $client_initials = $initials;
                                 <div class="flex items-center gap-2 sm:gap-[9px] text-[11px] sm:text-xs text-[var(--text2)] font-medium">
                                     <i class="fas fa-calendar-alt w-4 text-center text-[var(--text3)] text-[10px] sm:text-[11px] flex-shrink-0"></i>
                                     <span>Deadline: <strong class="text-[var(--text1)] font-bold"><?= $job['deadline'] ? date('M d, Y', strtotime($job['deadline'])) : 'Open' ?></strong></span>
+                                    <?php if ($closingSoon): ?>
+                                        <span class="ml-auto shrink-0 text-[9px] sm:text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-[#fffbeb] text-[#92400e] border border-[#fde68a]">
+                                            <?= $deadlineDays < 0 ? 'Deadline passed' : ($deadlineDays === 0 ? 'Closes today' : 'Closes in ' . $deadlineDays . 'd') ?>
+                                        </span>
+                                    <?php endif; ?>
                                 </div>
                                 <?php if (!empty($job['rsf_number'])): ?>
                                     <div class="flex items-center gap-2 sm:gap-[9px] text-[11px] sm:text-xs text-[var(--text2)] font-medium">

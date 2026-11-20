@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once '../db.php';
+require_once '../includes/app-helpers.php';
 require_once '../includes/activity_logger.php';
 require_once '../includes/country_currency.php';
 if (!isset($_SESSION['user_type']) || $_SESSION['user_type'] !== 'admin') {
@@ -260,11 +261,12 @@ function updateExchangeRates(mysqli $db): bool
     try {
         $db->query("TRUNCATE TABLE exchange_rates");
 
-        $stmt = $db->prepare("INSERT INTO exchange_rates (currency_code, exchange_rate) VALUES (?, ?)");
+        $stmt = $db->prepare("INSERT INTO exchange_rates (currency_code, exchange_rate, updated_at) VALUES (?, ?, ?)");
+        $now = date('Y-m-d H:i:s'); // Philippine time from PHP
 
         foreach ($rates as $currency => $rateToPhp) {
             $exchangeRate = ($currency === 'PHP') ? 1.0 : round(1 / $rateToPhp, 8);
-            $stmt->bind_param('sd', $currency, $exchangeRate);
+            $stmt->bind_param('sds', $currency, $exchangeRate, $now);
             $stmt->execute();
         }
 
@@ -628,6 +630,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 exit;
             }
 
+            $dl = DateTime::createFromFormat('Y-m-d', $deadline);
+            if (!$dl || $dl->format('Y-m-d') !== $deadline) {
+                echo json_encode(['status' => 'error', 'message' => 'Invalid deadline date.']);
+                exit;
+            }
+            if ($dl < new DateTime('today')) {
+                echo json_encode(['status' => 'error', 'message' => 'Deadline cannot be in the past.']);
+                exit;
+            }
+
             $resolved = resolveWorksite($worksite_country);
             if (!$resolved) {
                 echo json_encode(['status' => 'error', 'message' => "Cannot determine the currency for \"$worksite_country\". Please choose a country from the suggestions list."]);
@@ -781,6 +793,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $slots_available = (int)($_POST['slots_available'] ?? 0);
             $qualifications  = trim($_POST['qualifications'] ?? '');
             $deadline        = !empty($_POST['deadline']) ? trim($_POST['deadline']) : null;
+
+            if ($deadline !== null) {
+                $dl = DateTime::createFromFormat('Y-m-d', $deadline);
+                if (!$dl || $dl->format('Y-m-d') !== $deadline) {
+                    echo json_encode(['status' => 'error', 'message' => 'Invalid deadline date.']);
+                    exit;
+                }
+                $curStmt = $database->prepare("SELECT deadline FROM rsf_job_orders WHERE id = ?");
+                $curStmt->bind_param('i', $id);
+                $curStmt->execute();
+                $currentDeadline = $curStmt->get_result()->fetch_assoc()['deadline'] ?? null;
+                $curStmt->close();
+
+                if ($deadline !== $currentDeadline && $dl < new DateTime('today')) {
+                    echo json_encode(['status' => 'error', 'message' => 'Deadline cannot be set to a past date.']);
+                    exit;
+                }
+            }
+
             $resolved = resolveWorksite($worksite_country);
             if (!$resolved) {
                 echo json_encode(['status' => 'error', 'message' => "Cannot determine the currency for \"$worksite_country\". Please choose a country from the suggestions list."]);
@@ -919,6 +950,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $skillStmt->close();
                 }
                 $database->commit();
+                if ($slots_available <= 0) {
+                    require_once __DIR__ . '/../includes/app-helpers.php';
+                    notify_unaccommodated_when_slots_full($database, $id);
+                }
                 log_activity(
                     $database,
                     $admin_email,
@@ -981,7 +1016,7 @@ $stmt = $database->query("
     FROM rsf_job_orders r
     LEFT JOIN applications a ON a.rsf_id = r.id AND a.status != 'draft'
     GROUP BY r.id
-    ORDER BY r.created_at DESC
+    ORDER BY " . sql_deadline_priority('r.deadline') . ", r.created_at DESC
 ");
 $jobOrders = $stmt->fetch_all(MYSQLI_ASSOC);
 $docsByRsf = [];
@@ -1120,6 +1155,12 @@ if ($rateStmt) {
     <title>Job Orders (RSF) DMW</title>
     <?php include '../includes/theme-init.php'; ?>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Let Tailwind's dark: variant follow the app's data-theme="dark" switch
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]']
+        };
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
@@ -1128,12 +1169,16 @@ if ($rateStmt) {
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <link rel="stylesheet" href="../css/dashboard.css">
     <style>
-        /* ── Applicants Modal ── */
-        #applicantsModal .modal-overlay {
+        /*  Modal animations */
+        #applicantsModal .modal-overlay,
+        #addModal .modal-overlay,
+        #editModal .modal-overlay {
             animation: fadeIn .18s ease;
         }
 
-        #applicantsModal .modal-panel {
+        #applicantsModal .modal-panel,
+        #addModal .modal-panel,
+        #editModal .modal-panel {
             animation: slideUp .22s cubic-bezier(.22, .68, 0, 1.2);
         }
 
@@ -1159,7 +1204,7 @@ if ($rateStmt) {
             }
         }
 
-        /* Status badge colours */
+        /* Status badge colours (applicants modal) */
         .badge-pending {
             background: #fef9c3;
             color: #854d0e;
@@ -1195,12 +1240,10 @@ if ($rateStmt) {
             color: #991b1b;
         }
 
-        /* Assign dropdown row */
         .assign-row select {
             min-width: 170px;
         }
 
-        /* Spinner for loading state inside modal */
         .spin {
             animation: spin 1s linear infinite;
         }
@@ -1217,87 +1260,9 @@ if ($rateStmt) {
             display: block;
             background: transparent;
             filter: none;
-
         }
 
-        /* Table card */
-        .jo-table-card {
-            background: #fff;
-            border-radius: 1.5rem;
-            border: 1px solid #f1f1f4;
-            box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-            overflow: hidden;
-        }
-
-        .jo-table thead th {
-            background: #fafafa;
-            border-bottom: 1px solid #eef0f2;
-        }
-
-        .jo-table tbody tr {
-            transition: background-color .12s ease;
-        }
-
-        .jo-table tbody tr:hover {
-            background-color: #f9fafb;
-        }
-
-        .jo-table tbody tr:not(:last-child) td {
-            border-bottom: 1px solid #f2f3f5;
-        }
-
-        .jo-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 12px;
-            border-radius: 9999px;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: .01em;
-        }
-
-        .jo-deadline-ok {
-            color: #475467;
-        }
-
-        .jo-deadline-soon {
-            color: #b54708;
-            font-weight: 600;
-        }
-
-        .jo-deadline-late {
-            color: #b42318;
-            font-weight: 600;
-        }
-
-        .jo-action-btn {
-            width: 32px;
-            height: 32px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 10px;
-            transition: background-color .12s ease, color .12s ease;
-        }
-
-        .jo-action-btn:hover {
-            background: #f2f4f7;
-        }
-
-        #addModal .modal-overlay,
-        #editModal .modal-overlay {
-            animation: fadeIn .18s ease;
-        }
-
-        #addModal .modal-panel,
-        #editModal .modal-panel {
-            animation: slideUp .22s cubic-bezier(.22, .68, 0, 1.2);
-        }
-
-        /* ── Repeatable-row selects (qualifications, skills) — visual match
-           for the custom dropdown panels used elsewhere, without the JS
-           panel overhead since these rows are rebuilt on every add/remove. ── */
+        /* Repeatable-row selects (qualifications, skills) */
         .qual-row select,
         .skill-row select {
             appearance: none;
@@ -1421,7 +1386,6 @@ if ($rateStmt) {
             background-color: var(--hover-row, rgba(148, 163, 184, .12)) !important;
         }
 
-        /* Custom select trigger + panel (enhanceAdminSelect) */
         [data-theme="dark"] #addModal [role="listbox"],
         [data-theme="dark"] #editModal [role="listbox"] {
             background: var(--surface, #1e293b) !important;
@@ -1442,45 +1406,6 @@ if ($rateStmt) {
         [data-theme="dark"] #editModal [role="option"].bg-blue-50 {
             background-color: var(--selected-row, rgba(59, 130, 246, .18)) !important;
             color: #93c5fd !important;
-        }
-
-        /* ================= DARK MODE — Job Orders Table ================= */
-        [data-theme="dark"] .jo-table-card {
-            background: var(--card, #111827);
-            border-color: var(--border, #334155);
-        }
-
-        [data-theme="dark"] .jo-table thead th {
-            background: var(--surface, #1e293b);
-            border-bottom-color: var(--border, #334155);
-            color: var(--text3, #94a3b8) !important;
-        }
-
-        [data-theme="dark"] .jo-table tbody tr:hover {
-            background-color: var(--hover-row, rgba(148, 163, 184, .08));
-        }
-
-        [data-theme="dark"] .jo-table tbody tr:not(:last-child) td {
-            border-bottom-color: var(--border, #334155);
-        }
-
-        [data-theme="dark"] .jo-table .text-gray-900,
-        [data-theme="dark"] .jo-table .text-gray-700 {
-            color: var(--text1, #f1f5f9) !important;
-        }
-
-        [data-theme="dark"] .jo-table .text-gray-500,
-        [data-theme="dark"] .jo-table .text-gray-400,
-        [data-theme="dark"] .jo-table .text-gray-300 {
-            color: var(--text3, #94a3b8) !important;
-        }
-
-        [data-theme="dark"] .jo-deadline-ok {
-            color: var(--text2, #cbd5e1);
-        }
-
-        [data-theme="dark"] .jo-action-btn:hover {
-            background: var(--hover-row, rgba(148, 163, 184, .12));
         }
 
         /* ================= DARK MODE — Applicants Modal ================= */
@@ -1568,11 +1493,10 @@ if ($rateStmt) {
             color: var(--text1, #f1f5f9) !important;
         }
 
-        /* DARK MODE — Scrollbars  */
+        /* DARK MODE — Scrollbars */
         [data-theme="dark"] * {
             scrollbar-width: thin;
             scrollbar-color: #475569 #1e293b;
-            /* thumb, track — Firefox */
         }
 
         [data-theme="dark"] ::-webkit-scrollbar {
@@ -1598,13 +1522,7 @@ if ($rateStmt) {
             background: var(--surface, #1e293b);
         }
 
-        [data-theme="dark"] #filterCountry+button,
-        [data-theme="dark"] #filterCountry~button {
-            background-color: var(--surface, #1e293b) !important;
-            color: var(--text1, #f1f5f9) !important;
-            border-color: var(--border, #334155) !important;
-        }
-
+        /* Custom select panels (country / status filters) in dark mode */
         [data-theme="dark"] [role="listbox"] {
             background: var(--surface, #1e293b) !important;
             border-color: var(--border, #334155) !important;
@@ -1620,8 +1538,13 @@ if ($rateStmt) {
             color: #93c5fd !important;
         }
 
-        /* Dark mode: neutral badges and borders */
-        [data-theme="dark"] .jo-pill,
+        [data-theme="dark"] #filterBar button[aria-haspopup="listbox"] {
+            background-color: var(--surface, #1e293b) !important;
+            color: var(--text1, #f1f5f9) !important;
+            border-color: var(--border, #334155) !important;
+        }
+
+        /* Dark mode: applicant status badges */
         [data-theme="dark"] .badge-pending,
         [data-theme="dark"] .badge-unassigned,
         [data-theme="dark"] .badge-assigned,
@@ -1633,7 +1556,6 @@ if ($rateStmt) {
             border: 1px solid var(--border, #475569) !important;
         }
 
-        /* Keep badge text readable */
         [data-theme="dark"] .badge-pending {
             color: #fde047 !important;
         }
@@ -1659,14 +1581,9 @@ if ($rateStmt) {
             color: #86efac !important;
         }
 
-        /* Neutralize colored borders in dark mode */
-        [data-theme="dark"] .border,
-        [data-theme="dark"] [class*="border-gray-"],
-        [data-theme="dark"] [class*="border-blue-"],
-        [data-theme="dark"] [class*="border-indigo-"],
-        [data-theme="dark"] [class*="border-violet-"],
-        [data-theme="dark"] [class*="border-emerald-"],
-        [data-theme="dark"] [class*="border-red-"] {
+        [data-theme="dark"] #addModal [class*="border-gray-"],
+        [data-theme="dark"] #editModal [class*="border-gray-"],
+        [data-theme="dark"] #applicantsModal [class*="border-gray-"] {
             border-color: var(--border, #475569) !important;
         }
     </style>
@@ -1713,142 +1630,216 @@ if ($rateStmt) {
     </div>
 
     <div class="flex max-w-screen-2xl mx-auto">
-        <main class="flex-1 min-w-0 px-6 py-8 overflow-auto">
-            <div class="flex items-center justify-between mb-8">
+        <main class="flex-1 min-w-0 px-4 sm:px-6 py-6 pb-32">
+
+            <!-- Page header -->
+            <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-6">
                 <div>
-                    <h2 class="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900"></h2>
-                    <p class="inline-block bg-white text-gray-700 font-semibold text-[11px] sm:text-[13px] lg:text-[15px] mt-1 sm:mt-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 lg:px-4 rounded-lg sm:rounded-xl shadow-sm leading-relaxed" style="font-family: 'DM Sans', sans-serif;">
-                        Manage Recruitment Specification Forms and available positions
+                    <nav class="text-xs text-gray-500 dark:text-slate-400 mb-1.5" aria-label="Breadcrumb">
+                        Recruitment <span class="mx-1.5">/</span>
+                        <span class="font-medium text-gray-800 dark:text-slate-200">Job Orders (RSF)</span>
+                    </nav>
+                    <p class="text-sm sm:text-base text-gray-600 dark:text-slate-300">
+                        Manage Recruitment Specification Forms and available positions.
                     </p>
                 </div>
 
                 <div class="flex items-center gap-2 sm:gap-3 flex-wrap">
-                    <!-- Refresh Rates Button -->
-                    <button onclick="refreshExchangeRates()"
-                        class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 text-xs sm:px-4 sm:py-2.5 sm:text-sm md:px-5 md:py-3 md:text-base rounded-xl md:rounded-2xl font-medium flex items-center gap-1.5 sm:gap-2 shadow-sm transition whitespace-nowrap">
-                        <i class="fas fa-sync-alt text-[11px] sm:text-sm"></i>
-                        <span class="hidden xs:inline sm:inline">Refresh Rates</span>
+                    <button type="button" onclick="refreshExchangeRates()"
+                        class="inline-flex items-center gap-2 h-11 px-4 sm:px-5 rounded-xl border border-gray-200 bg-white text-gray-800 text-sm font-semibold hover:bg-gray-50 shadow-sm transition whitespace-nowrap dark:bg-slate-800 dark:text-slate-100 dark:border-slate-600 dark:hover:bg-slate-700">
+                        <i class="fas fa-rotate text-xs"></i>
+                        <span>Refresh Rates</span>
                     </button>
-
-                    <!-- Add New Button -->
-                    <button onclick="openAddModal()"
-                        class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 text-xs sm:px-4 sm:py-2.5 sm:text-sm md:px-6 md:py-3 md:text-base rounded-xl md:rounded-2xl font-medium flex items-center gap-1.5 sm:gap-2 shadow-sm transition whitespace-nowrap">
-                        <i class="fas fa-plus text-[11px] sm:text-sm"></i>
-                        <span class="hidden xs:inline sm:inline">Add New RSF Job Order</span>
-                        <span class="inline xs:hidden sm:hidden">Add RSF</span>
+                    <button type="button" onclick="openAddModal()"
+                        class="inline-flex items-center gap-2 h-11 px-4 sm:px-5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold shadow-sm transition whitespace-nowrap">
+                        <i class="fas fa-plus text-xs"></i>
+                        <span>Add Job Order</span>
                     </button>
                 </div>
             </div>
 
-            <!-- Filters -->
-            <div class="bg-white rounded-2xl sm:rounded-3xl shadow-sm p-3 sm:p-4 md:p-6 mb-6 md:mb-8">
-                <div class="flex flex-col md:flex-row gap-2 sm:gap-3 md:gap-4">
+            <!-- Summary / quick-filter cards (derived from existing deadlines) -->
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6" id="statCards">
+                <button type="button" data-stat="" class="stat-card text-left rounded-2xl border bg-white p-4 sm:p-5 shadow-sm transition hover:border-blue-300 dark:bg-slate-900 dark:border-slate-700">
+                    <span class="block text-xs sm:text-sm text-gray-700 dark:text-slate-300">All job orders</span>
+                    <span class="block text-3xl sm:text-4xl font-bold text-gray-900 dark:text-slate-100 mt-1.5" id="statAll">0</span>
+                    <span class="block text-xs text-gray-500 dark:text-slate-400 mt-1.5">Click a card to filter</span>
+                </button>
+                <button type="button" data-stat="open" class="stat-card text-left rounded-2xl border bg-white p-4 sm:p-5 shadow-sm transition hover:border-emerald-300 dark:bg-slate-900 dark:border-slate-700">
+                    <span class="block text-xs sm:text-sm font-semibold text-emerald-700 dark:text-emerald-400">Open</span>
+                    <span class="block text-3xl sm:text-4xl font-bold text-gray-900 dark:text-slate-100 mt-1.5" id="statOpen">0</span>
+                    <span class="block text-xs text-gray-500 dark:text-slate-400 mt-1.5">Deadline more than 7 days away</span>
+                </button>
+                <button type="button" data-stat="soon" class="stat-card text-left rounded-2xl border bg-white p-4 sm:p-5 shadow-sm transition hover:border-amber-300 dark:bg-slate-900 dark:border-slate-700">
+                    <span class="block text-xs sm:text-sm font-semibold text-amber-700 dark:text-amber-400">Closing soon</span>
+                    <span class="block text-3xl sm:text-4xl font-bold text-gray-900 dark:text-slate-100 mt-1.5" id="statSoon">0</span>
+                    <span class="block text-xs text-gray-500 dark:text-slate-400 mt-1.5">Deadline within 7 days</span>
+                </button>
+                <button type="button" data-stat="expired" class="stat-card text-left rounded-2xl border bg-white p-4 sm:p-5 shadow-sm transition hover:border-red-300 dark:bg-slate-900 dark:border-slate-700">
+                    <span class="block text-xs sm:text-sm font-semibold text-red-700 dark:text-red-400">Expired</span>
+                    <span class="block text-3xl sm:text-4xl font-bold text-gray-900 dark:text-slate-100 mt-1.5" id="statExpired">0</span>
+                    <span class="block text-xs text-gray-500 dark:text-slate-400 mt-1.5">Deadline has passed</span>
+                </button>
+            </div>
+
+            <!-- Table card -->
+            <section class="jo-table-card rounded-2xl border border-gray-200 bg-white shadow-sm dark:bg-slate-900 dark:border-slate-700">
+
+                <!-- Filters -->
+                <div id="filterBar" class="p-3 sm:p-4 flex flex-col lg:flex-row gap-2.5 sm:gap-3">
                     <div class="flex-1 relative">
-                        <input type="text" id="searchInput" placeholder="Search by RSF Number, Employer or Position..." value="<?= htmlspecialchars($search) ?>"
-                            class="w-full pl-9 sm:pl-11 pr-3 sm:pr-4 py-2 sm:py-2.5 md:py-3 text-xs sm:text-sm md:text-base border border-gray-200 rounded-xl md:rounded-2xl focus:outline-none focus:border-blue-500">
-                        <i class="fas fa-search absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 text-gray-400 text-xs sm:text-sm"></i>
+                        <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none"></i>
+                        <input type="text" id="searchInput" placeholder="Search RSF number, employer or position"
+                            value="<?= htmlspecialchars($search) ?>"
+                            class="w-full h-11 pl-10 pr-4 text-sm border border-gray-200 rounded-xl bg-white text-gray-800 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:ring-blue-900/40">
                     </div>
-                    <select id="filterCountry" class="px-3 py-2 sm:px-4 sm:py-2.5 md:px-5 md:py-3 text-xs sm:text-sm md:text-base border border-gray-200 rounded-xl md:rounded-2xl focus:outline-none focus:border-blue-500">
-                        <option value="">All Countries</option>
-                        <?php
-                        $countryList = [];
-                        foreach ($jobOrders as $j) {
-                            $c = trim($j['worksite_country'] ?? '');
-                            if ($c !== '') $countryList[$c] = true;
-                        }
-                        ksort($countryList);
-                        foreach (array_keys($countryList) as $country):
-                        ?>
-                            <option value="<?= htmlspecialchars($country) ?>" <?= $filter_country === $country ? 'selected' : '' ?>><?= htmlspecialchars($country) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <button onclick="applyFilters()" class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 sm:px-6 sm:py-2.5 md:px-8 md:py-3 text-xs sm:text-sm md:text-base rounded-xl md:rounded-2xl font-medium whitespace-nowrap">Filter</button>
+                    <div class="grid grid-cols-2 sm:flex gap-2.5 sm:gap-3">
+                        <select id="filterCountry" class="h-11 px-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-500">
+                            <option value="">All countries</option>
+                            <?php
+                            $countryList = [];
+                            foreach ($jobOrders as $j) {
+                                $c = trim($j['worksite_country'] ?? '');
+                                if ($c !== '') $countryList[$c] = true;
+                            }
+                            ksort($countryList);
+                            foreach (array_keys($countryList) as $country):
+                            ?>
+                                <option value="<?= htmlspecialchars($country) ?>" <?= $filter_country === $country ? 'selected' : '' ?>><?= htmlspecialchars($country) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <select id="filterStatus" class="h-11 px-3 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-500">
+                            <option value="">All statuses</option>
+                            <option value="open">Open</option>
+                            <option value="soon">Closing soon</option>
+                            <option value="expired">Expired</option>
+                        </select>
+                        <button type="button" onclick="applyFilters()"
+                            class="col-span-2 sm:col-span-1 h-11 px-6 rounded-xl bg-gray-900 hover:bg-black text-white text-sm font-semibold transition dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white">
+                            Apply
+                        </button>
+                    </div>
                 </div>
-            </div>
 
-            <!-- Table -->
-            <p class="text-xs sm:text-sm text-gray-500 mb-3" id="jobsCountLine"></p>
-            <div class="jo-table-card">
-                <div class="overflow-x-auto">
-                    <table class="w-full min-w-[720px] sm:min-w-[900px] lg:min-w-[1200px] jo-table">
-                        <thead>
-                            <tr>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">RSF Number</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Employer</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Position</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-left text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Country</th>
-                                <!--<th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Type</th>-->
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Slots</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Reqs</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Applicants</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Deadline</th>
-                                <th class="px-2.5 py-2.5 sm:px-4 sm:py-3 lg:px-6 lg:py-4 text-center text-[9px] sm:text-[10px] lg:text-[11px] font-bold uppercase tracking-tight sm:tracking-widest text-gray-400">Actions</th>
+                <!-- Table -->
+                <?php
+                // Mobile card row: label on the left (from data-label), value on the right
+                $cell = 'max-md:flex max-md:items-center max-md:justify-between max-md:gap-3 max-md:px-0 max-md:py-2.5 '
+                    . 'max-md:border-t max-md:border-gray-100 dark:max-md:border-slate-700 '
+                    . 'max-md:before:content-[attr(data-label)] max-md:before:text-[11px] max-md:before:font-bold '
+                    . 'max-md:before:uppercase max-md:before:tracking-wider max-md:before:text-gray-400';
+                ?>
+                <div class="md:overflow-x-auto border-t border-gray-100 dark:border-slate-700">
+                    <table class="w-full text-left md:min-w-[640px] max-md:block">
+                        <thead class="max-md:hidden">
+                            <tr class="text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
+                                <th class="px-4 sm:px-5 py-3.5">Job Order</th>
+                                <th class="px-3 py-3.5 hidden md:table-cell">Country</th>
+                                <th class="px-3 py-3.5">Slots</th>
+                                <th class="px-3 py-3.5 hidden md:table-cell">Reqs</th>
+                                <th class="px-3 py-3.5">Applicants</th>
+                                <th class="px-3 py-3.5">Deadline</th>
+                                <th class="px-4 sm:px-5 py-3.5 text-right">Actions</th>
                             </tr>
                         </thead>
-                        <tbody class="text-sm text-gray-700">
+                        <tbody class="max-md:block max-md:p-3 md:divide-y md:divide-gray-100 dark:md:divide-slate-700 md:border-t md:border-gray-100 dark:md:border-slate-700 text-sm text-gray-700 dark:text-slate-200">
                             <?php if (empty($jobOrders)): ?>
                                 <tr>
-                                    <td colspan="10" class="px-4 py-12 sm:px-8 sm:py-20 text-center text-gray-400 text-[11px] sm:text-sm">
-                                        <i class="fas fa-inbox text-2xl sm:text-3xl mb-2 sm:mb-3 block text-gray-300"></i>
-                                        No job orders yet. Click "Add New RSF Job Order" to create one.
+                                    <td colspan="7" class="px-6 py-16 text-center text-gray-400 text-sm">
+                                        <i class="fas fa-inbox text-3xl mb-3 block text-gray-300"></i>
+                                        No job orders yet. Click "Add Job Order" to create one.
                                     </td>
                                 </tr>
                             <?php else: ?>
                                 <tr id="noResultsRow" class="hidden">
-                                    <td colspan="10" class="px-4 py-10 sm:px-8 sm:py-16 text-center text-gray-400 text-[11px] sm:text-sm">No job orders match your filters.</td>
+                                    <td colspan="7" class="px-6 py-14 text-center text-gray-400 text-sm">No job orders match your filters.</td>
                                 </tr>
                                 <?php foreach ($jobOrders as $job): ?>
                                     <?php
                                     $reqCount = count($docsByRsf[(int) $job['id']] ?? []);
                                     $daysLeft = (strtotime($job['deadline']) - strtotime('today')) / 86400;
-                                    $deadlineClass = $daysLeft < 0 ? 'jo-deadline-late' : ($daysLeft <= 7 ? 'jo-deadline-soon' : 'jo-deadline-ok');
+                                    $deadlineKey = $daysLeft < 0 ? 'expired' : ($daysLeft <= 7 ? 'soon' : 'open');
+                                    $deadlineLabel = ['expired' => 'Expired', 'soon' => 'Closing soon', 'open' => 'Open'][$deadlineKey];
+                                    $deadlinePill = [
+                                        'expired' => 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300',
+                                        'soon'    => 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+                                        'open'    => 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+                                    ][$deadlineKey];
                                     ?>
-                                    <tr class="job-row"
+                                    <tr class="job-row transition-colors hover:bg-gray-50/70 dark:hover:bg-slate-800/60
+                                               max-md:block max-md:mb-3 max-md:rounded-2xl max-md:border max-md:border-gray-200 max-md:bg-white max-md:px-4 max-md:py-3 max-md:shadow-sm
+                                               dark:max-md:bg-slate-800 dark:max-md:border-slate-700"
                                         data-id="<?= (int)$job['id'] ?>"
                                         data-search="<?= htmlspecialchars(strtolower($job['rsf_number'] . ' ' . ($job['employer_name'] ?? '') . ' ' . ($job['position_title'] ?? '') . ' ' . ($job['worksite_country'] ?? ''))) ?>"
                                         data-country="<?= htmlspecialchars($job['worksite_country'] ?? '') ?>"
+                                        data-deadline-status="<?= $deadlineKey ?>"
                                         data-job="<?= htmlspecialchars(json_encode($job), ENT_QUOTES, 'UTF-8') ?>"
                                         data-docs="<?= htmlspecialchars(json_encode($docsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>"
                                         data-questions="<?= htmlspecialchars(json_encode($questionsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>"
                                         data-quals="<?= htmlspecialchars(json_encode($qualsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>"
                                         data-skills="<?= htmlspecialchars(json_encode($skillsByRsf[(int) $job['id']] ?? []), ENT_QUOTES, 'UTF-8') ?>">
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 font-mono text-blue-700 font-medium whitespace-nowrap text-[10px] sm:text-[12px] lg:text-sm"><?= htmlspecialchars($job['rsf_number']) ?></td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 font-medium text-gray-900 text-[11px] sm:text-[12.5px] lg:text-sm"><?= htmlspecialchars($job['employer_name']) ?></td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-[11px] sm:text-[12.5px] lg:text-sm"><?= htmlspecialchars($job['position_title']) ?></td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-gray-500 text-[10px] sm:text-[11.5px] lg:text-sm"><?= htmlspecialchars($job['worksite_country'] ?? '-') ?></td>
-                                        <!-- <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
-                                            <span class="jo-pill <?= $job['classification'] === 'Government' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700' ?> !px-2 !py-0.5 sm:!px-3 sm:!py-1 !text-[9px] sm:!text-[11px]">
-                                                <?= htmlspecialchars($job['classification']) ?>
-                                            </span>
-                                        </td>-->
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center font-semibold text-gray-900 text-[11px] sm:text-[12.5px] lg:text-sm"><?= $job['slots_available'] ?></td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
-                                            <?php if ($reqCount > 0): ?>
-                                                <span class="jo-pill bg-violet-50 text-violet-700 !px-2 !py-0.5 sm:!px-3 sm:!py-1 !text-[9px] sm:!text-[11px]">
-                                                    <i class="fas fa-list-check text-[7px] sm:text-[9px]"></i><?= (int) $reqCount ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <span class="text-gray-300 text-[10px] sm:text-xs">—</span>
-                                            <?php endif; ?>
+
+                                        <!-- Job Order (card header on mobile) -->
+                                        <td class="px-4 sm:px-5 py-4 align-middle max-md:block max-md:px-0 max-md:pt-1 max-md:pb-3">
+                                            <div class="flex items-start justify-between gap-3">
+                                                <div class="min-w-0">
+                                                    <div class="font-semibold text-gray-900 dark:text-slate-100 leading-snug"><?= htmlspecialchars($job['position_title']) ?></div>
+                                                    <div class="text-gray-500 dark:text-slate-400 text-[13px] mt-0.5"><?= htmlspecialchars($job['employer_name']) ?></div>
+                                                    <span class="inline-block mt-1.5 font-mono text-[11px] font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300"><?= htmlspecialchars($job['rsf_number']) ?></span>
+                                                </div>
+                                                <span class="md:hidden shrink-0 inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold <?= $deadlinePill ?>"><?= $deadlineLabel ?></span>
+                                            </div>
                                         </td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
+
+                                        <!-- Country -->
+                                        <td data-label="Country" class="px-3 py-4 align-middle text-gray-900 dark:text-slate-100 <?= $cell ?>">
+                                            <span><?= htmlspecialchars($job['worksite_country'] ?? '-') ?></span>
+                                        </td>
+
+                                        <!-- Slots -->
+                                        <td data-label="Slots" class="px-3 py-4 align-middle font-semibold text-gray-900 dark:text-slate-100 <?= $cell ?>">
+                                            <span><?= (int)$job['slots_available'] ?></span>
+                                        </td>
+
+                                        <!-- Reqs -->
+                                        <td data-label="Requirements" class="px-3 py-4 align-middle <?= $cell ?>">
+                                            <span class="inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full text-xs font-semibold <?= $reqCount > 0 ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300' : 'bg-gray-100 text-gray-500 dark:bg-slate-700 dark:text-slate-300' ?>"><?= (int)$reqCount ?></span>
+                                        </td>
+
+                                        <!-- Applicants -->
+                                        <td data-label="Applicants" class="px-3 py-4 align-middle <?= $cell ?>">
                                             <?php if ($job['applicant_count'] > 0): ?>
-                                                <button onclick="openApplicantsModal(<?= (int)$job['id'] ?>, <?= htmlspecialchars(json_encode($job['rsf_number']), ENT_QUOTES) ?>, <?= htmlspecialchars(json_encode($job['position_title']), ENT_QUOTES) ?>)"
-                                                    class="jo-pill bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition cursor-pointer !px-2 !py-0.5 sm:!px-3 sm:!py-1 !text-[9px] sm:!text-[11px]">
-                                                    <i class="fas fa-users text-[7px] sm:text-[9px]"></i><?= (int)$job['applicant_count'] ?>
+                                                <button type="button"
+                                                    onclick="openApplicantsModal(<?= (int)$job['id'] ?>, <?= htmlspecialchars(json_encode($job['rsf_number']), ENT_QUOTES) ?>, <?= htmlspecialchars(json_encode($job['position_title']), ENT_QUOTES) ?>)"
+                                                    title="View applicants"
+                                                    class="inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 transition cursor-pointer dark:bg-blue-500/20 dark:text-blue-300 dark:hover:bg-blue-500/30">
+                                                    <?= (int)$job['applicant_count'] ?>
                                                 </button>
                                             <?php else: ?>
-                                                <span class="text-gray-300 text-[10px] sm:text-xs">—</span>
+                                                <span class="inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full text-xs font-semibold bg-gray-100 text-gray-500 dark:bg-slate-700 dark:text-slate-300">0</span>
                                             <?php endif; ?>
                                         </td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center text-[9.5px] sm:text-[11px] lg:text-xs <?= $deadlineClass ?> whitespace-nowrap"><?= date('M j, Y', strtotime($job['deadline'])) ?></td>
-                                        <td class="px-2.5 py-2.5 sm:px-4 sm:py-3.5 lg:px-6 lg:py-5 text-center">
-                                            <div class="flex items-center justify-center gap-0.5 sm:gap-1">
-                                                <?php if (!empty($job['pdf_path'])): ?>
-                                                    <a href="../<?= htmlspecialchars($job['pdf_path']) ?>" target="_blank" class="jo-action-btn text-green-600 !w-6 !h-6 sm:!w-8 sm:!h-8 !text-[11px] sm:!text-base" title="View PDF"><i class="fas fa-file-pdf"></i></a>
-                                                <?php endif; ?>
-                                                <button onclick="editJob(<?= $job['id'] ?>)" class="jo-action-btn text-blue-600 !w-6 !h-6 sm:!w-8 sm:!h-8 !text-[11px] sm:!text-base" title="Edit"><i class="fas fa-edit"></i></button>
-                                                <button onclick="deleteJob(<?= $job['id'] ?>)" class="jo-action-btn text-red-500 !w-6 !h-6 sm:!w-8 sm:!h-8 !text-[11px] sm:!text-base" title="Delete"><i class="fas fa-trash"></i></button>
+
+                                        <!-- Deadline -->
+                                        <td data-label="Deadline" class="px-3 py-4 align-middle whitespace-nowrap <?= $cell ?>">
+                                            <div>
+                                                <span class="max-md:hidden inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold <?= $deadlinePill ?>"><?= $deadlineLabel ?></span>
+                                                <div class="text-[13px] text-gray-500 dark:text-slate-400 md:mt-1 max-md:text-gray-900 dark:max-md:text-slate-100"><?= date('M j, Y', strtotime($job['deadline'])) ?></div>
+                                            </div>
+                                        </td>
+
+                                        <!-- Actions -->
+                                        <td class="px-4 sm:px-5 py-4 align-middle max-md:block max-md:px-0 max-md:pb-1 max-md:pt-3 max-md:border-t max-md:border-gray-100 dark:max-md:border-slate-700">
+                                            <div class="flex items-center justify-end gap-2 max-md:[&>button:first-child]:flex-1">
+                                                <button type="button" onclick="editJob(<?= (int)$job['id'] ?>)"
+                                                    class="h-10 md:h-9 px-4 rounded-lg border border-gray-200 bg-white text-blue-700 text-sm font-semibold hover:bg-blue-50 transition dark:bg-slate-800 dark:border-slate-600 dark:text-blue-300 dark:hover:bg-slate-700">
+                                                    Edit
+                                                </button>
+                                                <button type="button" onclick="event.stopPropagation(); openRowMenu(this, <?= (int)$job['id'] ?>)"
+                                                    aria-haspopup="menu" aria-label="More actions"
+                                                    class="w-10 h-10 md:w-9 md:h-9 inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition dark:bg-slate-800 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
+                                                    <i class="fas fa-ellipsis-vertical"></i>
+                                                </button>
                                             </div>
                                         </td>
                                     </tr>
@@ -1857,19 +1848,22 @@ if ($rateStmt) {
                         </tbody>
                     </table>
                 </div>
-            </div>
+
+                <!-- Footer: count + pagination -->
+                <div class="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-5 py-4 border-t border-gray-100 dark:border-slate-700">
+                    <p id="jobsCountLine" class="text-sm text-gray-500 dark:text-slate-400 text-center sm:text-left"></p>
+                    <div id="jobsPaginationWrap" class="flex flex-wrap items-center justify-center gap-1.5"></div>
+                </div>
+            </section>
         </main>
     </div>
 
-    <!-- APPLICANTS MODAL (NEW) -->
+    <!-- APPLICANTS MODAL -->
     <div id="applicantsModal" class="hidden fixed inset-0 z-[300] flex items-center justify-center">
-        <!-- overlay -->
         <div class="modal-overlay absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeApplicantsModal()"></div>
 
-        <!-- panel -->
         <div class="modal-panel relative bg-white rounded-3xl w-full max-w-5xl mx-4 max-h-[90vh] flex flex-col shadow-2xl">
 
-            <!-- Header -->
             <div class="p-6 border-b flex items-start justify-between gap-4 flex-shrink-0">
                 <div>
                     <p class="text-xs font-semibold uppercase tracking-widest text-indigo-500 mb-1" id="appl-rsf-label">RSF</p>
@@ -1878,10 +1872,8 @@ if ($rateStmt) {
                 <button onclick="closeApplicantsModal()" class="text-gray-400 hover:text-gray-700 text-3xl leading-none flex-shrink-0">&times;</button>
             </div>
 
-            <!-- Stats Cards -->
             <div class="px-6 py-4 border-b flex-shrink-0" id="appl-stats-bar"></div>
 
-            <!-- Status Filter -->
             <div class="px-6 py-3 border-b flex-shrink-0">
                 <select id="appl-status-filter" onchange="filterApplicantRows()"
                     class="w-full px-4 py-2.5 border border-gray-200 rounded-2xl text-sm text-gray-700 focus:outline-none focus:border-blue-500 bg-white">
@@ -1896,14 +1888,12 @@ if ($rateStmt) {
                 </select>
             </div>
 
-            <!-- Body / table -->
             <div class="overflow-auto flex-1 p-6" id="appl-body">
                 <div class="flex items-center justify-center h-32 text-gray-400">
                     <i class="fas fa-circle-notch spin text-2xl mr-3"></i> Loading applicants…
                 </div>
             </div>
 
-            <!-- Footer -->
             <div class="px-6 py-4 border-t flex-shrink-0 flex justify-end">
                 <button onclick="closeApplicantsModal()" class="px-8 py-2.5 text-gray-600 hover:bg-gray-100 rounded-2xl font-medium text-sm">Close</button>
             </div>
@@ -1964,13 +1954,13 @@ if ($rateStmt) {
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Deadline <span class="text-red-500">*</span></label>
-                    <input type="date" name="deadline" required
+                    <input type="date" name="deadline" id="add_deadline" required
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Positions: each becomes its own RSF number; shared sections below apply to all -->
+                <!-- Positions -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <div>
@@ -1986,12 +1976,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Structured Qualifications -->
-                <!--<div class="md:col-span-2">
-                <label class="block text-sm font-medium text-gray-700 mb-1">Qualifications</label>
-                <textarea name="qualifications" rows="4" placeholder="List required qualifications, experience, certifications…"
-                    class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500"></textarea>
-            </div>-->
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Upload RSF PDF</label>
                     <input type="file" name="rsf_pdf" accept=".pdf"
@@ -2033,11 +2017,6 @@ if ($rateStmt) {
                     </div>
                     <div id="addSkillsWrap" class="space-y-2"></div>
                 </div>
-
-                <hr class="md:col-span-2 border-gray-200 my-1">
-
-                <!-- Section: PDF Upload -->
-
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
@@ -2088,7 +2067,6 @@ if ($rateStmt) {
                 <input type="hidden" name="action" value="edit">
                 <input type="hidden" name="id" id="editId">
 
-                <!-- Section: RSF Number (auto-generated, read-only) -->
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 mb-1">RSF Number</label>
                     <input type="text" id="edit_rsf_number" readonly disabled
@@ -2098,7 +2076,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Employer & Worksite -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Employer Name <span class="text-red-500">*</span></label>
                     <input type="text" name="employer_name" id="edit_employer_name" required
@@ -2113,7 +2090,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Classification & Position -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Classification</label>
                     <select name="classification" id="edit_classification" class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
@@ -2130,7 +2106,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Job Category / Subcategory -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Job Category</label>
                     <select id="edit_category_id" onchange="onCategoryChange('edit')"
@@ -2149,7 +2124,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Salary -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Salary Min</label>
                     <input type="number" name="salary_min" id="edit_salary_min" step="0.01" min="0"
@@ -2172,7 +2146,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Slots & Deadline -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Slots Available <span class="text-red-500">*</span></label>
                     <input type="number" name="slots_available" id="edit_slots_available" required min="1"
@@ -2186,7 +2159,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Qualifications (legacy free text) -->
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Qualifications</label>
                     <textarea name="qualifications" id="edit_qualifications" rows="4"
@@ -2195,13 +2167,11 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: PDF Upload -->
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Upload RSF PDF (leave empty to keep current)</label>
                     <input type="file" name="rsf_pdf" accept=".pdf"
                         class="w-full px-5 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:border-blue-500">
                 </div>
-                <!-- Section: Structured Qualifications -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <div>
@@ -2218,7 +2188,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Required Skills -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <div>
@@ -2235,7 +2204,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Requirements -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <label class="block text-sm font-semibold text-gray-800">Required Requirements / Documents</label>
@@ -2249,7 +2217,6 @@ if ($rateStmt) {
 
                 <hr class="md:col-span-2 border-gray-200 my-1">
 
-                <!-- Section: Application Questions -->
                 <div class="md:col-span-2 border border-gray-200 rounded-2xl p-4">
                     <div class="flex items-center justify-between mb-3">
                         <label class="block text-sm font-semibold text-gray-800">Job-specific Application Questions</label>
@@ -2261,7 +2228,6 @@ if ($rateStmt) {
                     <div id="editQuestionsWrap" class="space-y-3"></div>
                 </div>
 
-                <!-- Actions -->
                 <div class="md:col-span-2 flex justify-end gap-4 pt-4">
                     <button type="button" onclick="closeEditModal()" class="px-8 py-3 text-gray-600 hover:bg-gray-100 rounded-2xl font-medium">Cancel</button>
                     <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-10 py-3 rounded-2xl font-medium">Update RSF Job Order</button>
@@ -2343,7 +2309,7 @@ if ($rateStmt) {
 
 
     <script>
-        //  NEW: Lookup data injected from PHP for Category/Subcategory + Degree dropdowns 
+        //  Lookup data injected from PHP for Category/Subcategory + Degree dropdowns 
         const JOB_CATEGORIES = <?= json_encode($jobCategories) ?>;
         const JOB_SUBCATEGORIES = <?= json_encode($jobSubcategories) ?>;
         const DEGREE_PROGRAMS = <?= json_encode($degreePrograms) ?>;
@@ -2356,6 +2322,23 @@ if ($rateStmt) {
             add: null,
             edit: null
         };
+
+        function todayLocalISO() {
+            const d = new Date();
+            d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+            return d.toISOString().slice(0, 10);
+        }
+
+        function applyDeadlineMin() {
+            const today = todayLocalISO();
+            const addEl = document.getElementById('add_deadline');
+            if (addEl) addEl.min = today;
+            // Edit: only block past dates for NEW values. An existing past deadline
+            // stays visible, but the admin must pick today or later to change it.
+            const editEl = document.getElementById('edit_deadline');
+            if (editEl) editEl.min = today;
+        }
+        applyDeadlineMin();
 
         function updatePhpPreview(prefix) {
             const min = parseFloat(document.getElementById(`${prefix}_salary_min`)?.value);
@@ -2431,8 +2414,6 @@ if ($rateStmt) {
                 });
                 sel.innerHTML = opts;
             }
-            // Keep the custom dropdown panel's option list/label in sync
-            // with the options just rebuilt above.
             if (selectId === 'add_subcategory_id' && typeof addSubcategoryDD !== 'undefined') addSubcategoryDD.refresh();
             if (selectId === 'edit_subcategory_id' && typeof editSubcategoryDD !== 'undefined') editSubcategoryDD.refresh();
         }
@@ -2447,8 +2428,6 @@ if ($rateStmt) {
             const match = JOB_SUBCATEGORIES.find(s => String(s.id) === String(subcategoryId));
             return match ? match.category_id : '';
         }
-
-        // Populate the (static) category dropdowns once on page load
 
         populateCategorySelect('edit_category_id');
 
@@ -2477,7 +2456,7 @@ if ($rateStmt) {
         }
 
         updateLiveDateTime();
-        setInterval(updateLiveDateTime, 1000); // refresh every second
+        setInterval(updateLiveDateTime, 1000);
 
         //  Dock flyout  
         function toggleFlyout(e, id) {
@@ -2493,6 +2472,7 @@ if ($rateStmt) {
         function openAddModal() {
             const form = document.getElementById('addForm');
             if (form) form.reset();
+            applyDeadlineMin();
             setRequirementRows('addRequirementsWrap', []);
             setQuestionRows('addQuestionsWrap', []);
             setQualRows('addQualWrap', []);
@@ -2505,6 +2485,7 @@ if ($rateStmt) {
         }
 
         function openEditModal() {
+            applyDeadlineMin();
             document.getElementById('editModal').classList.remove('hidden');
         }
 
@@ -2652,7 +2633,6 @@ if ($rateStmt) {
         setQuestionRows('addQuestionsWrap', []);
 
         // APPLICANTS MODAL
-        // Status label + badge class map
         const STATUS_META = {
             pending: {
                 label: 'Pending',
@@ -2733,7 +2713,7 @@ if ($rateStmt) {
             document.getElementById('appl-position-label').textContent = positionTitle;
             document.getElementById('appl-stats-bar').innerHTML = '';
             document.getElementById('appl-status-filter').value = '';
-            applStatusFilterDD.refresh(); // <-- NEW: sync the custom trigger's label back to "All statuses"
+            applStatusFilterDD.refresh();
             document.getElementById('appl-body').innerHTML = `
         <div class="flex items-center justify-center h-32 text-gray-400">
             <i class="fas fa-circle-notch spin text-2xl mr-3"></i> Loading applicants…
@@ -2773,14 +2753,12 @@ if ($rateStmt) {
                 return;
             }
 
-            // Compute counts per status
             const counts = {};
             applicants.forEach(a => {
                 const s = (a.status || 'pending').toLowerCase();
                 counts[s] = (counts[s] || 0) + 1;
             });
 
-            // Render stats bar
             const statChips = Object.entries(counts).map(([s, n]) => {
                 const m = STATUS_META[s] || {
                     label: s
@@ -2789,12 +2767,10 @@ if ($rateStmt) {
             }).join('');
             statsBar.innerHTML = `<span class="text-gray-500 font-medium mr-2">Total: ${applicants.length}</span>${statChips}`;
 
-            // Build evaluator <option> list once
             const evalOptions = _currentEvaluators.map(e =>
                 `<option value="${e.eid}">${e.full_name}</option>`
             ).join('');
 
-            // Render table
             const rows = applicants.map(a => {
                 const isUnassigned = ['unassign', 'pending'].includes((a.status || '').toLowerCase());
                 const assignCell = isUnassigned ?
@@ -2814,26 +2790,26 @@ if ($rateStmt) {
                                 : '<span class="text-gray-400">—</span>'}
                     </span>`;
 
+                const lbl = 'max-md:flex max-md:items-center max-md:justify-between max-md:gap-3 max-md:py-2 max-md:px-0 max-md:border-t max-md:border-gray-100 max-md:before:content-[attr(data-label)] max-md:before:text-[11px] max-md:before:font-bold max-md:before:uppercase max-md:before:text-gray-400';
                 return `
-                    <tr class="hover:bg-gray-50 transition appl-row" id="appl-row-${a.application_id}" data-status="${normalizeApplicantStatus(a.status)}">
-                        <!--<td class="px-4 py-4 text-xs text-gray-400 font-mono">#${a.application_id}</td>-->
-                        <td class="px-4 py-4">
+                    <tr class="appl-row hover:bg-gray-50 transition max-md:block max-md:mb-3 max-md:rounded-2xl max-md:border max-md:border-gray-200 max-md:p-4"
+                        id="appl-row-${a.application_id}" data-status="${normalizeApplicantStatus(a.status)}">
+                        <td class="px-4 py-4 max-md:block max-md:px-0 max-md:pt-0 max-md:pb-2">
                             <div class="font-semibold text-gray-800 text-sm">${escHtml(a.client_name)}</div>
-                            <div class="text-xs text-gray-400">${escHtml(a.client_email)}</div>
+                            <div class="text-xs text-gray-400 break-all">${escHtml(a.client_email)}</div>
                         </td>
-                        <td class="px-4 py-4 text-xs text-gray-500">${escHtml(a.client_phone || '—')}</td>
-                        <td class="px-4 py-4">${statusBadge(a.status)}</td>
-                        <td class="px-4 py-4">${assignCell}</td>
-                        <td class="px-4 py-4 text-xs text-gray-400 whitespace-nowrap">${formatDate(a.submitted_at)}</td>
+                        <td data-label="Phone" class="px-4 py-4 text-xs text-gray-500 ${lbl}"><span>${escHtml(a.client_phone || '—')}</span></td>
+                        <td data-label="Status" class="px-4 py-4 ${lbl}">${statusBadge(a.status)}</td>
+                        <td data-label="Evaluator" class="px-4 py-4 ${lbl}">${assignCell}</td>
+                        <td data-label="Submitted" class="px-4 py-4 text-xs text-gray-400 whitespace-nowrap ${lbl}"><span>${formatDate(a.submitted_at)}</span></td>
                     </tr>`;
             }).join('');
 
             body.innerHTML = `
-                <div class="overflow-x-auto">
-                    <table class="w-full min-w-[700px] text-sm">
-                        <thead class="bg-gray-50 border-b">
+                                <div class="md:overflow-x-auto">
+                    <table class="w-full text-sm md:min-w-[700px] max-md:block">
+                        <thead class="bg-gray-50 border-b max-md:hidden">
                             <tr>
-                                <!--<th class="px-4 py-3 text-left text-xs font-bold uppercase tracking-widest text-gray-400">ID</th>-->
                                 <th class="px-4 py-3 text-left text-xs font-bold uppercase tracking-widest text-gray-400">Applicant</th>
                                 <th class="px-4 py-3 text-left text-xs font-bold uppercase tracking-widest text-gray-400">Phone</th>
                                 <th class="px-4 py-3 text-left text-xs font-bold uppercase tracking-widest text-gray-400">Status</th>
@@ -2841,7 +2817,7 @@ if ($rateStmt) {
                                 <th class="px-4 py-3 text-left text-xs font-bold uppercase tracking-widest text-gray-400">Submitted</th>
                             </tr>
                         </thead>
-                        <tbody class="divide-y divide-gray-100">${rows}</tbody>
+                                                <tbody class="max-md:block md:divide-y md:divide-gray-100">${rows}</tbody>
                     </table>
                 </div>
                 <div id="appl-filter-empty" class="hidden text-center py-10 text-sm text-gray-500">
@@ -2886,20 +2862,16 @@ if ($rateStmt) {
                 const data = await res.json();
 
                 if (data.status === 'success') {
-                    // Update the row in the modal without full reload
                     const row = document.getElementById(`appl-row-${applicationId}`);
                     if (row) {
-                        // Update status cell
-                        row.querySelector('td:nth-child(4)').innerHTML = statusBadge('assigned');
+                        row.querySelector('td:nth-child(3)').innerHTML = statusBadge('assigned');
                         row.setAttribute('data-status', 'assigned');
-                        // Replace assign cell with evaluator name
-                        row.querySelector('td:nth-child(5)').innerHTML =
+                        row.querySelector('td:nth-child(4)').innerHTML =
                             `<span class="text-gray-700 text-xs font-medium">
                                 <i class="fas fa-user-check text-green-500 mr-1"></i>${escHtml(data.evaluator_name)}
                              </span>`;
                     }
                     filterApplicantRows();
-                    // Refresh stats bar by re-fetching (lightweight)
                     Swal.fire({
                         title: 'Assigned!',
                         text: data.message,
@@ -3123,11 +3095,67 @@ if ($rateStmt) {
                 });
         }
 
+        /*  Row "more actions" menu (View PDF / Delete) — floated so the table's scroll area can't clip it  */
+        let rowMenuEl = null;
+
+        function closeRowMenu() {
+            if (rowMenuEl) {
+                rowMenuEl.remove();
+                rowMenuEl = null;
+            }
+        }
+
+        function openRowMenu(btn, id) {
+            if (window.event) window.event.stopPropagation();
+            const wasOpenForThis = rowMenuEl && rowMenuEl.dataset.for === String(id);
+            closeRowMenu();
+            if (wasOpenForThis) return;
+
+            const row = document.querySelector(`tr.job-row[data-id="${id}"]`);
+            if (!row) return;
+            const job = JSON.parse(row.getAttribute('data-job') || '{}');
+
+            const itemCls = 'flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-left transition-colors';
+            let html = '';
+            if (job.pdf_path) {
+                html += `<a href="../${escHtml(job.pdf_path)}" target="_blank" rel="noopener" role="menuitem"
+                    class="${itemCls} text-gray-700 hover:bg-gray-50 dark:text-slate-200 dark:hover:bg-slate-700">
+                    <i class="fas fa-file-pdf text-green-600 w-4 text-center"></i>View PDF</a>`;
+            }
+            html += `<button type="button" role="menuitem" onclick="closeRowMenu(); deleteJob(${Number(id)})"
+                class="${itemCls} text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10">
+                <i class="fas fa-trash w-4 text-center"></i>Delete</button>`;
+
+            const menu = document.createElement('div');
+            menu.dataset.for = String(id);
+            menu.setAttribute('role', 'menu');
+            menu.className = 'fixed z-[250] w-44 py-1 rounded-xl border border-gray-200 bg-white shadow-xl dark:bg-slate-800 dark:border-slate-600';
+            menu.innerHTML = html;
+            menu.addEventListener('click', e => e.stopPropagation());
+            document.body.appendChild(menu);
+
+            const r = btn.getBoundingClientRect();
+            const w = menu.offsetWidth;
+            const h = menu.offsetHeight;
+            const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w));
+            const top = (r.bottom + 6 + h > window.innerHeight) ? Math.max(8, r.top - h - 6) : r.bottom + 6;
+            menu.style.left = left + 'px';
+            menu.style.top = top + 'px';
+            rowMenuEl = menu;
+        }
+        document.addEventListener('click', closeRowMenu);
+        window.addEventListener('resize', closeRowMenu);
+        window.addEventListener('scroll', closeRowMenu, true);
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') closeRowMenu();
+        });
+
         /*  Client-side filter + pagination  */
         const JOBS_PER_PAGE = 10;
         let jobsPage = 1;
         let currentFilteredRows = [];
         let showAllJobs = false;
+        let deadlineFilter = ''; // '', 'open', 'soon', 'expired'
 
         function computeFilteredRows() {
             const search = document.getElementById('searchInput').value.toLowerCase().trim();
@@ -3135,13 +3163,35 @@ if ($rateStmt) {
             return Array.from(document.querySelectorAll('tr.job-row')).filter(row => {
                 const matchSearch = !search || (row.getAttribute('data-search') || '').includes(search);
                 const matchCountry = !country || (row.getAttribute('data-country') || '') === country;
-                return matchSearch && matchCountry;
+                const matchStatus = !deadlineFilter || (row.getAttribute('data-deadline-status') || '') === deadlineFilter;
+                return matchSearch && matchCountry && matchStatus;
+            });
+        }
+
+        function updateStatCards() {
+            const rows = Array.from(document.querySelectorAll('tr.job-row'));
+            const count = key => rows.filter(r => r.getAttribute('data-deadline-status') === key).length;
+            const set = (id, v) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = v;
+            };
+            set('statAll', rows.length);
+            set('statOpen', count('open'));
+            set('statSoon', count('soon'));
+            set('statExpired', count('expired'));
+
+            document.querySelectorAll('#statCards .stat-card').forEach(card => {
+                const active = (card.dataset.stat || '') === deadlineFilter;
+                card.classList.toggle('ring-2', active);
+                card.classList.toggle('ring-blue-600', active);
+                card.classList.toggle('border-blue-600', active);
             });
         }
 
         function applyFilters() {
             currentFilteredRows = computeFilteredRows();
             jobsPage = 1;
+            updateStatCards();
             renderJobsPage();
         }
 
@@ -3163,14 +3213,16 @@ if ($rateStmt) {
 
             const countLine = document.getElementById('jobsCountLine');
             if (countLine) {
+                const b = t => `<strong class="font-semibold text-gray-800 dark:text-slate-100">${t}</strong>`;
+                const noun = `job order${total !== 1 ? 's' : ''}`;
                 if (total === 0) {
-                    countLine.textContent = '0 job orders found';
+                    countLine.innerHTML = `${b(0)} job orders found`;
                 } else if (showAllJobs) {
-                    countLine.textContent = `Showing all ${total} job order${total !== 1 ? 's' : ''}`;
+                    countLine.innerHTML = `Showing all ${b(total)} ${noun}`;
                 } else {
                     const from = start + 1;
                     const to = Math.min(start + JOBS_PER_PAGE, total);
-                    countLine.textContent = `Showing ${from}–${to} of ${total} job order${total !== 1 ? 's' : ''} · Page ${jobsPage} of ${totalPages}`;
+                    countLine.innerHTML = `Showing ${b(from + '–' + to)} of ${b(total)} ${noun}`;
                 }
             }
 
@@ -3198,49 +3250,55 @@ if ($rateStmt) {
         }
 
         function renderJobsPagination(totalPages, page) {
-            let wrap = document.getElementById('jobsPaginationWrap');
+            const wrap = document.getElementById('jobsPaginationWrap');
+            if (!wrap) return;
             const total = currentFilteredRows.length;
 
             if (total <= JOBS_PER_PAGE) {
-                if (wrap) wrap.remove();
+                wrap.innerHTML = '';
                 return;
             }
 
-            let linksHtml = '';
+            const base = 'h-9 inline-flex items-center justify-center rounded-lg border text-sm font-medium transition';
+            const idle = 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700';
+            const active = 'border-blue-700 bg-blue-700 text-white';
+            const disabled = 'pointer-events-none opacity-40';
+            let html = '';
 
             if (showAllJobs) {
-                linksHtml += `<button type="button" onclick="toggleViewAllJobs()"
-            class="px-4 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition bg-blue-600 text-white">
-            <i class="fas fa-table-list mr-1.5"></i>Paginate</button>`;
+                html = `<button type="button" onclick="toggleViewAllJobs()" class="${base} ${active} px-4">
+                    <i class="fas fa-table-list mr-1.5"></i>Paginate</button>`;
             } else {
-                linksHtml += `<button type="button" onclick="goToJobsPage(${Math.max(1, page - 1)})"
-            class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition ${page <= 1 ? 'pointer-events-none opacity-40' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}">
-            <i class="fas fa-chevron-left"></i></button>`;
-
+                html += `<button type="button" onclick="goToJobsPage(${Math.max(1, page - 1)})"
+                    class="${base} ${idle} px-3.5 ${page <= 1 ? disabled : ''}">Previous</button>`;
                 for (let p = 1; p <= totalPages; p++) {
-                    linksHtml += `<button type="button" onclick="goToJobsPage(${p})"
-                class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition ${p === page ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}">${p}</button>`;
+                    html += `<button type="button" onclick="goToJobsPage(${p})"
+                        class="${base} min-w-[36px] px-2.5 ${p === page ? active : idle}">${p}</button>`;
                 }
-
-                linksHtml += `<button type="button" onclick="goToJobsPage(${Math.min(totalPages, page + 1)})"
-            class="w-8 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition ${page >= totalPages ? 'pointer-events-none opacity-40' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'}">
-            <i class="fas fa-chevron-right"></i></button>`;
-
-                linksHtml += `<button type="button" onclick="toggleViewAllJobs()"
-            class="px-4 h-8 flex items-center justify-center rounded-lg text-xs font-semibold transition bg-gray-100 hover:bg-gray-200 text-gray-600 ml-1">
-            <i class="fas fa-list mr-1.5"></i>View All</button>`;
+                html += `<button type="button" onclick="goToJobsPage(${Math.min(totalPages, page + 1)})"
+                    class="${base} ${idle} px-3.5 ${page >= totalPages ? disabled : ''}">Next</button>`;
+                html += `<button type="button" onclick="toggleViewAllJobs()" class="${base} ${idle} px-3.5 ml-1">
+                    <i class="fas fa-list mr-1.5 text-xs"></i>View All</button>`;
             }
-
-            if (!wrap) {
-                wrap = document.createElement('div');
-                wrap.id = 'jobsPaginationWrap';
-                wrap.className = 'flex items-center justify-center gap-1.5 mt-5';
-                document.querySelector('.jo-table-card').insertAdjacentElement('afterend', wrap);
-            }
-            wrap.innerHTML = linksHtml;
+            wrap.innerHTML = html;
         }
+
+        function setDeadlineFilter(value) {
+            deadlineFilter = value || '';
+            const sel = document.getElementById('filterStatus');
+            if (sel) sel.value = deadlineFilter;
+            if (typeof statusFilterDD !== 'undefined') statusFilterDD.refresh();
+            applyFilters();
+        }
+
         document.getElementById('searchInput').addEventListener('input', applyFilters);
         document.getElementById('filterCountry').addEventListener('change', applyFilters);
+        document.getElementById('filterStatus').addEventListener('change', function() {
+            setDeadlineFilter(this.value);
+        });
+        document.querySelectorAll('#statCards .stat-card').forEach(card => {
+            card.addEventListener('click', () => setDeadlineFilter(card.dataset.stat || ''));
+        });
         applyFilters();
 
         const QUAL_TYPE_LABELS = {
@@ -3792,20 +3850,25 @@ if ($rateStmt) {
             };
         }
 
-        // "All Countries" is a real, selectable reset option here — not a
-        // placeholder — so includeEmpty keeps it in the list.
+        // Filter-bar dropdowns: "All countries" / "All statuses" are real, selectable reset options.
+        const filterTriggerCls = 'w-full h-11 px-4 text-sm border border-gray-200 rounded-xl focus:outline-none bg-white flex items-center justify-between gap-2 cursor-pointer transition-colors hover:border-blue-300';
         enhanceAdminSelect(document.getElementById('filterCountry'), {
-            includeEmpty: true
+            includeEmpty: true,
+            widthClass: 'w-full sm:w-44',
+            triggerClass: filterTriggerCls
+        });
+        const statusFilterDD = enhanceAdminSelect(document.getElementById('filterStatus'), {
+            includeEmpty: true,
+            widthClass: 'w-full sm:w-40',
+            triggerClass: filterTriggerCls
         });
 
         //  RSF Add/Edit modal dropdowns — same floating-panel design 
-
         const editCategoryDD = enhanceAdminSelect(document.getElementById('edit_category_id'));
-
         const editSubcategoryDD = enhanceAdminSelect(document.getElementById('edit_subcategory_id'));
         const addClassificationDD = enhanceAdminSelect(document.querySelector('#addForm select[name="classification"]'));
         const editClassificationDD = enhanceAdminSelect(document.getElementById('edit_classification'));
-        // Applicants modal — status filter, styled like "All Countries"
+        // Applicants modal — status filter
         const applStatusFilterDD = enhanceAdminSelect(document.getElementById('appl-status-filter'), {
             includeEmpty: true
         });

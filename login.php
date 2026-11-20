@@ -19,7 +19,7 @@ require_once 'auth.php';
 $authenticated_redirects = [
     'client'    => 'client/index.php',
     'admin'     => 'admin/dashboard.php',
-    'evaluator' => 'evaluator/dashboard.php',
+    'evaluator' => 'evaluator/index.php',
 ];
 if (
     isset($_SESSION['user_email'], $_SESSION['user_type'])

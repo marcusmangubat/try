@@ -1,5 +1,5 @@
 <?php
-// includes/dashboard-data.php
+require_once __DIR__ . '/app-helpers.php';
 // Single source of truth for the evaluator dashboard's filtered queries.
 // Used by both evaluator/index.php (initial page load) and
 // evaluator/ajax-dashboard-data.php (no-reload filter updates), so the
@@ -391,7 +391,8 @@ function evx_incoming_data(mysqli $db, array $f): array
     $limit = EVX_INCOMING_LIMIT;
     $rows = evx_fetch_all($db, "
         SELECT a.id, c.first_name, c.last_name, c.province, c.profile_picture,
-               r.rsf_number, r.position_title, r.worksite_country,
+               r.rsf_number, r.position_title, r.worksite_country, r.deadline,
+               DATEDIFF(r.deadline, CURDATE()) AS days_to_deadline,
                TIMESTAMPDIFF(HOUR, a.submitted_at, NOW()) AS waiting_hours,
                (SELECT COUNT(*) FROM rsf_required_documents d
                  WHERE d.rsf_id = a.rsf_id AND d.is_required = 1) AS req_total,
@@ -400,7 +401,7 @@ function evx_incoming_data(mysqli $db, array $f): array
                          ON d2.id = ad.required_doc_id AND d2.is_required = 1
                  WHERE ad.application_id = a.id) AS req_done
         $from $where
-        ORDER BY a.submitted_at ASC, a.id ASC
+        ORDER BY " . sql_deadline_priority('r.deadline') . ", a.submitted_at ASC, a.id ASC
         LIMIT $limit
     ", $types, $params);
 
@@ -416,6 +417,8 @@ function evx_incoming_data(mysqli $db, array $f): array
             'country'         => $r['worksite_country'],
             'waiting_hours'   => $h,
             'waiting_display' => evx_format_hours($h),
+            'days_to_deadline'=> $r['days_to_deadline'] !== null ? (int) $r['days_to_deadline'] : null,
+            'closing_soon'    => $r['days_to_deadline'] !== null && (int) $r['days_to_deadline'] <= JOB_CLOSING_SOON_DAYS,
             'tier'            => evx_age_tier($h),
             'docs_total'      => (int)$r['req_total'],
             'docs_done'       => (int)$r['req_done'],

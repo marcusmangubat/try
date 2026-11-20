@@ -424,6 +424,48 @@ if (!empty($documents)) {
     }
 }
 
+// ── Corrected documents: uploaded AFTER the latest comment on the same document type ──
+$latestCommentByType = [];
+foreach ($documents as $d) {
+    $typeKey = strtolower(trim($d['document_type'] ?? ''));
+    foreach ($docCommentsByDocumentId[(int) $d['id']] ?? [] as $c) {
+        $t = strtotime($c['created_at']);
+        if (!isset($latestCommentByType[$typeKey]) || $t > $latestCommentByType[$typeKey]) {
+            $latestCommentByType[$typeKey] = $t;
+        }
+    }
+}
+
+$correctedDocIds = [];
+foreach ($documents as $d) {
+    $typeKey = strtolower(trim($d['document_type'] ?? ''));
+    if (isset($latestCommentByType[$typeKey]) && strtotime($d['uploaded_at']) > $latestCommentByType[$typeKey]) {
+        $correctedDocIds[(int) $d['id']] = true;
+    }
+}
+$correctedCount      = count($correctedDocIds);
+$firstCorrectedDocId = $correctedCount ? array_key_first($correctedDocIds) : null;
+
+// Old uploads the applicant has since replaced with a corrected file of the same type
+$supersededDocIds = [];
+foreach ($documents as $d) {
+    $typeKey = strtolower(trim($d['document_type'] ?? ''));
+    foreach ($documents as $o) {
+        if (
+            (int) $o['id'] !== (int) $d['id']
+            && strtolower(trim($o['document_type'] ?? '')) === $typeKey
+            && isset($correctedDocIds[(int) $o['id']])
+            && strtotime($o['uploaded_at']) > strtotime($d['uploaded_at'])
+        ) {
+            $supersededDocIds[(int) $d['id']] = true;
+            break;
+        }
+    }
+}
+
+$cls_rowCorrected = '!bg-emerald-50 !border !border-solid !border-emerald-300 !border-l-4 !border-l-emerald-600 !rounded-[10px] !px-2.5 !py-2 dark:!bg-emerald-500/10 dark:!border-emerald-500/45 dark:!border-l-emerald-500';
+$cls_badge        = 'inline-flex items-center gap-1 ml-1.5 px-2 py-0.5 text-[9.5px] font-extrabold tracking-wide uppercase align-middle rounded-full text-emerald-700 bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-500/20';
+
 // Past evaluations — both evaluator-made and admin-made decisions
 $stmt = $database->prepare("
     SELECT e.evaluation_type, e.decision, e.comments, e.evaluated_at,
@@ -505,6 +547,15 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]'],
+            corePlugins: {
+                preflight: false
+            } // don't let Tailwind reset the existing admin styles
+        }
+    </script>
     <link rel="stylesheet" href="../css/dashboard.css">
     <link rel="stylesheet" href="../css/darkmode.css">
     <?php include '../includes/theme-init.php'; ?>
@@ -881,6 +932,15 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
             </div>
         <?php endif; ?>
 
+        <?php if ($correctedCount > 0): ?>
+            <div class="alert !flex items-center gap-2.5 flex-wrap !bg-emerald-50 !border !border-solid !border-emerald-300 !text-emerald-800 text-[12.5px] dark:!bg-emerald-500/10 dark:!border-emerald-500/45 dark:!text-emerald-300 fade-in d1">
+                <i class="fas fa-file-circle-check"></i>
+                <span>The applicant updated <strong><?= $correctedCount ?></strong> document<?= $correctedCount !== 1 ? 's' : '' ?> after the comments were made.</span>
+                <a href="#doc-<?= (int) $firstCorrectedDocId ?>" onclick="scrollToCorrected(event)"
+                    class="ml-auto font-extrabold underline text-emerald-700 dark:text-emerald-300">Review now</a>
+            </div>
+        <?php endif; ?>
+
         <div class="content-grid">
             <!-- ══════════════════ LEFT: case details ══════════════════ -->
             <div class="col-left">
@@ -1212,11 +1272,14 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                     </div>
 
                                     <?php foreach ($matches as $d): ?>
-                                        <div class="doc-row" style="margin-left:25px;">
+                                        <?php $isCorrected = isset($correctedDocIds[(int) $d['id']]); ?>
+                                        <div class="doc-row scroll-mt-24 <?= $isCorrected ? $cls_rowCorrected : '' ?>" id="doc-<?= (int) $d['id'] ?>" style="margin-left:25px;">
                                             <div class="doc-row-left">
                                                 <div class="doc-icon"><i class="fas fa-file-lines"></i></div>
                                                 <div>
-                                                    <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?></div>
+                                                    <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?>
+                                                        <?php if ($isCorrected): ?><span class="<?= $cls_badge ?>"><i class="fas fa-rotate"></i> Updated by applicant</span><?php endif; ?>
+                                                    </div>
                                                     <div class="doc-type"><?= htmlspecialchars($d['document_type']) ?></div>
                                                 </div>
                                             </div>
@@ -1246,17 +1309,19 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                                 <?php endforeach; ?>
                                             </div>
                                         </div>
-                                        <form method="POST" class="js-doc-comment-form" data-doc-id="<?= (int) $d['id'] ?>" style="margin:0 0 12px 71px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
-                                            <input type="hidden" name="action" value="add_doc_comment">
-                                            <input type="hidden" name="document_id" value="<?= (int) $d['id'] ?>">
-                                            <input type="hidden" name="ajax" value="1">
-                                            <textarea name="doc_comment" required
-                                                placeholder="Add document-specific comment for applicant..."
-                                                style="flex:1;min-width:220px;min-height:42px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12px;font-family:'DM Sans',sans-serif;resize:vertical;"></textarea>
-                                            <button type="submit" class="doc-view-btn" style="border:none;cursor:pointer;">
-                                                <i class="fas fa-comment-dots"></i> Add Comment
-                                            </button>
-                                        </form>
+                                        <?php if (!isset($supersededDocIds[(int) $d['id']])): ?>
+                                            <form method="POST" class="js-doc-comment-form" data-doc-id="<?= (int) $d['id'] ?>" style="margin:0 0 12px 71px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+                                                <input type="hidden" name="action" value="add_doc_comment">
+                                                <input type="hidden" name="document_id" value="<?= (int) $d['id'] ?>">
+                                                <input type="hidden" name="ajax" value="1">
+                                                <textarea name="doc_comment" required
+                                                    placeholder="Add document-specific comment for applicant..."
+                                                    style="flex:1;min-width:220px;min-height:42px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12px;font-family:'DM Sans',sans-serif;resize:vertical;"></textarea>
+                                                <button type="submit" class="doc-view-btn" style="border:none;cursor:pointer;">
+                                                    <i class="fas fa-comment-dots"></i> Add Comment
+                                                </button>
+                                            </form>
+                                        <?php endif; ?>
                                     <?php endforeach; ?>
                                 </div>
                             <?php endforeach; ?>
@@ -1268,11 +1333,14 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                     </div>
                                 <?php endif; ?>
                                 <?php foreach ($extraDocuments as $d): ?>
-                                    <div class="doc-row">
+                                    <?php $isCorrected = isset($correctedDocIds[(int) $d['id']]); ?>
+                                    <div class="doc-row scroll-mt-24 <?= $isCorrected ? $cls_rowCorrected : '' ?>" id="doc-<?= (int) $d['id'] ?>">
                                         <div class="doc-row-left">
                                             <div class="doc-icon"><i class="fas fa-file-lines"></i></div>
                                             <div>
-                                                <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?></div>
+                                                <div class="doc-name"><?= htmlspecialchars($d['file_name']) ?>
+                                                    <?php if ($isCorrected): ?><span class="<?= $cls_badge ?>"><i class="fas fa-rotate"></i> Updated by applicant</span><?php endif; ?>
+                                                </div>
                                                 <div class="doc-type"><?= htmlspecialchars($d['document_type']) ?></div>
                                             </div>
                                         </div>
@@ -1302,17 +1370,19 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                             <?php endforeach; ?>
                                         </div>
                                     </div>
-                                    <form method="POST" class="js-doc-comment-form" data-doc-id="<?= (int) $d['id'] ?>" style="margin:0 0 14px 46px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
-                                        <input type="hidden" name="action" value="add_doc_comment">
-                                        <input type="hidden" name="document_id" value="<?= (int) $d['id'] ?>">
-                                        <input type="hidden" name="ajax" value="1">
-                                        <textarea name="doc_comment" required
-                                            placeholder="Add document-specific comment for applicant..."
-                                            style="flex:1;min-width:220px;min-height:42px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12px;font-family:'DM Sans',sans-serif;resize:vertical;"></textarea>
-                                        <button type="submit" class="doc-view-btn" style="border:none;cursor:pointer;">
-                                            <i class="fas fa-comment-dots"></i> Add Comment
-                                        </button>
-                                    </form>
+                                    <?php if (!isset($supersededDocIds[(int) $d['id']])): ?>
+                                        <form method="POST" class="js-doc-comment-form" data-doc-id="<?= (int) $d['id'] ?>" style="margin:0 0 14px 46px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+                                            <input type="hidden" name="action" value="add_doc_comment">
+                                            <input type="hidden" name="document_id" value="<?= (int) $d['id'] ?>">
+                                            <input type="hidden" name="ajax" value="1">
+                                            <textarea name="doc_comment" required
+                                                placeholder="Add document-specific comment for applicant..."
+                                                style="flex:1;min-width:220px;min-height:42px;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:12px;font-family:'DM Sans',sans-serif;resize:vertical;"></textarea>
+                                            <button type="submit" class="doc-view-btn" style="border:none;cursor:pointer;">
+                                                <i class="fas fa-comment-dots"></i> Add Comment
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
                                 <?php endforeach; ?>
                             <?php endif; ?>
 
@@ -2105,6 +2175,24 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                 });
         });
     </script>
+    <?php if ($firstCorrectedDocId): ?>
+        <script>
+            function scrollToCorrected(e) {
+                if (e) e.preventDefault();
+                const el = document.getElementById('doc-<?= (int) $firstCorrectedDocId ?>');
+                if (el) el.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                });
+            }
+
+            // Auto-jump on every load/refresh, except right after posting a comment
+            document.addEventListener('DOMContentLoaded', function() {
+                if (new URLSearchParams(window.location.search).has('doc_comment')) return;
+                setTimeout(scrollToCorrected, 350);
+            });
+        </script>
+    <?php endif; ?>
     <script type="module" src="../js/main.js"></script>
     <script src="../js/theme.js"></script>
     <script src="../js/avatar-menu.js"></script>

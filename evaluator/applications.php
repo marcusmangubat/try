@@ -3,6 +3,7 @@
 session_start();
 require_once '../db.php';
 require_once '../includes/app-helpers.php';
+require_once '../includes/handover-helpers.php';
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'evaluator') {
     header('Location: ../login.php');
@@ -33,6 +34,7 @@ $initials = count($parts) >= 2
     ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
     : strtoupper(substr($evaluator_name, 0, 2));
 
+$evaluator_on_leave = $evaluator_id ? !isEvaluatorAvailable($database, $evaluator_id) : false;
 // Flash message carried over from view-application.php after a successful
 // evaluation. Redirecting back to view-application.php isn't reliable once
 // the decision is final (approved/disapproved) or handed to Admin
@@ -139,12 +141,15 @@ $applications    = [];
 $total_filtered  = 0;
 $total_pages     = 1;
 
-if ($status_filter === 'available') {
+if ($status_filter === 'available' && $evaluator_on_leave) {
+    // On leave: the shared queue is hidden so nothing can be picked up.
+    $applications = [];
+} elseif ($status_filter === 'available') {
     // Shared queue, visible to all evaluators, oldest-waiting first —
     // first passed into the queue, first shown.
     $sql = "
-        SELECT a.id, a.status, a.updated_at,
-               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
+                SELECT a.id, a.status, a.updated_at,
+               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name, r.deadline,
                CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
                c.email AS applicant_email,
                c.profile_picture AS applicant_picture
@@ -192,13 +197,13 @@ if ($status_filter === 'available') {
     if ($show_all) {
         $total_pages = 1;
         $page = 1;
-        $sql .= " ORDER BY a.updated_at ASC";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline') . ", a.updated_at ASC";
     } else {
         $total_pages = max(1, (int) ceil($total_filtered / $per_page));
         if ($page > $total_pages) $page = $total_pages;
         $offset = ($page - 1) * $per_page;
 
-        $sql .= " ORDER BY a.updated_at ASC LIMIT ? OFFSET ?";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline') . ", a.updated_at ASC LIMIT ? OFFSET ?";
         $params[] = $per_page;
         $params[] = $offset;
         $types   .= "ii";
@@ -215,8 +220,8 @@ if ($status_filter === 'available') {
     // My cases: anything on record as mine, including resubmissions,
     // compliance, and finalized decisions. Status does not hide a case.
     $sql = "
-        SELECT a.id, a.status, a.updated_at, a.handling_party,
-               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name,
+                SELECT a.id, a.status, a.updated_at, a.handling_party,
+               r.rsf_number, r.position_title, r.worksite_country AS country, r.employer_name, r.deadline,
                CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
                c.email AS applicant_email,
                c.profile_picture AS applicant_picture
@@ -270,13 +275,13 @@ if ($status_filter === 'available') {
     if ($show_all) {
         $total_pages = 1;
         $page = 1;
-        $sql .= " ORDER BY a.updated_at DESC";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline', "a.status NOT IN ('approved','disapproved','draft')") . ", a.updated_at DESC";
     } else {
         $total_pages = max(1, (int) ceil($total_filtered / $per_page));
         if ($page > $total_pages) $page = $total_pages;
         $offset = ($page - 1) * $per_page;
 
-        $sql .= " ORDER BY a.updated_at DESC LIMIT ? OFFSET ?";
+        $sql .= " ORDER BY " . sql_deadline_priority('r.deadline', "a.status NOT IN ('approved','disapproved','draft')") . ", a.updated_at DESC LIMIT ? OFFSET ?";
         $params[] = $per_page;
         $params[] = $offset;
         $types   .= "ii";
@@ -339,6 +344,10 @@ if ($evaluator_id) {
     $stmt_stats->close();
 }
 
+if ($evaluator_on_leave) {
+    $stats['available'] = 0;
+}
+
 $my_assigned_count = 0;
 if ($evaluator_id) {
     $stmt_cnt = $database->prepare("
@@ -351,6 +360,23 @@ if ($evaluator_id) {
     $stmt_cnt->execute();
     $my_assigned_count = (int)$stmt_cnt->get_result()->fetch_assoc()['cnt'];
     $stmt_cnt->close();
+}
+
+// Job orders that still have unfinished applications, nearest deadline first.
+$deadline_jobs = [];
+$dl_res = $database->query("
+    SELECT r.id, r.rsf_number, r.position_title, r.employer_name,
+           r.worksite_country, r.deadline,
+           SUM(a.status IN ('pending','assign','assigned','resubmitted','under_evaluation','for_compliance')) AS open_cnt
+    FROM rsf_job_orders r
+    LEFT JOIN applications a ON a.rsf_id = r.id
+    WHERE r.deadline IS NOT NULL
+    GROUP BY r.id
+    HAVING open_cnt > 0
+    ORDER BY r.deadline ASC
+");
+if ($dl_res) {
+    $deadline_jobs = $dl_res->fetch_all(MYSQLI_ASSOC);
 }
 
 $page_title = $status_filter
@@ -382,6 +408,33 @@ function status_color(string $key, array $map): array
 function status_badge_cls(array $sc): string
 {
     return "bg-[{$sc['bg']}] text-[{$sc['fg']}] [[data-theme=dark]_&]:bg-transparent [[data-theme=dark]_&]:px-0 [[data-theme=dark]_&]:text-[{$sc['dark']}]";
+}
+
+/** Urgency badge for a job order's deadline. Only for cases still awaiting a decision. */
+function deadline_badge(?string $deadline, string $status): string
+{
+    if (!$deadline || in_array($status, ['approved', 'disapproved', 'draft'], true)) return '';
+    $days = (int) floor((strtotime($deadline) - strtotime(date('Y-m-d'))) / 86400);
+
+    if ($days < 0) {
+        $txt = 'Deadline passed';
+        $cls = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
+        $ico = 'fa-circle-exclamation';
+    } elseif ($days <= 3) {
+        $txt = $days === 0 ? 'Due today' : "Due in {$days} day" . ($days > 1 ? 's' : '');
+        $cls = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
+        $ico = 'fa-fire';
+    } elseif ($days <= 7) {
+        $txt = "Due in {$days} days";
+        $cls = 'bg-amber-100 text-amber-800 [[data-theme=dark]_&]:bg-amber-500/15 [[data-theme=dark]_&]:text-amber-300';
+        $ico = 'fa-clock';
+    } else {
+        $txt = "{$days} days left";
+        $cls = 'bg-slate-100 text-slate-600 [[data-theme=dark]_&]:bg-slate-500/15 [[data-theme=dark]_&]:text-slate-300';
+        $ico = 'fa-calendar-day';
+    }
+    $title = htmlspecialchars('Job order deadline: ' . date('M d, Y', strtotime($deadline)), ENT_QUOTES);
+    return "<span title=\"{$title}\" class=\"mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold {$cls}\"><i class=\"fas {$ico} text-[9px]\"></i>" . htmlspecialchars($txt) . "</span>";
 }
 
 // Order + keys for the tab row (mirrors the original 7 filters)
@@ -495,6 +548,13 @@ $card_heading = $status_filter
     </div>
 
     <main class="max-w-[1400px] mx-auto px-3 sm:px-4 pt-4 sm:pt-5 pb-[calc(var(--dock-h)_+_28px_+_env(safe-area-inset-bottom))]">
+
+        <?php if ($evaluator_on_leave): ?>
+            <div class="mb-4 flex items-center gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] font-medium text-amber-800 [[data-theme=dark]_&]:border-amber-500/45 [[data-theme=dark]_&]:bg-amber-500/10 [[data-theme=dark]_&]:text-amber-300">
+                <i class="fas fa-plane-departure"></i>
+                You are marked as on leave. You can still view your existing cases, but the Open for Evaluation queue is hidden and you cannot submit decisions until your leave ends.
+            </div>
+        <?php endif; ?>
 
         <!-- SUMMARY CARDS -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4 sm:mb-5">
@@ -670,6 +730,7 @@ $card_heading = $status_filter
                                     <td class="px-5 py-4">
                                         <div class="text-[13px] font-semibold text-[var(--text1)]"><?= htmlspecialchars($app['position_title'] ?? '—') ?></div>
                                         <div class="text-[11.5px] text-[var(--text3)]"><?= htmlspecialchars($app['employer_name'] ?? '—') ?></div>
+                                        <?= deadline_badge($app['deadline'] ?? null, $status) ?>
                                     </td>
                                     <td class="px-5 py-4">
                                         <div class="text-[13px] font-bold text-[var(--blue)]"><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></div>
@@ -729,6 +790,7 @@ $card_heading = $status_filter
                                 </div>
                                 <div class="mt-2 text-[12.5px] font-semibold text-[var(--text1)]"><?= htmlspecialchars($app['position_title'] ?? '—') ?></div>
                                 <div class="text-[11px] text-[var(--text3)]"><?= htmlspecialchars($app['employer_name'] ?? '—') ?> · <?= htmlspecialchars($app['country'] ?? '—') ?></div>
+                                <?= deadline_badge($app['deadline'] ?? null, $status) ?>
                                 <div class="mt-1.5 flex items-center justify-between text-[11px] text-[var(--text3)]">
                                     <span class="font-bold text-[var(--blue)]"><?= htmlspecialchars($app['rsf_number'] ?? '—') ?></span>
                                     <span><?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?></span>
@@ -994,6 +1056,34 @@ $card_heading = $status_filter
             });
         }
 
+        function deadlineBadge(deadline, status) {
+            if (!deadline || ['approved', 'disapproved', 'draft'].includes(status)) return '';
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const days = Math.floor((new Date(deadline + 'T00:00:00') - today) / 86400000);
+            const red = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
+            const amber = 'bg-amber-100 text-amber-800 [[data-theme=dark]_&]:bg-amber-500/15 [[data-theme=dark]_&]:text-amber-300';
+            let txt, cls, ico;
+            if (days < 0) {
+                txt = 'Deadline passed';
+                cls = red;
+                ico = 'fa-circle-exclamation';
+            } else if (days <= 3) {
+                txt = days === 0 ? 'Due today' : `Due in ${days} day${days > 1 ? 's' : ''}`;
+                cls = red;
+                ico = 'fa-fire';
+            } else if (days <= 7) {
+                txt = `Due in ${days} days`;
+                cls = amber;
+                ico = 'fa-clock';
+            } else {
+                txt = `${days} days left`;
+                cls = 'bg-slate-100 text-slate-600 [[data-theme=dark]_&]:bg-slate-500/15 [[data-theme=dark]_&]:text-slate-300';
+                ico = 'fa-calendar-day';
+            }
+            return `<span title="Job order deadline: ${escapeHtml(deadline)}" class="mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${cls}"><i class="fas ${ico} text-[9px]"></i>${txt}</span>`;
+        }
+
         function avatarInitials(name) {
             const parts = (name || '').trim().split(/\s+/).filter(Boolean);
             if (parts.length >= 2) {
@@ -1027,6 +1117,7 @@ $card_heading = $status_filter
                     <td class="px-5 py-4">
                         <div class="text-[13px] font-semibold text-[var(--text1)]">${escapeHtml(app.position_title || '—')}</div>
                         <div class="text-[11.5px] text-[var(--text3)]">${escapeHtml(app.employer_name || '—')}</div>
+${deadlineBadge(app.deadline, status)}
                     </td>
                     <td class="px-5 py-4">
                         <div class="text-[13px] font-bold text-[var(--blue)]">${escapeHtml(app.rsf_number || '—')}</div>
@@ -1072,6 +1163,7 @@ $card_heading = $status_filter
                         </div>
                         <div class="mt-2 text-[12.5px] font-semibold text-[var(--text1)]">${escapeHtml(app.position_title || '—')}</div>
                         <div class="text-[11px] text-[var(--text3)]">${escapeHtml(app.employer_name || '—')} · ${escapeHtml(app.country || '—')}</div>
+${deadlineBadge(app.deadline, status)}
                         <div class="mt-1.5 flex items-center justify-between text-[11px] text-[var(--text3)]">
                             <span class="font-bold text-[var(--blue)]">${escapeHtml(app.rsf_number || '—')}</span>
                             <span>${formatDate(app.updated_at)}</span>

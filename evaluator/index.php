@@ -47,18 +47,14 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'incoming') {
     exit;
 }
 
-// Filtering is AJAX-driven (no page reload) — these are only used to
-// pre-select dropdown options on first paint; they always start empty.
-// The filter pills re-fetch data on change via ajax-dashboard-data.php.
+// Filtering is AJAX-driven (no page reload) — these only pre-select
+// dropdown options on first paint; they always start empty.
 $filter_month    = '';
 $filter_province = '';
 $filter_job      = '';
 $filter_country  = '';
 
 // Initial page load, no filters applied yet.
-// evaluator_filter_sql() and format_turnaround() live in
-// ../includes/dashboard-data.php — shared by this page and the AJAX
-// endpoint so the two never drift out of sync.
 $dashboard = evaluator_dashboard_data($database, (int)($evaluator_id ?? 0), []);
 
 $stats                    = $dashboard['stats'];
@@ -72,15 +68,51 @@ $eval_trend_compliance    = $dashboard['eval_trend']['compliance'];
 $turnaround_by_decision   = $dashboard['turnaround']['by_decision'];
 $turnaround_overall_hours = $dashboard['turnaround']['overall_hours'];
 
-// Open-queue + personal workload analytics (functions live in dashboard-data.php)
+// Open-queue + personal workload analytics
 $incoming  = evx_incoming_data($database, evx_clean_filters([]));
 $workload  = evx_workload_data($database, (int)($evaluator_id ?? 0));
 $attention = evx_attention_data($database, (int)($evaluator_id ?? 0));
 $activity  = evx_activity_data($database, $evaluator_email);
 
+// Turnaround extremes (fastest / slowest) from evaluations + assignments
+$turn_extra = ['fastest' => null, 'slowest' => null, 'total' => 0];
+if ($evaluator_id) {
+    $stmt_tx = $database->prepare("
+        SELECT MIN(t.h) AS fastest, MAX(t.h) AS slowest, COUNT(*) AS total
+        FROM (
+            SELECT TIMESTAMPDIFF(
+                       MINUTE,
+                       (SELECT MAX(asg.assigned_at)
+                        FROM assignments asg
+                        WHERE asg.application_id = e.application_id
+                          AND asg.evaluator_id   = e.evaluator_id
+                          AND asg.assigned_at   <= e.evaluated_at),
+                       e.evaluated_at
+                   ) / 60 AS h
+            FROM evaluations e
+            WHERE e.evaluator_id = ?
+              AND e.decision IN ('approved','disapproved','for_compliance')
+        ) t
+        WHERE t.h IS NOT NULL
+    ");
+    $stmt_tx->bind_param("i", $evaluator_id);
+    $stmt_tx->execute();
+    $tx = $stmt_tx->get_result()->fetch_assoc();
+    $stmt_tx->close();
+    if ($tx && (int)$tx['total'] > 0) {
+        $turn_extra = [
+            'fastest' => (float)$tx['fastest'],
+            'slowest' => (float)$tx['slowest'],
+            'total'   => (int)$tx['total'],
+        ];
+    }
+}
+$turn_mix_total = $turnaround_by_decision['approved']['cnt']
+    + $turnaround_by_decision['disapproved']['cnt']
+    + $turnaround_by_decision['for_compliance']['cnt'];
+
 // Filter dropdown sources — scoped ONLY to job types/destinations/provinces
-// this evaluator actually has applications for (via current_evaluator_id),
-// never the full system-wide list of RSF job orders or all client provinces.
+// this evaluator actually has applications for (via current_evaluator_id).
 $evaluator_job_types = [];
 $evaluator_countries = [];
 $evaluator_provinces = [];
@@ -118,8 +150,6 @@ if ($evaluator_id) {
     }
     $stmt_ct->close();
 
-    // Province comes from the applicant (clients.province), scoped to
-    // only the applications currently assigned to this evaluator.
     $stmt_pv = $database->prepare("
         SELECT DISTINCT c.province
         FROM applications a
@@ -137,15 +167,13 @@ if ($evaluator_id) {
     $stmt_pv->close();
 }
 
-// CALABARZON's 5 fixed provinces — always offered since this is a
-// Regional Office IV-A system, merged with whatever provinces actually
-// appear in this evaluator's assigned applications, then deduped/sorted.
+// CALABARZON's 5 fixed provinces — always offered (Regional Office IV-A),
+// merged with provinces from this evaluator's assigned applications.
 $calabarzon_provinces = ['Batangas', 'Cavite', 'Laguna', 'Quezon', 'Rizal'];
 $evaluator_provinces  = array_values(array_unique(array_merge($calabarzon_provinces, $evaluator_provinces)));
 sort($evaluator_provinces);
 
 // Active assignment count — used by the floating dock's "Tasks" badge.
-// Intentionally NOT filtered: it reflects actual current workload.
 $my_assigned_count = 0;
 if ($evaluator_id) {
     $stmt_cnt = $database->prepare("
@@ -160,19 +188,24 @@ if ($evaluator_id) {
     $stmt_cnt->close();
 }
 
+// Leave / reassignment status for the dashboard banner
+$active_leave    = $evaluator_id ? getActiveLeave($database, (int) $evaluator_id) : null;
+$pending_request = $evaluator_id ? getPendingReassignmentRequest($database, (int) $evaluator_id) : null;
+
 // Greeting
 $hour       = (int)date('G');
 $greeting   = $hour < 12 ? 'Good morning' : ($hour < 18 ? 'Good afternoon' : 'Good evening');
 $first_name = explode(' ', trim($evaluator_name))[0] ?: $evaluator_name;
 
-// Avatar initials
+// Avatar initials (also read by avatar-menu.php)
 $parts    = explode(' ', trim($evaluator_name));
 $initials = count($parts) >= 2
     ? strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1))
     : strtoupper(substr($evaluator_name, 0, 2));
 
-// Status pill → Tailwind utility classes (same hex values as before,
-// just expressed as Tailwind's matching palette tokens)
+/* ───────────── View helpers (UI only) ───────────── */
+
+// Status pill → Tailwind utility classes
 function pill_classes(string $status): string
 {
     return match ($status) {
@@ -186,7 +219,7 @@ function pill_classes(string $status): string
     };
 }
 
-// KPI card renderer (keeps the 8 overview cards consistent)
+// Admin-style KPI tile (.kpi-card from dashboard.css)
 function kpi_card(
     string $label,
     string $value,
@@ -196,33 +229,73 @@ function kpi_card(
     string $valueId = '',
     string $subId = '',
     string $href = '',
-    string $cardId = ''
+    string $cardId = '',
+    string $delay = 'd1'
 ): string {
-    $tones = [
-        'blue'    => ['text-blue-600',    'bg-blue-50 text-blue-500'],
-        'emerald' => ['text-emerald-600', 'bg-emerald-50 text-emerald-600'],
-        'indigo'  => ['text-indigo-600',  'bg-indigo-50 text-indigo-600'],
-        'amber'   => ['text-amber-600',   'bg-amber-50 text-amber-600'],
-    ];
-    [$valCls, $icoCls] = $tones[$tone] ?? $tones['blue'];
+    $c     = ['blue' => 'c-blue', 'emerald' => 'c-green', 'indigo' => 'c-indigo', 'amber' => 'c-amber'][$tone] ?? 'c-blue';
     $tag   = $href !== '' ? 'a' : 'div';
-    $attrs = ($href !== '' ? ' href="' . htmlspecialchars($href, ENT_QUOTES) . '"' : '')
+    $attrs = ($href !== '' ? ' href="' . htmlspecialchars($href, ENT_QUOTES) . '" style="text-decoration:none;color:inherit"' : '')
         . ($cardId !== '' ? ' id="' . htmlspecialchars($cardId, ENT_QUOTES) . '"' : '');
-    $extra = $href !== '' ? ' no-underline block hover:-translate-y-0.5' : '';
     $vId   = $valueId !== '' ? ' id="' . htmlspecialchars($valueId, ENT_QUOTES) . '"' : '';
     $sId   = $subId   !== '' ? ' id="' . htmlspecialchars($subId, ENT_QUOTES) . '"' : '';
 
-    return '<' . $tag . $attrs . ' class="group min-w-0 bg-white border border-slate-200 rounded-2xl p-3.5 sm:p-4 shadow-sm hover:shadow-md transition-all duration-200' . $extra . '">'
-        . '<div class="flex items-start justify-between gap-2">'
-        . '<div class="min-w-0">'
-        . '<div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide truncate">' . htmlspecialchars($label) . '</div>'
-        . '<div' . $vId . ' class="text-2xl font-extrabold ' . $valCls . ' mt-1 truncate">' . htmlspecialchars($value) . '</div>'
+    return '<' . $tag . $attrs . ' class="kpi-card ' . $c . ' fade-in ' . $delay . '">'
+        . '<div class="kpi-top">'
+        . '<div class="kpi-label">' . htmlspecialchars($label) . '</div>'
+        . '<div class="kpi-icon ' . $c . '"><i class="fas ' . htmlspecialchars($icon) . '"></i></div>'
         . '</div>'
-        . '<div class="w-9 h-9 rounded-xl ' . $icoCls . ' flex items-center justify-center text-sm shrink-0 transition-transform duration-200 group-hover:scale-110"><i class="fas ' . htmlspecialchars($icon) . '"></i></div>'
-        . '</div>'
-        . '<div' . $sId . ' class="text-[10.5px] text-slate-400 font-medium mt-2 truncate">' . htmlspecialchars($sub) . '</div>'
+        . '<div' . $vId . ' class="kpi-value ' . $c . '">' . htmlspecialchars($value) . '</div>'
+        . '<div' . $sId . ' class="kpi-sub">' . htmlspecialchars($sub) . '</div>'
         . '</' . $tag . '>';
 }
+
+// Admin-style section header (.dash-section-head)
+function evui_section_head(string $bar, string $title, string $sub): string
+{
+    return '<div class="dash-section-head">'
+        . '<span class="dsh-bar" style="background:' . $bar . '"></span>'
+        . '<h3>' . htmlspecialchars($title) . '</h3>'
+        . '<span class="dsh-sub">' . htmlspecialchars($sub) . '</span>'
+        . '</div>';
+}
+
+// Admin-style card header (.card-head / .card-title / .ctdot)
+function evui_card_head(string $dot, string $title, string $right = ''): string
+{
+    return '<div class="card-head"><div class="card-title"><span class="ctdot" style="background:' . $dot . '"></span>'
+        . htmlspecialchars($title) . '</div>' . $right . '</div>';
+}
+
+function evui_link(string $href, string $label): string
+{
+    return '<a href="' . htmlspecialchars($href, ENT_QUOTES) . '" class="card-link">' . htmlspecialchars($label)
+        . ' <i class="fas fa-arrow-right" style="font-size:9px"></i></a>';
+}
+
+function evui_caption(string $text): string
+{
+    return '<span class="text-[10px] font-bold uppercase tracking-wide" style="color:var(--text3)">' . htmlspecialchars($text) . '</span>';
+}
+
+function evui_empty(string $icon, string $title, string $sub = ''): string
+{
+    return '<div class="py-10 px-4 text-center">'
+        . '<i class="fas ' . htmlspecialchars($icon) . ' text-3xl text-slate-200 block mb-2.5"></i>'
+        . '<p class="text-[12.5px] font-semibold text-slate-400">' . htmlspecialchars($title) . '</p>'
+        . ($sub !== '' ? '<span class="text-[11px] text-slate-400/80">' . htmlspecialchars($sub) . '</span>' : '')
+        . '</div>';
+}
+
+function evui_quick(string $href, string $icon, string $tone, string $label): string
+{
+    return '<a href="' . htmlspecialchars($href, ENT_QUOTES) . '" class="group flex items-center gap-2.5 px-3 py-2.5 rounded-2xl no-underline font-bold text-[11.5px] sm:text-[12px] bg-[var(--surface)] border border-[var(--border)] text-[var(--text2)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md active:scale-[.98]">'
+        . '<span class="w-8 h-8 rounded-[10px] flex items-center justify-center text-sm shrink-0 ' . $tone . '"><i class="fas ' . htmlspecialchars($icon) . '"></i></span>'
+        . '<span class="truncate">' . htmlspecialchars($label) . '</span></a>';
+}
+
+$collapseBtn = '<button type="button" data-collapse-toggle aria-expanded="false" class="hidden w-full mt-2 pt-2 border-t border-slate-100 text-[11px] font-bold text-blue-500 hover:text-blue-600 bg-transparent cursor-pointer items-center justify-center gap-1.5">'
+    . '<span data-collapse-label>Show All</span>'
+    . '<i class="fas fa-chevron-down text-[9px] transition-transform" data-collapse-icon></i></button>';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -231,20 +304,28 @@ function kpi_card(
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Evaluator Dashboard – DMW Regional Office IV-A</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="../css/darkmode.css">
-    <?php include '../includes/theme-init.php'; ?>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="../css/dashboard.css">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="../css/darkmode.css">
+    <?php include '../includes/theme-init.php'; ?>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"DM Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif']
+                    }
+                }
+            }
+        };
+    </script>
+
     <style>
-        /* The only rule Tailwind's CDN can't express as a utility class,
-           kept so the untouched topbar markup renders identically. */
         .topbar-brand img {
             width: 42px;
             height: auto;
@@ -253,70 +334,148 @@ function kpi_card(
             filter: none;
         }
 
-        /* Short fade-in entrance; content stays visible if animation never runs */
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(10px);
+        /* ── Admin-matched layout: sections, grids, KPI strip ── */
+        .dash-section {
+            margin-top: 22px;
+        }
+
+        .dash-section-head {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+            padding-left: 2px;
+        }
+
+        .dash-section-head .dsh-bar {
+            width: 4px;
+            height: 15px;
+            border-radius: 3px;
+            background: var(--blue-lt, #1d4ed8);
+            align-self: center;
+        }
+
+        .dash-section-head h3 {
+            font-family: "DM Sans", sans-serif;
+            font-size: 12.5px;
+            font-weight: 800;
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            color: var(--text2, #334155);
+            margin: 0;
+        }
+
+        .dash-section-head .dsh-sub {
+            font-size: 10.5px;
+            font-weight: 500;
+            color: var(--text3, #94a3b8);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .grid-overview {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            gap: 14px;
+            align-items: stretch;
+        }
+
+        .grid-pair {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 14px;
+            align-items: stretch;
+        }
+
+        .grid-overview>*,
+        .grid-pair>* {
+            min-width: 0;
+        }
+
+        .stack-col {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            min-height: 0;
+        }
+
+        .stack-col .card {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .kpi-strip {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 12px;
+            overflow-x: auto;
+            padding-bottom: 6px;
+            scrollbar-width: thin;
+        }
+
+        .kpi-strip .kpi-card {
+            flex: 1 1 0;
+            min-width: 150px;
+        }
+
+        .kpi-strip::-webkit-scrollbar {
+            height: 6px;
+        }
+
+        .kpi-strip::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        .kpi-strip::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .dropdown-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .dropdown-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .dropdown-scroll::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        @media (max-width: 1180px) {
+            .grid-overview {
+                grid-template-columns: 1.6fr 1fr;
             }
 
-            to {
-                opacity: 1;
-                transform: translateY(0);
+            .grid-overview .dest-col {
+                grid-column: 1 / -1;
             }
         }
 
-        .fade-in {
-            animation: fadeInUp .3s ease both;
+        @media (max-width: 860px) {
+
+            .grid-overview,
+            .grid-pair {
+                grid-template-columns: 1fr;
+            }
         }
 
         @media (prefers-reduced-motion: reduce) {
             .fade-in {
-                animation: none;
+                animation: none !important;
             }
         }
 
-        .row-d {
-            display: flex !important;
-            flex-direction: row;
-            align-items: flex-start !important;
-            gap: 16px;
-        }
-
-        .row-d-col {
-            flex: 1 1 0;
-            min-width: 0;
-            align-self: flex-start !important;
-            height: auto !important;
-        }
-
-        .row-d-col>[data-collapsible] {
-            height: auto !important;
-        }
-
-        @media (max-width: 1023px) {
-            .row-d {
-                flex-direction: column;
-            }
-
-            .row-d-col {
-                width: 100%;
-                flex: none;
-            }
-        }
-
-        [data-theme="dark"] body {
-            background: #0f172a;
-        }
-
+        /* ── Dark-mode overrides for Tailwind utilities used inside JS-rendered lists ── */
         [data-theme="dark"] .bg-white {
             background-color: #1e293b !important;
         }
 
-        [data-theme="dark"] .border-slate-200 {
-            border-color: #2d3748 !important;
-        }
-
+        [data-theme="dark"] .border-slate-200,
         [data-theme="dark"] .border-slate-100 {
             border-color: #2d3748 !important;
         }
@@ -333,8 +492,14 @@ function kpi_card(
             background-color: #263449 !important;
         }
 
-        [data-theme="dark"] .text-slate-400 {
+        [data-theme="dark"] .text-slate-400,
+        [data-theme="dark"] .text-slate-500,
+        [data-theme="dark"] .text-slate-600 {
             color: #94a3b8 !important;
+        }
+
+        [data-theme="dark"] .text-slate-200 {
+            color: #334155 !important;
         }
 
         [data-theme="dark"] .text-slate-700 {
@@ -343,18 +508,6 @@ function kpi_card(
 
         [data-theme="dark"] .text-slate-800 {
             color: #f1f5f9 !important;
-        }
-
-        [data-theme="dark"] .text-slate-500 {
-            color: #94a3b8 !important;
-        }
-
-        [data-theme="dark"] .text-slate-200 {
-            color: #334155 !important;
-        }
-
-        [data-theme="dark"] .text-slate-600 {
-            color: #94a3b8 !important;
         }
 
         [data-theme="dark"] .bg-blue-50 {
@@ -385,10 +538,7 @@ function kpi_card(
             background-color: rgba(220, 38, 38, .2) !important;
         }
 
-        [data-theme="dark"] .text-blue-500 {
-            color: #60a5fa !important;
-        }
-
+        [data-theme="dark"] .text-blue-500,
         [data-theme="dark"] .text-blue-600 {
             color: #60a5fa !important;
         }
@@ -417,6 +567,7 @@ function kpi_card(
             color: #fbbf24 !important;
         }
 
+        [data-theme="dark"] .text-amber-700,
         [data-theme="dark"] .text-amber-800 {
             color: #fcd34d !important;
         }
@@ -425,44 +576,8 @@ function kpi_card(
             color: #fca5a5 !important;
         }
 
-        [data-theme="dark"] .shadow-sm,
-        [data-theme="dark"] .hover\:shadow-md:hover,
-        [data-theme="dark"] .hover\:shadow-lg:hover {
+        [data-theme="dark"] .hover\:shadow-md:hover {
             box-shadow: none !important;
-        }
-
-        [data-theme="dark"] [role="listbox"].bg-white {
-            background-color: #1e293b !important;
-            border-color: #2d3748 !important;
-        }
-
-        [data-theme="dark"] [role="option"].hover\:bg-\[\#f1f5fb\]:hover {
-            background-color: #263449 !important;
-        }
-
-        [data-theme="dark"] .bg-\[\#eff6ff\] {
-            background-color: rgba(59, 130, 246, .18) !important;
-        }
-
-        [data-theme="dark"] .filter-pill,
-        [data-theme="dark"] .filter-pill:hover,
-        [data-theme="dark"] .filter-pill:focus,
-        [data-theme="dark"] .filter-pill:focus-within,
-        [data-theme="dark"] .filter-pill:active,
-        [data-theme="dark"] .filter-pill button,
-        [data-theme="dark"] .filter-pill button:hover,
-        [data-theme="dark"] .filter-pill button:focus,
-        [data-theme="dark"] .filter-pill button:active,
-        [data-theme="dark"] .filter-pill button:focus-visible {
-            background: transparent !important;
-            background-color: transparent !important;
-            outline: none !important;
-            box-shadow: none !important;
-        }
-
-        [data-theme="dark"] .filter-pill button:focus-visible {
-            box-shadow: 0 0 0 2px #60a5fa !important;
-            border-radius: 6px;
         }
     </style>
     <script>
@@ -473,12 +588,12 @@ function kpi_card(
     </script>
 </head>
 
-<body class="font-sans">
+<body>
 
-    <!--TOPBAR -->
+    <!-- TOP BAR -->
     <header class="topbar">
         <div class="topbar-brand">
-            <img src="../pictures/dmw_logo.png" alt="DMW">
+            <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -487,13 +602,10 @@ function kpi_card(
         </div>
         <div class="topbar-right">
             <span class="topbar-date" id="live-date"></span>
-
-            <!-- Dark mode toggle -->
             <button type="button" class="theme-toggle" title="Toggle dark mode">
                 <i class="fas fa-moon"></i>
                 <i class="fas fa-sun"></i>
             </button>
-
             <div class="tb-btn">
                 <i class="fas fa-bell"></i>
                 <span class="notif-dot"></span>
@@ -502,7 +614,7 @@ function kpi_card(
         </div>
     </header>
 
-    <!--SUBBAR — unchanged -->
+    <!-- SUBBAR -->
     <div class="subbar">
         <div class="subbar-top">
             <div class="subbar-greeting">
@@ -511,14 +623,11 @@ function kpi_card(
             </div>
         </div>
 
-        <!-- Filter pills — options are pulled ONLY from job types/destinations/
-             provinces this evaluator is currently assigned to
-             (current_evaluator_id), so an evaluator never sees job types,
-             countries, or provinces they don't handle. -->
+        <!-- Options come ONLY from job types/destinations/provinces this evaluator is assigned to. -->
         <div class="filter-scroll">
             <label class="filter-pill">
                 <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
-                <select id="filter-month">
+                <select id="filter-month" autocomplete="off">
                     <option value="">All Time</option>
                     <?php
                     for ($m = 1; $m <= 12; $m++) {
@@ -560,256 +669,183 @@ function kpi_card(
         </div>
     </div>
 
-    <!-- MAIN CONTENT -->
-    <main class="max-w-[1580px] mx-auto px-3 sm:px-4 lg:px-6 pt-3 pb-28 space-y-4 sm:space-y-5">
+    <!-- MAIN -->
+    <div class="main">
 
-        <!-- KPIs: 2 cols mobile · 4 tablet/laptop · 8 on ultra-wide -->
-        <section aria-label="Overview" class="fade-in">
-            <p class="text-[9.5px] font-bold tracking-[.08em] uppercase text-slate-400 mb-2">Overview</p>
-            <div class="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-8 gap-2.5 sm:gap-3">
-                <?= kpi_card('Total Applications', number_format($stats['total']), 'All applications you review', 'fa-file-lines', 'blue', 'kpi-total') ?>
-                <?= kpi_card('Open for Evaluation', number_format($available_count), 'Unclaimed — first to open it gets it', 'fa-inbox', 'emerald', 'available-count', '', 'applications.php?status=available', 'available-kpi-card') ?>
-                <?= kpi_card('Under Evaluation', number_format($stats['under_evaluation']), 'Currently being reviewed by you', 'fa-magnifying-glass', 'indigo', 'kpi-under-evaluation', '', 'applications.php?status=under_evaluation') ?>
-                <?= kpi_card('Approved', number_format($stats['approved']), 'Approved applications you evaluated', 'fa-circle-check', 'emerald', 'kpi-approved') ?>
-
-                <?= kpi_card('My Active Tasks', number_format($workload['active_tasks']), $workload['with_admin'] . ' awaiting applicant/admin', 'fa-list-check', 'indigo', '', '', 'applications.php?status=under_evaluation') ?>
-                <?= kpi_card('Decided This Week', number_format($workload['decided_week']), $workload['decided_today'] . ' today · last 7 days', 'fa-calendar-check', 'blue') ?>
-                <?= kpi_card(
-                    'Approval Rate',
-                    $workload['approval_rate'] !== null ? $workload['approval_rate'] . '%' : '—',
-                    $workload['approved'] . ' approved · ' . $workload['disapproved'] . ' disapproved',
-                    'fa-chart-pie',
-                    'emerald'
-                ) ?>
-                <?= kpi_card('Oldest in Queue', $incoming['oldest_display'], 'Avg wait ' . $incoming['avg_display'] . ' · open queue', 'fa-hourglass-half', 'amber', 'kpi-oldest', 'kpi-avgwait') ?>
-            </div>
-        </section>
-
-        <!-- Quick Access (compact) -->
-        <section aria-label="Quick access" class="fade-in">
-            <div class="grid grid-cols-3 gap-2 sm:gap-2.5">
-                <a href="applications.php" class="group bg-white border border-slate-200 rounded-2xl px-2 py-2.5 sm:px-3 flex flex-col sm:flex-row items-center gap-1.5 sm:gap-2.5 text-center sm:text-left no-underline text-slate-500 font-bold text-[11px] sm:text-[12px] transition-all duration-200 hover:bg-slate-50 hover:-translate-y-0.5 hover:shadow-md active:scale-[.98]">
-                    <span class="w-8 h-8 rounded-[10px] flex items-center justify-center text-sm bg-blue-50 text-blue-500 shrink-0"><i class="fas fa-list"></i></span>
-                    <span class="truncate">My Assignments</span>
-                </a>
-                <a href="applications.php?status=for_compliance" class="group bg-white border border-slate-200 rounded-2xl px-2 py-2.5 sm:px-3 flex flex-col sm:flex-row items-center gap-1.5 sm:gap-2.5 text-center sm:text-left no-underline text-slate-500 font-bold text-[11px] sm:text-[12px] transition-all duration-200 hover:bg-slate-50 hover:-translate-y-0.5 hover:shadow-md active:scale-[.98]">
-                    <span class="w-8 h-8 rounded-[10px] flex items-center justify-center text-sm bg-amber-50 text-amber-600 shrink-0"><i class="fas fa-triangle-exclamation"></i></span>
-                    <span class="truncate">For Compliance</span>
-                </a>
-                <a href="reports.php" class="group bg-white border border-slate-200 rounded-2xl px-2 py-2.5 sm:px-3 flex flex-col sm:flex-row items-center gap-1.5 sm:gap-2.5 text-center sm:text-left no-underline text-slate-500 font-bold text-[11px] sm:text-[12px] transition-all duration-200 hover:bg-slate-50 hover:-translate-y-0.5 hover:shadow-md active:scale-[.98]">
-                    <span class="w-8 h-8 rounded-[10px] flex items-center justify-center text-sm bg-emerald-50 text-emerald-600 shrink-0"><i class="fas fa-chart-bar"></i></span>
-                    <span class="truncate">Reports</span>
-                </a>
-            </div>
-        </section>
-
-        <!-- Row A: Open for Evaluation + My Assigned -->
-        <section class="grid grid-cols-1 lg:grid-cols-12 gap-4 fade-in">
-
-            <div class="lg:col-span-7 min-w-0 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex flex-col lg:h-[520px]">
-                <div class="flex items-start justify-between gap-3 mb-2">
-                    <div class="min-w-0">
-                        <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                            Open for Evaluation
-                            <span id="incoming-count" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800"><?= (int)$incoming['total'] ?></span>
-                        </span>
-                        <p class="text-[10.5px] text-slate-400 font-medium mt-0.5">Oldest first · opening an application assigns it to you</p>
-                    </div>
-                    <a href="applications.php?status=available" class="text-[11px] font-bold text-blue-500 hover:text-blue-600 no-underline flex items-center gap-1 shrink-0">
-                        View all <i class="fas fa-arrow-right text-[9px]"></i>
-                    </a>
-                </div>
-                <div id="incoming-list" class="flex flex-col max-h-[420px] lg:max-h-none lg:flex-1 lg:min-h-0 overflow-y-auto pr-0.5 [scrollbar-width:thin]"></div>
-                <p id="incoming-footer" class="text-[10.5px] text-slate-400 font-medium pt-2 mt-1 border-t border-slate-100"></p>
-            </div>
-
-            <div class="lg:col-span-5 min-w-0 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm flex flex-col lg:h-[520px]">
-                <div class="flex items-center justify-between mb-2">
-                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-                        My Assigned Applications
-                    </span>
-                    <a href="applications.php" class="text-[11px] font-bold text-blue-500 hover:text-blue-600 no-underline flex items-center gap-1">
-                        View all <i class="fas fa-arrow-right text-[9px]"></i>
-                    </a>
-                </div>
-
-                <div class="flex flex-col max-h-[420px] lg:max-h-none lg:flex-1 lg:min-h-0 overflow-y-auto pr-0.5 [scrollbar-width:thin]" id="my-applications-list">
-                    <?php if (empty($my_applications)): ?>
-                        <div class="py-10 px-4 text-center">
-                            <i class="fas fa-inbox text-3xl text-slate-200 block mb-2.5"></i>
-                            <p class="text-[12.5px] font-semibold text-slate-400">No applications assigned yet</p>
-                            <span class="text-[11px] text-slate-400/80">Applications assigned to you will appear here once processed.</span>
-                        </div>
+        <?php if ($active_leave || $pending_request): ?>
+            <a href="settings.php#availability" class="flex items-start sm:items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 mb-3 no-underline fade-in">
+                <i class="fas <?= $active_leave ? 'fa-user-clock' : 'fa-hourglass-half' ?> text-amber-600 mt-0.5 sm:mt-0"></i>
+                <span class="flex-1 min-w-0 text-[12.5px] text-slate-700">
+                    <?php if ($active_leave): ?>
+                        <b>You are marked unavailable</b>
+                        since <?= date('M d, Y', strtotime($active_leave['start_at'])) ?>
+                        <?= $active_leave['end_at'] ? ' until ' . date('M d, Y', strtotime($active_leave['end_at'])) : '' ?>.
+                        You will not receive new applications.
                     <?php else: ?>
-                        <?php foreach ($my_applications as $app): ?>
-                            <?php
-                            $status     = strtolower($app['status'] ?? 'unknown');
-                            $statusText = str_replace('_', ' ', ucwords($status));
-                            $pillClass  = pill_classes($status);
-
-                            $np  = explode(' ', trim($app['applicant_name']));
-                            $avi = strtoupper(count($np) >= 2
-                                ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
-                                : substr($app['applicant_name'], 0, 2));
-
-                            $app_has_pic = !empty($app['applicant_picture']);
-                            $app_pic_url = $app_has_pic ? '../' . $app['applicant_picture'] : null;
-                            ?>
-                            <a href="view-application.php?id=<?= (int)$app['id'] ?>"
-                                class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
-                                <div class="w-9 h-9 shrink-0 rounded-[10px] bg-indigo-50 text-indigo-600 text-[10.5px] font-extrabold tracking-wide flex items-center justify-center"
-                                    <?= $app_has_pic ? "style=\"background-image:url('" . htmlspecialchars($app_pic_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
-                                    <?= $app_has_pic ? '' : htmlspecialchars($avi) ?>
-                                </div>
-                                <div class="flex-1 min-w-0">
-                                    <div class="text-[12.5px] font-bold text-slate-800 truncate"><?= htmlspecialchars($app['applicant_name']) ?></div>
-                                    <div class="text-[10.5px] text-slate-400 font-medium mt-0.5 truncate">
-                                        <?= htmlspecialchars($app['rsf_number'] ?? '—') ?>
-                                        &nbsp;·&nbsp;<?= htmlspecialchars($app['position_title'] ?? '—') ?>
-                                        &nbsp;·&nbsp;<?= htmlspecialchars($app['country'] ?? '—') ?>
-                                    </div>
-                                </div>
-                                <div class="text-right shrink-0">
-                                    <span class="inline-block text-[9.5px] font-bold tracking-wider uppercase px-2.5 py-[3px] rounded-full <?= $pillClass ?>">
-                                        <?= htmlspecialchars($statusText) ?>
-                                    </span>
-                                    <div class="text-[9.5px] text-slate-400 font-medium mt-[3px]">
-                                        <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
-                                    </div>
-                                </div>
-                            </a>
-                        <?php endforeach; ?>
+                        <b>Reassignment request pending</b> admin approval (<?= (int) $pending_request['item_count'] ?> application(s)).
                     <?php endif; ?>
-                </div>
-            </div>
-        </section>
+                </span>
+                <span class="text-[11px] font-bold text-blue-500 shrink-0">Manage <i class="fas fa-arrow-right text-[9px]"></i></span>
+            </a>
+        <?php endif; ?>
 
-        <!-- Row B: Status · Queue Aging · Turnaround -->
-        <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 fade-in">
+        <!-- KPI strip (single horizontal line, same as admin) -->
+        <div class="kpi-strip">
+            <?= kpi_card('Total Applications', number_format($stats['total']), 'All applications you review', 'fa-file-lines', 'blue', 'kpi-total', '', '', '', 'd1') ?>
+            <?= kpi_card('Open for Evaluation', number_format($available_count), 'Unclaimed — first to open it gets it', 'fa-inbox', 'emerald', 'available-count', '', 'applications.php?status=available', 'available-kpi-card', 'd2') ?>
+            <?= kpi_card('Under Evaluation', number_format($stats['under_evaluation']), 'Currently being reviewed by you', 'fa-magnifying-glass', 'indigo', 'kpi-under-evaluation', '', 'applications.php?status=under_evaluation', '', 'd3') ?>
+            <?= kpi_card('Approved', number_format($stats['approved']), 'Approved applications you evaluated', 'fa-circle-check', 'emerald', 'kpi-approved', '', '', '', 'd3') ?>
+            <?= kpi_card('My Active Tasks', number_format($workload['active_tasks']), $workload['with_admin'] . ' awaiting applicant/admin', 'fa-list-check', 'indigo', '', '', 'applications.php?status=under_evaluation', '', 'd4') ?>
+            <?= kpi_card('Decided This Week', number_format($workload['decided_week']), $workload['decided_today'] . ' today · last 7 days', 'fa-calendar-check', 'blue', '', '', '', '', 'd4') ?>
+            <?= kpi_card(
+                'Approval Rate',
+                $workload['approval_rate'] !== null ? $workload['approval_rate'] . '%' : '—',
+                $workload['approved'] . ' approved · ' . $workload['disapproved'] . ' disapproved',
+                'fa-chart-pie',
+                'emerald',
+                '',
+                '',
+                '',
+                '',
+                'd5'
+            ) ?>
+            <?= kpi_card('Oldest in Queue', $incoming['oldest_display'], 'Avg wait ' . $incoming['avg_display'] . ' · open queue', 'fa-hourglass-half', 'amber', 'kpi-oldest', 'kpi-avgwait', '', '', 'd5') ?>
+        </div>
 
-            <div class="min-w-0 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                <div class="flex items-center justify-between mb-3">
-                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                        <span class="w-2 h-2 rounded-full bg-indigo-600"></span>
-                        Application Status
-                    </span>
-                </div>
-                <div id="status-bars" class="flex flex-col gap-3 mb-4"></div>
-                <div class="flex items-center gap-4 pt-4 border-t border-slate-100">
-                    <div class="shrink-0 w-[110px] sm:w-[120px]"><canvas id="statusChart" width="120" height="120"></canvas></div>
-                    <div id="status-legend" class="flex-1 min-w-0"></div>
-                </div>
-            </div>
+        <!-- Quick access -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 mt-3 fade-in d5">
+            <?= evui_quick('applications.php', 'fa-list', 'bg-blue-50 text-blue-500', 'My Assignments') ?>
+            <?= evui_quick('applications.php?status=for_compliance', 'fa-triangle-exclamation', 'bg-amber-50 text-amber-600', 'For Compliance') ?>
+            <?= evui_quick('reports.php', 'fa-chart-bar', 'bg-emerald-50 text-emerald-600', 'Reports') ?>
+            <?= evui_quick('settings.php#availability', 'fa-people-arrows', 'bg-indigo-50 text-indigo-600', 'Request Reassignment') ?>
+        </div>
 
-            <div class="min-w-0 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                <div class="flex items-center justify-between mb-3">
-                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                        <span class="w-2 h-2 rounded-full bg-amber-500"></span>
-                        Open Queue Aging
-                    </span>
-                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Since submission</span>
-                </div>
-                <div id="aging-bars" class="flex flex-col gap-3 mb-4"></div>
-                <div class="pt-4 border-t border-slate-100">
-                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-2">Top destinations waiting</p>
-                    <div id="dest-bars" class="flex flex-col gap-2.5"></div>
-                </div>
-            </div>
+        <!-- SECTION 1: Queue, Assignments & Status -->
+        <div class="dash-section fade-in d4">
+            <?= evui_section_head('var(--blue-lt,#1d4ed8)', 'Queue, Assignments & Status', 'Open applications, your assigned work, current status and recent activity') ?>
 
-            <div class="min-w-0 md:col-span-2 xl:col-span-1 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                <div class="flex items-center justify-between mb-3">
-                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                        <span class="w-2 h-2 rounded-full bg-blue-500"></span>
-                        Avg. Turnaround Time
-                    </span>
-                </div>
+            <div class="grid-overview">
 
-                <div class="text-center py-2 mb-3 border-b border-slate-100">
-                    <div class="text-3xl font-extrabold text-blue-600" id="turnaround-overall"><?= format_turnaround($turnaround_overall_hours) ?></div>
-                    <div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Assignment &rarr; Decision</div>
-                </div>
-
-                <div class="flex flex-col gap-3" id="turnaround-rows">
-                    <?php
-                    $turn_max = max(
-                        $turnaround_by_decision['approved']['avg_hours'],
-                        $turnaround_by_decision['disapproved']['avg_hours'],
-                        $turnaround_by_decision['for_compliance']['avg_hours'],
-                        1
-                    );
-                    $turn_rows = [
-                        'approved'       => ['label' => 'Approved',       'color' => '#059669'],
-                        'disapproved'    => ['label' => 'Disapproved',    'color' => '#dc2626'],
-                        'for_compliance' => ['label' => 'For Compliance', 'color' => '#d97706'],
-                    ];
-                    $turn_any = false;
-                    foreach ($turn_rows as $key => $meta):
-                        $val = $turnaround_by_decision[$key]['avg_hours'];
-                        $cnt = $turnaround_by_decision[$key]['cnt'];
-                        if ($cnt === 0) continue;
-                        $turn_any = true;
-                        $pct = round($val / $turn_max * 100);
-                    ?>
-                        <div class="flex items-center gap-3">
-                            <span class="text-[11.5px] font-bold text-slate-700 w-[92px] shrink-0 truncate"><?= $meta['label'] ?></span>
-                            <div class="flex-1 h-[8px] bg-slate-100 rounded-full overflow-hidden">
-                                <div class="h-full rounded-full" style="width:<?= $pct ?>%;background:<?= $meta['color'] ?>"></div>
-                            </div>
-                            <span class="text-[11px] font-extrabold text-slate-800 w-9 text-right shrink-0"><?= format_turnaround($val) ?></span>
+                <!-- Open for Evaluation (wide) -->
+                <div class="card flex flex-col">
+                    <div class="card-head">
+                        <div class="card-title">
+                            <span class="ctdot" style="background:#10b981"></span>
+                            Open for Evaluation
+                            <span id="incoming-count" class="ml-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800"><?= (int)$incoming['total'] ?></span>
                         </div>
-                    <?php endforeach; ?>
-                    <?php if (!$turn_any): ?>
-                        <p class="text-[11px] text-slate-400 italic">No completed evaluations with matching assignment data yet.</p>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </section>
-
-        <!-- Row C: Evaluation Trend + Country -->
-        <section class="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start fade-in">
-            <div class="min-w-0 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                <div class="flex items-center justify-between mb-3">
-                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                        Your Evaluation Trend
-                    </span>
-                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Last 6 Months</span>
-                </div>
-                <div class="relative w-full h-[240px] sm:h-[280px]"><canvas id="evalTrendChart"></canvas></div>
-            </div>
-
-            <div class="min-w-0 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                <div class="flex items-center justify-between mb-3">
-                    <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-                        Applications by Country
-                    </span>
-                </div>
-                <div class="relative w-full h-[240px] sm:h-[280px]"><canvas id="countryChart"></canvas></div>
-            </div>
-        </section>
-
-        <!-- Row D: Document completion + Recent activity -->
-        <section class="row-d fade-in">
-
-            <div class="row-d-col">
-                <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm" data-collapsible data-visible-items="4">
-                    <div class="flex items-center justify-between mb-2">
-                        <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                            <span class="w-2 h-2 rounded-full bg-amber-500"></span>
-                            Document Completion
-                        </span>
-                        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
-                            <?= $attention['avg_completion'] !== null ? 'Avg ' . (int)$attention['avg_completion'] . '%' : 'My active applications' ?>
-                        </span>
+                        <?= evui_link('applications.php?status=available', 'View all') ?>
                     </div>
-                    <?php if (empty($attention['items'])): ?>
-                        <div class="py-8 px-4 text-center">
-                            <i class="fas fa-folder-open text-3xl text-slate-200 block mb-2.5"></i>
-                            <p class="text-[12.5px] font-semibold text-slate-400">No active applications to check</p>
+                    <p class="text-[10.5px] text-slate-400 font-medium -mt-1 mb-2">Oldest first · opening an application assigns it to you</p>
+                    <div id="incoming-list" class="flex flex-col flex-1 min-h-0 max-h-[520px] overflow-y-auto pr-0.5 [scrollbar-width:thin]"></div>
+                    <p id="incoming-footer" class="text-[10.5px] text-slate-400 font-medium pt-2 mt-1 border-t border-slate-100"></p>
+                </div>
+
+                <!-- Status + Queue aging -->
+                <div class="stack-col">
+                    <div class="card">
+                        <?= evui_card_head('var(--indigo)', 'Application Status') ?>
+                        <div id="status-bars" class="flex flex-col gap-3 mb-4"></div>
+                        <div class="flex items-center gap-4 pt-4 border-t border-slate-100">
+                            <div class="shrink-0 w-[100px]"><canvas id="statusChart" width="120" height="120"></canvas></div>
+                            <div id="status-legend" class="flex-1 min-w-0"></div>
                         </div>
+                    </div>
+
+                    <div class="card">
+                        <?= evui_card_head('var(--amber)', 'Open Queue Aging', evui_caption('Since submission')) ?>
+                        <div id="aging-bars" class="flex flex-col gap-3 mb-4"></div>
+                        <div class="pt-4 border-t border-slate-100">
+                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-2">Top destinations waiting</p>
+                            <div id="dest-bars" class="flex flex-col gap-2.5"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Assigned + Activity -->
+                <div class="stack-col dest-col">
+                    <div class="card">
+                        <?= evui_card_head('#3b82f6', 'My Assigned Applications', evui_link('applications.php', 'View all')) ?>
+                        <div id="my-applications-list" class="flex flex-col max-h-[300px] overflow-y-auto pr-0.5 [scrollbar-width:thin]">
+                            <?php if (empty($my_applications)): ?>
+                                <?= evui_empty('fa-inbox', 'No applications assigned yet', 'Applications assigned to you will appear here once processed.') ?>
+                            <?php else: ?>
+                                <?php foreach ($my_applications as $app): ?>
+                                    <?php
+                                    $status     = strtolower($app['status'] ?? 'unknown');
+                                    $statusText = str_replace('_', ' ', ucwords($status));
+                                    $np  = explode(' ', trim($app['applicant_name']));
+                                    $avi = strtoupper(count($np) >= 2
+                                        ? substr($np[0], 0, 1) . substr(end($np), 0, 1)
+                                        : substr($app['applicant_name'], 0, 2));
+                                    $app_has_pic = !empty($app['applicant_picture']);
+                                    $app_pic_url = $app_has_pic ? '../' . $app['applicant_picture'] : null;
+                                    ?>
+                                    <a href="view-application.php?id=<?= (int)$app['id'] ?>"
+                                        class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
+                                        <div class="w-9 h-9 shrink-0 rounded-[10px] bg-indigo-50 text-indigo-600 text-[10.5px] font-extrabold tracking-wide flex items-center justify-center"
+                                            <?= $app_has_pic ? "style=\"background-image:url('" . htmlspecialchars($app_pic_url) . "');background-size:cover;background-position:center;\"" : '' ?>>
+                                            <?= $app_has_pic ? '' : htmlspecialchars($avi) ?>
+                                        </div>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="text-[12.5px] font-bold text-slate-800 truncate"><?= htmlspecialchars($app['applicant_name']) ?></div>
+                                            <div class="text-[10.5px] text-slate-400 font-medium mt-0.5 truncate">
+                                                <?= htmlspecialchars($app['rsf_number'] ?? '—') ?>
+                                                &nbsp;·&nbsp;<?= htmlspecialchars($app['position_title'] ?? '—') ?>
+                                                &nbsp;·&nbsp;<?= htmlspecialchars($app['country'] ?? '—') ?>
+                                            </div>
+                                        </div>
+                                        <div class="text-right shrink-0">
+                                            <span class="inline-block text-[9.5px] font-bold tracking-wider uppercase px-2.5 py-[3px] rounded-full <?= pill_classes($status) ?>">
+                                                <?= htmlspecialchars($statusText) ?>
+                                            </span>
+                                            <div class="text-[9.5px] text-slate-400 font-medium mt-[3px]">
+                                                <?= $app['updated_at'] ? date('M d, Y', strtotime($app['updated_at'])) : '—' ?>
+                                            </div>
+                                        </div>
+                                    </a>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <div class="card" data-collapsible>
+                        <?= evui_card_head('#6366f1', 'Recent Activity', evui_caption('Your last actions')) ?>
+                        <?php if (empty($activity)): ?>
+                            <?= evui_empty('fa-clock-rotate-left', 'No activity recorded yet') ?>
+                        <?php else: ?>
+                            <div class="flex flex-col pr-0.5 [scrollbar-width:thin]" data-collapse-list>
+                                <?php foreach ($activity as $ev): ?>
+                                    <a href="view-application.php?id=<?= (int)$ev['application_id'] ?>" class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
+                                        <div class="w-8 h-8 shrink-0 rounded-[10px] flex items-center justify-center text-xs <?= htmlspecialchars($ev['tone']) ?>">
+                                            <i class="fas <?= htmlspecialchars($ev['icon']) ?>"></i>
+                                        </div>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="text-[12.5px] font-bold text-slate-800 truncate"><?= htmlspecialchars($ev['label']) ?> · <?= htmlspecialchars($ev['applicant_name']) ?></div>
+                                            <div class="text-[10.5px] text-slate-400 font-medium truncate"><?= htmlspecialchars($ev['position_title'] ?? '—') ?></div>
+                                        </div>
+                                        <span class="text-[10px] text-slate-400 font-medium shrink-0"><?= htmlspecialchars($ev['ago']) ?></span>
+                                    </a>
+                                <?php endforeach; ?>
+                            </div>
+                            <?= $collapseBtn ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- SECTION 2: Document Processing & Turnaround -->
+        <div class="dash-section fade-in d5">
+            <?= evui_section_head('var(--amber,#d97706)', 'Document Processing & Turnaround', 'Document completeness on your active applications and decision speed') ?>
+
+            <div class="grid-pair">
+
+                <div class="card" data-collapsible data-visible-items="4">
+                    <?= evui_card_head('var(--amber)', 'Document Completion', evui_caption($attention['avg_completion'] !== null ? 'Avg ' . (int)$attention['avg_completion'] . '%' : 'My active applications')) ?>
+                    <?php if (empty($attention['items'])): ?>
+                        <?= evui_empty('fa-folder-open', 'No active applications to check') ?>
                     <?php else: ?>
                         <div class="flex flex-col pr-0.5 [scrollbar-width:thin]" data-collapse-list>
                             <?php foreach ($attention['items'] as $it):
@@ -838,66 +874,127 @@ function kpi_card(
                                 </a>
                             <?php endforeach; ?>
                         </div>
-                        <button type="button" data-collapse-toggle aria-expanded="false"
-                            class="hidden w-full mt-2 pt-2 border-t border-slate-100 text-[11px] font-bold text-blue-500 hover:text-blue-600 bg-transparent cursor-pointer items-center justify-center gap-1.5">
-                            <span data-collapse-label>Show All</span>
-                            <i class="fas fa-chevron-down text-[9px] transition-transform" data-collapse-icon></i>
-                        </button>
+                        <?= $collapseBtn ?>
                     <?php endif; ?>
                 </div>
-            </div>
 
-            <div class="row-d-col">
-                <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm" data-collapsible>
-                    <div class="flex items-center justify-between mb-2">
-                        <span class="flex items-center gap-2 text-[13px] font-extrabold text-slate-700">
-                            <span class="w-2 h-2 rounded-full bg-indigo-500"></span>
-                            Recent Activity
-                        </span>
-                        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Your last actions</span>
+                <div class="card">
+                    <?= evui_card_head('#3b82f6', 'Avg. Turnaround Time') ?>
+                    <div class="text-center py-2 mb-3 border-b border-slate-100">
+                        <div class="text-3xl font-extrabold text-blue-600" id="turnaround-overall"><?= format_turnaround($turnaround_overall_hours) ?></div>
+                        <div class="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide mt-1">Assignment &rarr; Decision</div>
                     </div>
-                    <?php if (empty($activity)): ?>
-                        <div class="py-8 px-4 text-center">
-                            <i class="fas fa-clock-rotate-left text-3xl text-slate-200 block mb-2.5"></i>
-                            <p class="text-[12.5px] font-semibold text-slate-400">No activity recorded yet</p>
+                    <div class="flex flex-col gap-3" id="turnaround-rows">
+                        <?php
+                        $turn_max = max(
+                            $turnaround_by_decision['approved']['avg_hours'],
+                            $turnaround_by_decision['disapproved']['avg_hours'],
+                            $turnaround_by_decision['for_compliance']['avg_hours'],
+                            1
+                        );
+                        $turn_rows = [
+                            'approved'       => ['label' => 'Approved',       'color' => '#059669'],
+                            'disapproved'    => ['label' => 'Disapproved',    'color' => '#dc2626'],
+                            'for_compliance' => ['label' => 'For Compliance', 'color' => '#d97706'],
+                        ];
+                        $turn_any = false;
+                        foreach ($turn_rows as $key => $meta):
+                            $val = $turnaround_by_decision[$key]['avg_hours'];
+                            $cnt = $turnaround_by_decision[$key]['cnt'];
+                            if ($cnt === 0) continue;
+                            $turn_any = true;
+                            $pct = round($val / $turn_max * 100);
+                        ?>
+                            <div class="flex items-center gap-3">
+                                <span class="text-[11.5px] font-bold text-slate-700 w-[92px] shrink-0 truncate"><?= $meta['label'] ?></span>
+                                <div class="flex-1 h-[8px] bg-slate-100 rounded-full overflow-hidden">
+                                    <div class="h-full rounded-full" style="width:<?= $pct ?>%;background:<?= $meta['color'] ?>"></div>
+                                </div>
+                                <span class="text-[11px] font-extrabold text-slate-800 w-9 text-right shrink-0"><?= format_turnaround($val) ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                        <?php if (!$turn_any): ?>
+                            <p class="text-[11px] text-slate-400 italic">No completed evaluations with matching assignment data yet.</p>
+                        <?php endif; ?>
+                    </div>
+
+                    <!-- Turnaround extremes + decision mix -->
+                    <div class="mt-4 pt-4 border-t border-slate-100">
+                        <div class="grid grid-cols-3 gap-2 mb-4">
+                            <div class="rounded-xl bg-slate-50 px-2 py-2.5 text-center">
+                                <div class="text-[15px] font-extrabold text-emerald-600">
+                                    <?= $turn_extra['fastest'] !== null ? format_turnaround($turn_extra['fastest']) : '—' ?>
+                                </div>
+                                <div class="text-[9.5px] font-bold text-slate-400 uppercase tracking-wide mt-0.5">Fastest</div>
+                            </div>
+                            <div class="rounded-xl bg-slate-50 px-2 py-2.5 text-center">
+                                <div class="text-[15px] font-extrabold text-amber-600">
+                                    <?= $turn_extra['slowest'] !== null ? format_turnaround($turn_extra['slowest']) : '—' ?>
+                                </div>
+                                <div class="text-[9.5px] font-bold text-slate-400 uppercase tracking-wide mt-0.5">Slowest</div>
+                            </div>
+                            <div class="rounded-xl bg-slate-50 px-2 py-2.5 text-center">
+                                <div class="text-[15px] font-extrabold text-blue-600"><?= number_format($turn_extra['total']) ?></div>
+                                <div class="text-[9.5px] font-bold text-slate-400 uppercase tracking-wide mt-0.5">Decisions</div>
+                            </div>
                         </div>
-                    <?php else: ?>
-                        <div class="flex flex-col pr-0.5 [scrollbar-width:thin]" data-collapse-list>
-                            <?php foreach ($activity as $ev): ?>
-                                <a href="view-application.php?id=<?= (int)$ev['application_id'] ?>" class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
-                                    <div class="w-8 h-8 shrink-0 rounded-[10px] flex items-center justify-center text-xs <?= htmlspecialchars($ev['tone']) ?>">
-                                        <i class="fas <?= htmlspecialchars($ev['icon']) ?>"></i>
-                                    </div>
-                                    <div class="flex-1 min-w-0">
-                                        <div class="text-[12.5px] font-bold text-slate-800 truncate"><?= htmlspecialchars($ev['label']) ?> · <?= htmlspecialchars($ev['applicant_name']) ?></div>
-                                        <div class="text-[10.5px] text-slate-400 font-medium truncate"><?= htmlspecialchars($ev['position_title'] ?? '—') ?></div>
-                                    </div>
-                                    <span class="text-[10px] text-slate-400 font-medium shrink-0"><?= htmlspecialchars($ev['ago']) ?></span>
-                                </a>
-                            <?php endforeach; ?>
-                        </div>
-                        <button type="button" data-collapse-toggle aria-expanded="false"
-                            class="hidden w-full mt-2 pt-2 border-t border-slate-100 text-[11px] font-bold text-blue-500 hover:text-blue-600 bg-transparent cursor-pointer items-center justify-center gap-1.5">
-                            <span data-collapse-label>Show All</span>
-                            <i class="fas fa-chevron-down text-[9px] transition-transform" data-collapse-icon></i>
-                        </button>
-                    <?php endif; ?>
+
+                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-2">Decision mix</p>
+                        <?php if ($turn_mix_total > 0): ?>
+                            <div class="flex h-[10px] rounded-full overflow-hidden bg-slate-100 mb-2.5">
+                                <?php foreach ($turn_rows as $key => $meta):
+                                    $c = (int)$turnaround_by_decision[$key]['cnt'];
+                                    if ($c === 0) continue; ?>
+                                    <div style="width:<?= round($c / $turn_mix_total * 100, 1) ?>%;background:<?= $meta['color'] ?>"
+                                        title="<?= htmlspecialchars($meta['label']) ?>: <?= $c ?>"></div>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="flex flex-wrap gap-x-4 gap-y-1">
+                                <?php foreach ($turn_rows as $key => $meta):
+                                    $c = (int)$turnaround_by_decision[$key]['cnt'];
+                                    if ($c === 0) continue; ?>
+                                    <span class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+                                        <span class="w-[8px] h-[8px] rounded-full" style="background:<?= $meta['color'] ?>"></span>
+                                        <?= htmlspecialchars($meta['label']) ?>
+                                        <b class="text-slate-800"><?= $c ?></b>
+                                        <span class="text-slate-400">(<?= round($c / $turn_mix_total * 100) ?>%)</span>
+                                    </span>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php else: ?>
+                            <p class="text-[11px] text-slate-400 italic">No decisions recorded yet.</p>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- SECTION 3: Evaluation Performance & Demand -->
+        <div class="dash-section fade-in d6">
+            <?= evui_section_head('#6366f1', 'Evaluation Performance & Demand', 'Your decisions over the last 6 months and where applications are headed') ?>
+
+            <div class="grid-pair">
+                <div class="card">
+                    <?= evui_card_head('#10b981', 'Your Evaluation Trend', evui_caption('Last 6 Months')) ?>
+                    <div style="position:relative;height:260px"><canvas id="evalTrendChart"></canvas></div>
+                </div>
+                <div class="card">
+                    <?= evui_card_head('#60a5fa', 'Applications by Country') ?>
+                    <div style="position:relative;height:260px"><canvas id="countryChart"></canvas></div>
                 </div>
             </div>
+        </div>
 
-        </section>
+    </div><!-- /main -->
 
-    </main><!-- /main -->
-
-    <!-- FLOATING DOCK — unchanged -->
+    <!-- FLOATING DOCK -->
     <div class="dock-wrap">
         <nav class="dock">
-
             <a href="index.php" class="dk active">
                 <i class="fas fa-house"></i>
                 <span class="dk-lbl">Home</span>
             </a>
-
             <a href="applications.php" class="dk">
                 <i class="fas fa-list"></i>
                 <span class="dk-lbl">Tasks</span>
@@ -905,67 +1002,52 @@ function kpi_card(
                     <span class="dk-badge"><?= $my_assigned_count > 99 ? '99+' : $my_assigned_count ?></span>
                 <?php endif; ?>
             </a>
-
             <div class="dk-div"></div>
-
             <a href="evaluator-reports.php" class="dk" data-tip="Applicant Reports">
                 <i class="fas fa-file-contract"></i>
                 <span class="dk-lbl">Applicants</span>
             </a>
-
             <a href="reports.php" class="dk">
                 <i class="fas fa-chart-bar"></i>
                 <span class="dk-lbl">Reports</span>
             </a>
-
             <div class="dk-div"></div>
-
             <a href="settings.php" class="dk">
                 <i class="fas fa-gear"></i>
                 <span class="dk-lbl">Settings</span>
             </a>
-
             <div class="dk" onclick="logout('Evaluator')">
                 <i class="fas fa-arrow-right-from-bracket" style="color:#f87171"></i>
                 <span class="dk-lbl" style="color:#f87171">Logout</span>
             </div>
-
         </nav>
     </div>
 
     <script>
-        /*  Live date + time  */
+        /* Live date + time */
         function updateLiveDateTime() {
             const el = document.getElementById('live-date');
             if (!el) return;
-
             const now = new Date();
-
             const datePart = now.toLocaleDateString('en-PH', {
                 weekday: 'short',
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric'
             }).toUpperCase();
-
             const timePart = now.toLocaleTimeString('en-PH', {
                 hour: 'numeric',
                 minute: '2-digit',
                 second: '2-digit',
                 hour12: true
             }).toLowerCase();
-
             el.textContent = `${datePart} | ${timePart}`;
         }
-
         updateLiveDateTime();
-        setInterval(updateLiveDateTime, 1000); // refresh every second
+        setInterval(updateLiveDateTime, 1000);
     </script>
 
-    <!-- Filter pills: month / province / job type / destination.
-         Selecting any pill re-fetches dashboard data via AJAX (see the
-         dashboard-charts script below) and re-renders every section in
-         place — no page reload. -->
+    <!-- Filter pills (same dropdown panel as the admin dashboard) -->
     <script>
         (function() {
             function enhancePillSelect(select) {
@@ -989,13 +1071,13 @@ function kpi_card(
 
                 const panel = document.createElement('div');
                 panel.setAttribute('role', 'listbox');
-                panel.className = 'hidden fixed w-56 bg-white border-[1.5px] border-[var(--border)] rounded-lg shadow-[0_10px_30px_rgba(11,31,75,.16)] z-[999] overflow-hidden py-1 max-h-[240px] overflow-y-auto';
+                panel.className = 'hidden fixed w-56 bg-[var(--surface)] border-[1.5px] border-[var(--border)] rounded-lg shadow-[0_10px_30px_rgba(11,31,75,.16)] z-[999] overflow-hidden py-1 max-h-[240px] overflow-y-auto dropdown-scroll';
                 document.body.appendChild(panel);
 
                 function buildRow(optionEl) {
                     const row = document.createElement('div');
                     row.setAttribute('role', 'option');
-                    row.className = 'flex items-center justify-between gap-2 py-[7px] px-3 text-[12px] text-[var(--text1)] cursor-pointer hover:bg-[#f1f5fb] transition-colors';
+                    row.className = 'flex items-center justify-between gap-2 py-[7px] px-3 text-[12px] text-[var(--text1)] cursor-pointer hover:bg-[var(--hover-row)] transition-colors';
                     row.dataset.value = optionEl.value;
                     const label = document.createElement('span');
                     label.className = 'truncate';
@@ -1021,7 +1103,7 @@ function kpi_card(
                 function markSelected() {
                     panel.querySelectorAll('[role="option"]').forEach(row => {
                         const selected = row.dataset.value === select.value;
-                        row.classList.toggle('bg-[#eff6ff]', selected);
+                        row.classList.toggle('bg-[var(--selected-row)]', selected);
                         row.classList.toggle('text-[var(--navy)]', selected);
                         row.classList.toggle('font-bold', selected);
                         let check = row.querySelector('.fa-check');
@@ -1098,20 +1180,11 @@ function kpi_card(
                 refresh();
             }
 
-            const monthSel = document.getElementById('filter-month');
-            const provinceSel = document.getElementById('filter-province');
-            const jobSel = document.getElementById('filter-job');
-            const countrySel = document.getElementById('filter-country');
-
-            [monthSel, provinceSel, jobSel, countrySel].forEach(enhancePillSelect);
-
-            // fetchAndApplyFilters() is defined in the dashboard-charts
-            // script below; it fetches ajax-dashboard-data.php and
-            // re-renders every section in place — no reload.
-            if (monthSel) monthSel.addEventListener('change', () => window.fetchAndApplyFilters());
-            if (provinceSel) provinceSel.addEventListener('change', () => window.fetchAndApplyFilters());
-            if (jobSel) jobSel.addEventListener('change', () => window.fetchAndApplyFilters());
-            if (countrySel) countrySel.addEventListener('change', () => window.fetchAndApplyFilters());
+            ['filter-month', 'filter-province', 'filter-job', 'filter-country'].forEach(id => {
+                const el = document.getElementById(id);
+                enhancePillSelect(el);
+                if (el) el.addEventListener('change', () => window.fetchAndApplyFilters());
+            });
         })();
     </script>
 
@@ -1132,7 +1205,6 @@ function kpi_card(
         const statusColors = ['#3b82f6', '#4f46e5', '#d97706', '#059669', '#dc2626'];
         const statusKeys = ['assign', 'under_evaluation', 'for_compliance', 'approved', 'disapproved'];
 
-        // Escapes text AND quotes so values are safe inside attributes too
         function escapeHtml(str) {
             return String(str ?? '').replace(/[&<>"']/g, ch => ({
                 '&': '&amp;',
@@ -1142,7 +1214,8 @@ function kpi_card(
                 "'": '&#39;'
             } [ch]));
         }
-        // "Open for Evaluation": confirm before claiming (same wording as applications.php)
+
+        // "Open for Evaluation": confirm before claiming
         function claimAndOpen(id) {
             Swal.fire({
                 icon: 'question',
@@ -1180,6 +1253,13 @@ function kpi_card(
             }
         }
 
+        function emptyState(icon, title, sub) {
+            return `<div class="py-10 px-4 text-center">
+        <i class="fas ${icon} text-3xl text-slate-200 block mb-2.5"></i>
+        <p class="text-[12.5px] font-semibold text-slate-400">${title}</p>
+        <span class="text-[11px] text-slate-400/80">${sub}</span></div>`;
+        }
+
         function renderStatusChart(stats) {
             const data = statusKeys.map(k => stats[k] || 0);
             const total = data.reduce((a, b) => a + b, 0);
@@ -1191,7 +1271,7 @@ function kpi_card(
                 if (data[i] === 0) return;
                 barsEl.innerHTML += `
             <div class="flex items-center gap-3">
-                <span class="text-[12.5px] font-bold text-slate-700 w-[110px] shrink-0 truncate">${label}</span>
+                <span class="text-[12px] font-bold text-slate-700 w-[96px] shrink-0 truncate">${label}</span>
                 <div class="flex-1 h-[10px] bg-slate-100 rounded-full overflow-hidden">
                     <div class="h-full rounded-full transition-all" style="width:${Math.round(data[i]/maxVal*100)}%;background:${statusColors[i]}"></div>
                 </div>
@@ -1235,13 +1315,63 @@ function kpi_card(
                 if (data[i] === 0) return;
                 const pct = total > 0 ? Math.round(data[i] / total * 100) : 0;
                 legendEl.innerHTML += `
-            <div class="flex items-center gap-2.5 py-[7px] border-b border-slate-100 last:border-0">
-                <span class="w-[11px] h-[11px] rounded-full shrink-0" style="background:${statusColors[i]}"></span>
-                <span class="text-[13px] font-semibold text-slate-700 flex-1">${label}</span>
-                <span class="text-[13px] font-extrabold text-slate-800">${pct}%</span>
+            <div class="flex items-center gap-2 py-[6px] border-b border-slate-100 last:border-0">
+                <span class="w-[10px] h-[10px] rounded-full shrink-0" style="background:${statusColors[i]}"></span>
+                <span class="text-[12px] font-semibold text-slate-700 flex-1 truncate">${label}</span>
+                <span class="text-[12px] font-extrabold text-slate-800">${pct}%</span>
             </div>`;
             });
             if (total === 0) legendEl.innerHTML = '<p class="text-[11px] text-slate-400 italic">No data yet.</p>';
+        }
+
+        // Shared Chart.js options for both bar charts
+        function barOptions(stacked) {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        stacked,
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            font: {
+                                size: 11,
+                                weight: '600'
+                            }
+                        }
+                    },
+                    y: {
+                        stacked,
+                        beginAtZero: true,
+                        ticks: {
+                            stepSize: 1,
+                            font: {
+                                size: 11
+                            }
+                        },
+                        grid: {
+                            color: chartGridColor
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            boxWidth: 8,
+                            boxHeight: 8,
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            font: {
+                                size: 11,
+                                weight: '600'
+                            }
+                        }
+                    }
+                }
+            };
         }
 
         function renderCountryChart(countryData) {
@@ -1270,50 +1400,7 @@ function kpi_card(
                             }
                         ]
                     },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            x: {
-                                grid: {
-                                    display: false
-                                },
-                                ticks: {
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    }
-                                }
-                            },
-                            y: {
-                                beginAtZero: true,
-                                ticks: {
-                                    stepSize: 1,
-                                    font: {
-                                        size: 11
-                                    }
-                                },
-                                grid: {
-                                    color: chartGridColor
-                                }
-                            }
-                        },
-                        plugins: {
-                            legend: {
-                                position: 'bottom',
-                                labels: {
-                                    boxWidth: 8,
-                                    boxHeight: 8,
-                                    usePointStyle: true,
-                                    pointStyle: 'circle',
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    options: barOptions(false)
                 });
             } else {
                 countryChartInstance.data.labels = labels;
@@ -1352,52 +1439,7 @@ function kpi_card(
                             }
                         ]
                     },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            x: {
-                                stacked: true,
-                                grid: {
-                                    display: false
-                                },
-                                ticks: {
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    }
-                                }
-                            },
-                            y: {
-                                stacked: true,
-                                beginAtZero: true,
-                                ticks: {
-                                    stepSize: 1,
-                                    font: {
-                                        size: 11
-                                    }
-                                },
-                                grid: {
-                                    color: chartGridColor
-                                }
-                            }
-                        },
-                        plugins: {
-                            legend: {
-                                position: 'bottom',
-                                labels: {
-                                    boxWidth: 8,
-                                    boxHeight: 8,
-                                    usePointStyle: true,
-                                    pointStyle: 'circle',
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    options: barOptions(true)
                 });
             } else {
                 evalTrendChartInstance.data.labels = trend.labels;
@@ -1457,12 +1499,7 @@ function kpi_card(
         function renderApplicationsList(apps) {
             const list = document.getElementById('my-applications-list');
             if (apps.length === 0) {
-                list.innerHTML = `
-            <div class="py-10 px-4 text-center">
-                <i class="fas fa-filter-circle-xmark text-3xl text-slate-200 block mb-2.5"></i>
-                <p class="text-[12.5px] font-semibold text-slate-400">No assigned applications match this filter</p>
-                <span class="text-[11px] text-slate-400/80">Try a different month, province, job type, or destination.</span>
-            </div>`;
+                list.innerHTML = emptyState('fa-filter-circle-xmark', 'No assigned applications match this filter', 'Try a different month, province, job type, or destination.');
                 return;
             }
 
@@ -1478,7 +1515,7 @@ function kpi_card(
                     '';
 
                 return `
-            <a href="view-application.php?id=${app.id}" class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
+            <a href="view-application.php?id=${Number(app.id)}" class="flex items-center gap-2.5 py-2.5 px-1 border-b border-slate-100 last:border-0 rounded-xl no-underline text-inherit transition-colors duration-150 hover:bg-slate-50">
                 <div class="w-9 h-9 shrink-0 rounded-[10px] bg-indigo-50 text-indigo-600 text-[10.5px] font-extrabold tracking-wide flex items-center justify-center" ${avatarStyle}>
                     ${app.picture_url ? '' : escapeHtml(initials)}
                 </div>
@@ -1551,7 +1588,7 @@ function kpi_card(
             }
         });
 
-        // ── "Open for Evaluation" queue + aging ──────────────────────
+        // ── "Open for Evaluation" queue + aging ──
         const agingLabels = ['Under 24 hours', '1–3 days', '3–7 days', '7+ days'];
         const agingColors = ['#059669', '#3b82f6', '#d97706', '#dc2626'];
         const tierClasses = {
@@ -1560,13 +1597,6 @@ function kpi_card(
             aging: 'bg-orange-50 text-amber-800',
             stale: 'bg-red-100 text-red-800'
         };
-
-        function emptyState(icon, title, sub) {
-            return `<div class="py-10 px-4 text-center">
-        <i class="fas ${icon} text-3xl text-slate-200 block mb-2.5"></i>
-        <p class="text-[12.5px] font-semibold text-slate-400">${title}</p>
-        <span class="text-[11px] text-slate-400/80">${sub}</span></div>`;
-        }
 
         function barRowHtml(label, value, max, color, labelWidth) {
             const pct = max > 0 ? Math.round(value / max * 100) : 0;
@@ -1595,7 +1625,7 @@ function kpi_card(
         <div class="flex-1 min-w-0">
             <div class="text-[12.5px] font-bold text-slate-800 truncate">${escapeHtml(name)}</div>
             <div class="text-[10.5px] text-slate-400 font-medium mt-0.5 truncate">${escapeHtml(it.rsf_number || '—')} &nbsp;·&nbsp;${escapeHtml(it.position_title || '—')} &nbsp;·&nbsp;${escapeHtml(it.country || '—')}</div>
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px] text-slate-400 font-medium mt-0.5">${prov}${docs}</div>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px] text-slate-400 font-medium mt-0.5">${prov}${docs}${it.closing_soon ? `<span class="text-amber-700 font-bold"><i class="fas fa-clock text-[9px]"></i> ${it.days_to_deadline < 0 ? 'Deadline passed' : (it.days_to_deadline === 0 ? 'Closes today' : 'Closes in ' + it.days_to_deadline + 'd')}</span>` : ''}</div>
         </div>
         <div class="text-right shrink-0">
             <span class="inline-block text-[9.5px] font-bold tracking-wider uppercase px-2.5 py-[3px] rounded-full ${tierClasses[it.tier] || tierClasses.normal}" title="Waiting since submission">${escapeHtml(it.waiting_display)}</span>
@@ -1623,18 +1653,18 @@ function kpi_card(
 
             const maxB = Math.max(...d.buckets, 1);
             document.getElementById('aging-bars').innerHTML = d.total ?
-                d.buckets.map((v, i) => barRowHtml(agingLabels[i], v, maxB, agingColors[i], 'w-[104px]')).join('') :
+                d.buckets.map((v, i) => barRowHtml(agingLabels[i], v, maxB, agingColors[i], 'w-[96px]')).join('') :
                 '<p class="text-[11px] text-slate-400 italic">The open queue is empty.</p>';
 
             const maxD = Math.max(...d.destinations.map(x => x.cnt), 1);
             document.getElementById('dest-bars').innerHTML = d.destinations.length ?
-                d.destinations.map(x => barRowHtml(x.country, x.cnt, maxD, '#3b82f6', 'w-[104px]')).join('') :
+                d.destinations.map(x => barRowHtml(x.country, x.cnt, maxD, '#3b82f6', 'w-[96px]')).join('') :
                 '<p class="text-[11px] text-slate-400 italic">No destinations waiting.</p>';
         }
 
         applyIncomingData(<?= json_encode($incoming, EVX_JSON) ?>);
 
-        // ── No-reload filtering + queue refresh ──────────────────────
+        // ── No-reload filtering + queue refresh ──
         let filterAbortController = null;
         let incomingAbortController = null;
 
@@ -1647,7 +1677,6 @@ function kpi_card(
             return params;
         }
 
-        // Open-queue refresh (same file, ?ajax=incoming)
         window.fetchIncoming = function fetchIncoming() {
             const params = currentFilterParams();
             params.set('ajax', 'incoming');
@@ -1674,8 +1703,6 @@ function kpi_card(
                 });
         };
 
-        // No-reload filtering: re-renders every section in place.
-        // Exposed on window so the filter-pills script above can call it.
         window.fetchAndApplyFilters = function fetchAndApplyFilters() {
             if (filterAbortController) filterAbortController.abort();
             filterAbortController = new AbortController();
@@ -1720,6 +1747,8 @@ function kpi_card(
     </script>
 
     <script type="module" src="../js/main.js"></script>
+
+    <!-- Collapsible lists (Recent Activity / Document Completion) -->
     <script>
         (function() {
             const DEFAULT_VISIBLE_ITEMS = 5;
@@ -1733,9 +1762,9 @@ function kpi_card(
                 const items = Array.from(list.children);
                 const label = btn.querySelector('[data-collapse-label]');
                 const icon = btn.querySelector('[data-collapse-icon]');
-                let expanded = false; // state local to this section only
+                let expanded = false;
 
-                if (items.length <= visibleItems) return; // nothing to collapse; button stays hidden
+                if (items.length <= visibleItems) return;
 
                 btn.classList.remove('hidden');
                 btn.classList.add('flex');
@@ -1765,7 +1794,6 @@ function kpi_card(
                     expanded = !expanded;
                     apply();
                 });
-
                 window.addEventListener('resize', function() {
                     if (!expanded) apply();
                 });

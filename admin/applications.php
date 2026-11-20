@@ -245,22 +245,34 @@ function build_admin_apps_qs(?string $status, string $month, string $country, st
     return $params ? '?' . http_build_query($params) : '';
 }
 
-/** True if the evaluator exists and their webuser account is active. */
+/** True if the evaluator's account is active AND they are not on leave. */
 function isActiveEvaluator(mysqli $database, int $evaluator_id): bool
 {
-    if ($evaluator_id <= 0) return false;
-    $stmt = $database->prepare("
-        SELECT 1
-        FROM evaluators e
-        JOIN webuser w ON w.email = e.email
-        WHERE e.eid = ? AND w.is_active = 1
-        LIMIT 1
-    ");
-    $stmt->bind_param("i", $evaluator_id);
+    return isEvaluatorAvailable($database, $evaluator_id);
+}
+
+/**
+ * Reassign any open case. Resubmitted cases keep the existing admin logic;
+ * under_evaluation / for_compliance / assign go through the safe handover.
+ */
+function reassignOpenCase(mysqli $database, int $app_id, int $new_evaluator_id, string $admin_email): bool
+{
+    $stmt = $database->prepare("SELECT status, current_evaluator_id FROM applications WHERE id = ? LIMIT 1");
+    $stmt->bind_param("i", $app_id);
     $stmt->execute();
-    $ok = $stmt->get_result()->num_rows > 0;
+    $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    return $ok;
+    if (!$row) return false;
+
+    if ($row['status'] === 'resubmitted') {
+        return adminReassignApplication($database, $app_id, $new_evaluator_id, $admin_email);
+    }
+
+    $from = (int) $row['current_evaluator_id'];
+    if (!$from) return false;
+
+    $res = handoverApplication($database, $app_id, $from, $new_evaluator_id, $admin_email, 'Reassigned by admin');
+    return $res['ok'];
 }
 
 $excludeDraft = " AND COALESCE(a.status, '') <> 'draft'";
@@ -288,7 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $app_id = (int) ($_POST['application_id'] ?? 0);
     $evaluator_id = (int) ($_POST['evaluator_id'] ?? 0);
     if ($app_id && $evaluator_id && !isActiveEvaluator($database, $evaluator_id)) {
-        $error = 'The selected evaluator\'s account is deactivated. Please choose an active evaluator.';
+        $error = 'The selected evaluator is deactivated or currently on leave. Please choose an available evaluator.';
     } elseif ($app_id && $evaluator_id) {
         $stmt = $database->prepare("SELECT status FROM applications WHERE id = ? LIMIT 1");
         $stmt->bind_param("i", $app_id);
@@ -402,7 +414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if ($app_id && $new_evaluator_id && !isActiveEvaluator($database, $new_evaluator_id)) {
         $error = 'The selected evaluator\'s account is deactivated. Please choose an active evaluator.';
     } elseif ($app_id && $new_evaluator_id) {
-        if (adminReassignApplication($database, $app_id, $new_evaluator_id, $admin_email)) {
+        if (reassignOpenCase($database, $app_id, $new_evaluator_id, $admin_email)) {
             $ev_stmt = $database->prepare("SELECT full_name FROM evaluators WHERE eid = ?");
             $ev_stmt->bind_param("i", $new_evaluator_id);
             $ev_stmt->execute();
@@ -455,7 +467,12 @@ $sql = "
            r.rsf_number, r.position_title, r.employer_name, r.worksite_country,
            CONCAT(c.first_name, ' ', c.last_name) as applicant_name, c.email as applicant_email,
            c.profile_picture as applicant_picture,
-           ev.full_name as current_evaluator_name,
+            ev.full_name as current_evaluator_name,
+           (SELECT COUNT(*) FROM evaluator_unavailability u
+             WHERE u.evaluator_id = a.current_evaluator_id
+               AND u.status = 'active'
+               AND u.start_at <= NOW()
+               AND (u.end_at IS NULL OR u.end_at > NOW())) AS ev_on_leave,
            asn.reassign_count
     FROM applications a
     JOIN rsf_job_orders r ON a.rsf_id = r.id
@@ -533,7 +550,7 @@ $total_pages = max(1, (int) ceil($total_filtered / $per_page));
 if ($page > $total_pages) $page = $total_pages;
 $offset = ($page - 1) * $per_page;
 
-$sql .= " ORDER BY a.updated_at DESC";
+$sql .= " ORDER BY " . sql_deadline_priority('r.deadline', "a.status NOT IN ('approved','disapproved','draft')") . ", a.updated_at DESC";
 if (!$view_all) {
     $sql .= " LIMIT ? OFFSET ?";
     $params[] = $per_page;
@@ -556,6 +573,7 @@ $res = $database->query("
     FROM evaluators e
     JOIN webuser w ON w.email = e.email
     WHERE w.is_active = 1
+      AND NOT " . SQL_EVALUATOR_ON_LEAVE . "
     ORDER BY e.full_name
 ");
 if ($res) $evaluators = $res->fetch_all(MYSQLI_ASSOC);
@@ -705,6 +723,9 @@ $kpi_defs = [
             <td class="c-hand">
                 <?php if (!empty($app['current_evaluator_name'])): ?>
                     <div class="app-title truncate" style="color:var(--navy);"><?= htmlspecialchars($app['current_evaluator_name']) ?></div>
+                    <?php if (!empty($app['ev_on_leave']) && !in_array($app['status'], ['approved', 'disapproved'], true)): ?>
+                        <div class="text-amber-600 font-semibold text-xs"><i class="fas fa-user-clock"></i> Evaluator on leave</div>
+                    <?php endif; ?>
                     <div class="app-sub">
                         <?= $app['handling_party'] === 'admin' ? 'With Admin' : 'With Evaluator' ?>
                         <?php if (!empty($app['reassign_count']) && (int) $app['reassign_count'] > 1): ?>
@@ -786,6 +807,33 @@ $kpi_defs = [
                                 </form>
                             </details>
                         <?php endif; ?>
+                    </div>
+                <?php elseif (in_array($app['status'], ['under_evaluation', 'for_compliance'], true) && !empty($app['current_evaluator_id']) && !empty($evaluators)): ?>
+                    <div class="act-stack">
+                        <a href="view-application.php?id=<?= (int) $app['id'] ?>" class="act-btn-ghost">
+                            <i class="fas fa-eye"></i> View
+                        </a>
+                        <details class="relative">
+                            <summary class="act-link cursor-pointer list-none">
+                                <i class="fas fa-user-pen"></i> Reassign
+                            </summary>
+                            <form method="POST" class="mt-2 flex items-center gap-2">
+                                <input type="hidden" name="action" value="reassign">
+                                <input type="hidden" name="application_id" value="<?= $app['id'] ?>">
+                                <select name="evaluator_id" required
+                                    class="border border-[var(--border)] bg-[var(--card)] text-[var(--text1)] rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-[var(--blue-lt)] max-w-[150px]">
+                                    <option value="">Select evaluator...</option>
+                                    <?php foreach ($evaluators as $ev): ?>
+                                        <?php if ((int) $ev['eid'] === (int) $app['current_evaluator_id']) continue; ?>
+                                        <option value="<?= $ev['eid'] ?>"><?= htmlspecialchars($ev['full_name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit"
+                                    class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap">
+                                    Go
+                                </button>
+                            </form>
+                        </details>
                     </div>
                 <?php else: ?>
                     <div class="act-stack">
