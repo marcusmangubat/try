@@ -7,6 +7,7 @@
 session_start();
 require_once '../db.php';
 require_once '../includes/app-helpers.php';
+require_once '../includes/comment-visibility.php';
 require_once '../includes/activity_logger.php';
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'client') {
@@ -698,7 +699,7 @@ $stmt->close();
 
 // ── Load existing uploaded documents ─────────────────────────────────────────
 $docs = [];
-$stmt = $database->prepare("SELECT * FROM application_documents WHERE application_id = ? ORDER BY uploaded_at");
+$stmt = $database->prepare("SELECT * FROM application_documents WHERE application_id = ? ORDER BY uploaded_at, id");
 $stmt->bind_param("i", $app_id);
 $stmt->execute();
 $docs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -708,13 +709,13 @@ $docCommentsByDocumentId = [];
 if (!empty($docs)) {
     $stmt = $database->prepare("
         SELECT dc.document_id, dc.comment, dc.created_at, dc.commented_by,
-               COALESCE(ev.full_name, ad.full_name, dc.commented_by) AS commenter_name
+               COALESCE(ev.full_name, adm.full_name, dc.commented_by) AS commenter_name
         FROM document_comments dc
+        JOIN application_documents ad ON ad.id = dc.document_id
         LEFT JOIN evaluators ev ON dc.commented_by = ev.email
-        LEFT JOIN admins ad ON dc.commented_by = ad.email
-        WHERE dc.document_id IN (
-            SELECT id FROM application_documents WHERE application_id = ?
-        )
+        LEFT JOIN admins adm ON dc.commented_by = adm.email
+        WHERE ad.application_id = ?
+          AND " . sql_comment_not_addressed('dc', 'ad') . "
         ORDER BY dc.created_at DESC
     ");
     $stmt->bind_param("i", $app_id);

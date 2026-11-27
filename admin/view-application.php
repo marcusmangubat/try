@@ -139,10 +139,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'add_d
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'evaluate_directly') {
     $decision = trim($_POST['decision'] ?? '');
     $comments = trim($_POST['comments'] ?? '');
+    $slotInfo = ($decision === 'approved') ? getApplicationSlotInfo($database, $app_id) : null;
+
     if (!$admin_id) {
         $page_error = 'Your admin account could not be identified.';
     } elseif (!in_array($decision, ['approved', 'disapproved'], true)) {
         $page_error = 'Please select a valid decision.';
+    } elseif ($decision === 'approved' && $slotInfo && $slotInfo['remaining'] !== null && $slotInfo['remaining'] <= 0) {
+        $page_error = 'Cannot approve: no slots remain for this job order.';
     } elseif (adminEvaluateDirectly($database, $app_id, $admin_id, $admin_email, $decision, $comments ?: null)) {
         $decisionLabel = $decision === 'approved' ? 'Approved' : 'Disapproved';
         log_activity(
@@ -232,7 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'reass
 $stmt = $database->prepare("
         SELECT a.id, a.status, a.updated_at, a.submitted_at, a.notes,
            a.client_id, a.current_evaluator_id, a.handling_party, a.rsf_id,
-           r.rsf_number, r.position_title, r.worksite_country, r.employer_name, r.qualifications, r.slots_available,
+                      r.rsf_number, r.position_title, r.worksite_country, r.employer_name, r.qualifications, r.slots_available, r.deadline,
            CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
            c.email AS applicant_email, c.phone, c.address, c.profile_picture,
            ev.full_name AS current_evaluator_name, ev.email AS current_evaluator_email
@@ -533,6 +537,10 @@ $app_pic_url = $app_has_pic ? '../' . $app['profile_picture'] : null;
 $isForCompliance      = $status === 'for_compliance' && $app['handling_party'] === 'admin';
 $isResubmitted        = $status === 'resubmitted';
 $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
+
+// No slots left on this job order: hide Approve/Disapprove and explain why.
+$slotCheck = getApplicationSlotInfo($database, $app_id);
+$noSlots   = $slotCheck && $slotCheck['remaining'] !== null && $slotCheck['remaining'] <= 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1035,9 +1043,18 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                 <dt>Country</dt>
                                 <dd><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></dd>
                             </div>
-                            <?php if (!empty($app['slots_available'])): ?>
+                            <?php if (!empty($app['deadline'])): ?>
                                 <div class="dl-item">
-                                    <dt>Slots Available</dt>
+                                    <dt>Deadline</dt>
+                                    <dd>
+                                        <?= date('M d, Y', strtotime($app['deadline'])) ?>
+                                        <div><?= deadline_badge($app['deadline'], $status) ?></div>
+                                    </dd>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($app['slots_available'] !== null): ?>
+                                <div class="dl-item">
+                                    <dt>Slots Remaining</dt>
                                     <dd><?= (int) $app['slots_available'] ?></dd>
                                 </div>
                             <?php endif; ?>
@@ -1439,27 +1456,37 @@ $showAdminHandoffPanel = $isForCompliance || $isResubmitted;
                                         <hr style="border:none;border-top:1px solid var(--border);margin:0;">
                                     <?php endif; ?>
 
-                                    <div>
-                                        <div style="font-size:12.5px;color:var(--text2);margin-bottom:8px;">
-                                            Evaluate this application yourself.
+                                    <?php if ($noSlots): ?>
+                                        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 8px;text-align:center;">
+                                            <i class="fas fa-lock" style="font-size:22px;color:var(--text3);opacity:.6;"></i>
+                                            <div style="font-size:13px;font-weight:700;color:var(--text1);">No slots available</div>
+                                            <p style="margin:0;font-size:12.5px;color:var(--text3);line-height:1.6;">
+                                                All slots for this job order are already filled, so Approve and Disapprove are disabled for this application.
+                                            </p>
                                         </div>
-                                        <form method="POST" id="evalDirectForm">
-                                            <input type="hidden" name="action" value="evaluate_directly">
-                                            <label style="display:block;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);margin-bottom:7px;">
-                                                Comments
-                                            </label>
-                                            <textarea name="comments" class="eval-textarea" placeholder="Notes for the applicant..."></textarea>
-                                            <div class="eval-actions">
-                                                <button type="button" class="eval-btn eval-btn-approve" onclick="submitDirectEval('approved')">
-                                                    <i class="fas fa-circle-check"></i> Approve
-                                                </button>
-                                                <button type="button" class="eval-btn eval-btn-disapprove" onclick="submitDirectEval('disapproved')">
-                                                    <i class="fas fa-circle-xmark"></i> Disapprove
-                                                </button>
+                                    <?php else: ?>
+                                        <div>
+                                            <div style="font-size:12.5px;color:var(--text2);margin-bottom:8px;">
+                                                Evaluate this application yourself.
                                             </div>
-                                            <input type="hidden" name="decision" id="directDecisionInput" value="">
-                                        </form>
-                                    </div>
+                                            <form method="POST" id="evalDirectForm">
+                                                <input type="hidden" name="action" value="evaluate_directly">
+                                                <label style="display:block;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);margin-bottom:7px;">
+                                                    Comments
+                                                </label>
+                                                <textarea name="comments" class="eval-textarea" placeholder="Notes for the applicant..."></textarea>
+                                                <div class="eval-actions">
+                                                    <button type="button" class="eval-btn eval-btn-approve" onclick="submitDirectEval('approved')">
+                                                        <i class="fas fa-circle-check"></i> Approve
+                                                    </button>
+                                                    <button type="button" class="eval-btn eval-btn-disapprove" onclick="submitDirectEval('disapproved')">
+                                                        <i class="fas fa-circle-xmark"></i> Disapprove
+                                                    </button>
+                                                </div>
+                                                <input type="hidden" name="decision" id="directDecisionInput" value="">
+                                            </form>
+                                        </div>
+                                    <?php endif; ?>
                                     <hr style="border:none;border-top:1px solid var(--border);margin:0;">
 
                                     <?php if (!empty($evaluators)): ?>

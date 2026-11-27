@@ -1202,7 +1202,7 @@ $client_initials = $initials;
             <div class="flex-1 relative">
                 <i class="fas fa-search absolute left-2.5 sm:left-3 top-1/2 -translate-y-1/2 text-[var(--text3)] text-[11px] sm:text-xs pointer-events-none"></i>
                 <input type="text" id="searchInput"
-                    class="w-full py-2 sm:py-[9px] pr-8 sm:pr-9 pl-8 sm:pl-[34px] border border-[var(--border)] rounded-lg sm:rounded-[10px] text-[12px] sm:text-[13px] font-medium text-[var(--text1)] bg-[var(--surface)] outline-none transition-colors focus:border-[var(--blue-lt)] focus:bg-white placeholder:text-[var(--text3)]"
+                    class="w-full py-2 sm:py-[9px] pr-8 sm:pr-9 pl-8 sm:pl-[34px] border border-[var(--border)] rounded-lg sm:rounded-[10px] text-[12px] sm:text-[13px] font-medium text-[var(--text1)] bg-[var(--surface)] outline-none transition-colors focus:border-[var(--blue-lt)] focus:bg-[var(--card)] placeholder:text-[var(--text3)]"
                     placeholder="Search position, employer, country, RSF number…">
                 <button type="button" id="searchClear"
                     class="absolute right-2.5 sm:right-3 top-1/2 -translate-y-1/2 text-[var(--text3)] text-[11px] sm:text-xs hidden hover:text-[var(--text1)]" title="Clear search">

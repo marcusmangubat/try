@@ -2,6 +2,7 @@
 session_start();
 require_once '../db.php';
 require_once '../auth.php';
+require_once '../includes/comment-visibility.php';
 
 if (!isset($_SESSION['user_email']) || ($_SESSION['user_type'] ?? '') !== 'client') {
     header('Location: ../login.php');
@@ -59,6 +60,7 @@ $dc_stmt = $database->prepare("
     AND dc.id = (
           SELECT MAX(dc2.id) FROM document_comments dc2 WHERE dc2.document_id = dc.document_id
       )
+    AND " . sql_comment_not_addressed('dc', 'ad') . "
     ORDER BY dc.created_at DESC
     LIMIT 10
 ");

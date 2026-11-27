@@ -8,6 +8,10 @@
  * evaluations, assignments, answers, or preferred countries/positions).
  * Every filter, summary card, chart, and export operates on the SAME filtered
  * result set (built once via buildWhere()) so numbers always stay in sync.
+ *
+ * UI NOTE: presentation layer rebuilt with Tailwind CSS (responsive, with a
+ * dedicated mobile card view), matching evaluator-reports.php.
+ * All backend logic below is unchanged.
  */
 session_start();
 require_once '../db.php';
@@ -595,6 +599,35 @@ $active_apps = $badge_stmt->get_result()->fetch_assoc()['total'] ?? 0;
 $badge_stmt->close();
 
 $generatedAt = date('F j, Y g:i A');
+
+/* ── VIEW-ONLY: shared Tailwind class strings (presentation only, no logic) ── */
+$cardCls   = 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 sm:p-6 mb-4 print:p-3 print:mb-3 print:border-slate-300 print:break-inside-avoid';
+$h2Cls     = 'flex items-center gap-2 m-0 mb-1 text-[15px] font-bold text-slate-900 dark:text-slate-100';
+$subCls    = 'm-0 mb-4 text-[11px] leading-relaxed text-slate-600 dark:text-slate-400';
+$btnBase   = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-lg border text-xs font-semibold no-underline cursor-pointer transition-colors disabled:opacity-60 disabled:cursor-not-allowed';
+$btnDef    = $btnBase . ' border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700';
+$btnPri    = $btnBase . ' border-blue-700 bg-blue-700 text-white hover:bg-blue-500 hover:border-blue-500';
+$btnGreen  = $btnBase . ' border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600 hover:border-emerald-600';
+$btnRed    = $btnBase . ' border-red-600 bg-red-600 text-white hover:bg-red-700 hover:border-red-700';
+$labelCls  = 'block mb-1.5 text-[10.5px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400';
+$fieldCls  = 'w-full px-2.5 py-2 border border-slate-200 dark:border-slate-600 rounded-lg text-base sm:text-[12.5px] bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-slate-800';
+$dateCls   = 'w-full py-2 pl-8 pr-2.5 border border-slate-200 dark:border-slate-600 rounded-lg text-base sm:text-[12.5px] bg-slate-50 dark:bg-slate-700 text-slate-900 dark:text-slate-100 cursor-pointer dark:[color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-slate-800 group-[.dw-error]:border-red-600 group-[.dw-error]:bg-red-50 dark:group-[.dw-error]:bg-red-400/10 [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer';
+$dateLbl   = 'flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400';
+$tileCls   = 'border border-l-[3px] rounded-[10px] px-3.5 py-3 bg-slate-50 dark:bg-slate-700/60 lg:flex-1 lg:min-w-[135px] lg:whitespace-nowrap print:break-inside-avoid';
+$chartCard = 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-3.5 sm:p-4 print:mb-3.5 print:w-full print:break-inside-avoid print:border-slate-300';
+$chartH3   = 'flex items-center gap-1.5 m-0 mb-3 text-[12.5px] font-bold text-slate-900 dark:text-slate-100';
+$chartBox  = 'relative h-[240px] sm:h-[260px] print:h-[230px] print:!w-full';
+
+$tiles = [
+    [$summary['total'],            'Total Applicants',      'border-blue-500'],
+    [$summary['pending'],          'Pending',               'border-yellow-500'],
+    [$summary['under_evaluation'], 'Under Evaluation',      'border-indigo-500'],
+    [$summary['for_compliance'],   'For Compliance',        'border-amber-600'],
+    [$summary['resubmitted'],      'Resubmitted',           'border-pink-500'],
+    [$summary['approved'],         'Approved',              'border-emerald-500'],
+    [$summary['disapproved'],      'Disapproved',           'border-red-600'],
+    [$summary['active'],           'Active Applications',   'border-blue-700'],
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -604,6 +637,20 @@ $generatedAt = date('F j, Y g:i A');
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Applicant Reports – DMW RO IV-A</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Dark mode follows the site's existing [data-theme="dark"] attribute (set by theme.js).
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]'],
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+                        serif: ['"DM Serif Display"', 'serif']
+                    }
+                }
+            }
+        };
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
@@ -611,11 +658,13 @@ $generatedAt = date('F j, Y g:i A');
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+    <!-- Shared portal chrome (top bar, dock, theme toggle) -->
     <link rel="stylesheet" href="../css/dashboard.css">
     <link rel="stylesheet" href="../css/darkmode.css">
     <?php include '../includes/theme-init.php'; ?>
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <style>
+        /* Only what Tailwind utilities cannot express: shared top-bar logo + exact print colours */
         .topbar-brand img {
             width: 42px;
             height: auto;
@@ -623,909 +672,12 @@ $generatedAt = date('F j, Y g:i A');
             background: transparent;
             filter: none;
         }
-    </style>
-    <style>
-        :root {
-            --blue: #1d4ed8;
-            --blue-lt: #3b82f6;
-            --ok: #10b981;
-            --amber: #d97706;
-            --indigo: #6366f1;
-            --gold: #eab308;
-            --red: #dc2626;
-            --pink: #ec4899;
-            --text1: #0f172a;
-            --text2: #475569;
-            --text3: #94a3b8;
-            --bdr: #e2e8f0;
-            --surface: #ffffff;
-            --surface2: #f8fafc;
-            --selected-row: #eff6ff;
-        }
 
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            margin: 0;
-            font-family: 'DM Sans', system-ui, sans-serif;
-            background: #eef2f7;
-            color: var(--text1);
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            border-radius: 8px;
-            border: 1px solid var(--bdr);
-            background: var(--surface);
-            color: var(--text1);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            transition: background .15s, border-color .15s;
-        }
-
-        .btn:hover {
-            background: var(--surface2);
-        }
-
-        .btn:disabled {
-            opacity: .6;
-            cursor: not-allowed;
-        }
-
-        .btn-primary {
-            background: var(--blue);
-            border-color: var(--blue);
-            color: #fff;
-        }
-
-        .btn-primary:hover {
-            background: var(--blue-lt);
-        }
-
-        .btn-green {
-            background: var(--ok);
-            border-color: var(--ok);
-            color: #fff;
-        }
-
-        .btn-green:hover {
-            background: var(--ok);
-            border-color: var(--ok);
-            color: #fff;
-            filter: brightness(1.08);
-        }
-
-        .btn-red {
-            background: var(--red);
-            border-color: var(--red);
-            color: #fff;
-        }
-
-        .btn-red:hover {
-            background: var(--red);
-            border-color: var(--red);
-            color: #fff;
-            filter: brightness(1.08);
-        }
-
-        .btn-ghost {
-            background: transparent;
-        }
-
-        /* ── Page shell ─────────────────────────────────────────── */
-        .sheet {
-            max-width: 1280px;
-            margin: 20px auto;
-            padding: 0 16px 110px;
-        }
-
-        .letterhead {
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 12px;
-            padding: 20px 24px;
-            margin-bottom: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-
-        .letterhead-left {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        .letterhead-left img {
-            height: 46px;
-        }
-
-        .letterhead h1 {
-            font-size: 16px;
-            margin: 0 0 2px;
-            font-family: 'DM Serif Display', serif;
-        }
-
-        .letterhead p {
-            margin: 0;
-            font-size: 11px;
-            color: var(--text2);
-        }
-
-        .letterhead-right {
-            text-align: right;
-            font-size: 11px;
-            color: var(--text2);
-        }
-
-        .letterhead-right b {
-            color: var(--text1);
-        }
-
-        .toolbar-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 16px;
-        }
-
-        .report-card {
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 12px;
-            padding: 20px 24px;
-            margin-bottom: 16px;
-        }
-
-        .report-card h2 {
-            font-size: 15px;
-            margin: 0 0 4px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .report-card .sub {
-            font-size: 11px;
-            color: var(--text2);
-            margin: 0 0 16px;
-        }
-
-        /* ── Filter panel ───────────────────────────────────────── */
-        .filter-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-            gap: 12px;
-        }
-
-        .filter-field label {
-            display: block;
-            font-size: 10.5px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: .03em;
-            color: var(--text2);
-            margin-bottom: 5px;
-        }
-
-        .filter-field select,
-        .filter-field input {
-            width: 100%;
-            padding: 8px 10px;
-            border: 1px solid var(--bdr);
-            border-radius: 8px;
-            font-size: 12.5px;
-            font-family: inherit;
-            background: var(--surface2);
-            color: var(--text1);
-        }
-
-        .filter-field select:focus,
-        .filter-field input:focus {
-            outline: 2px solid var(--blue-lt);
-            outline-offset: 1px;
-            background: #fff;
-        }
-
-        .custom-range {
-            display: none;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-
-        .custom-range.show {
-            display: grid;
-        }
-
-        .date-input-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .date-input-group .di-label {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: .03em;
-            color: var(--text2);
-        }
-
-        .date-input-group .di-label i {
-            font-size: 9px;
-            color: var(--blue-lt);
-        }
-
-        .date-input-wrap {
-            position: relative;
-            display: flex;
-            align-items: center;
-        }
-
-        .date-input-wrap i.di-icon {
-            position: absolute;
-            left: 10px;
-            font-size: 12px;
-            color: var(--text3);
-            pointer-events: none;
-            transition: color .15s;
-        }
-
-        .date-input-wrap input[type="date"] {
-            padding: 8px 10px 8px 30px;
-            border: 1px solid var(--bdr);
-            border-radius: 8px;
-            font-size: 12.5px;
-            font-family: inherit;
-            background: var(--surface2);
-            color: var(--text1);
-            width: 100%;
-            cursor: pointer;
-            color-scheme: light;
-            transition: border-color .15s, background .15s, box-shadow .15s;
-        }
-
-        .date-input-wrap input[type="date"]:hover {
-            background: #fff;
-            border-color: #cbd5e1;
-        }
-
-        .date-input-wrap input[type="date"]:focus {
-            outline: none;
-            background: #fff;
-            border-color: var(--blue-lt);
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, .15);
-        }
-
-        .date-input-wrap input[type="date"]:focus+i.di-icon,
-        .date-input-wrap:focus-within i.di-icon {
-            color: var(--blue-lt);
-        }
-
-        /* Invalid range feedback (To earlier than From) */
-        .date-input-wrap.dw-error input[type="date"] {
-            border-color: var(--red);
-            background: #fef2f2;
-        }
-
-        .date-range-hint {
-            grid-column: 1 / -1;
-            font-size: 10.5px;
-            color: var(--text3);
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            min-height: 14px;
-        }
-
-        .date-range-hint.err {
-            color: var(--red);
-            font-weight: 600;
-        }
-
-        .date-range-hint i {
-            font-size: 10px;
-        }
-
-        /* Normalize the native calendar-picker glyph so it doesn't clash with our icon */
-        .date-input-wrap input[type="date"]::-webkit-calendar-picker-indicator {
-            opacity: 0;
-            position: absolute;
-            right: 0;
-            width: 100%;
-            height: 100%;
-            cursor: pointer;
-        }
-
-        .filter-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 1px solid var(--bdr);
-        }
-
-        /* ── Summary tiles ──────────────────────────────────────── */
-        .tiles {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
-            gap: 10px;
-        }
-
-        .tile {
-            background: var(--surface2);
-            border: 1px solid var(--bdr);
-            border-radius: 10px;
-            padding: 12px 14px;
-            border-left: 3px solid var(--blue-lt);
-        }
-
-        .tile .tv {
-            font-size: 22px;
-            font-weight: 800;
-        }
-
-        .tile .tl {
-            font-size: 10.5px;
-            color: var(--text2);
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: .03em;
-        }
-
-        /* ── Charts grid ────────────────────────────────────────── */
-        .charts-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-            gap: 16px;
-        }
-
-        .chart-card {
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 12px;
-            padding: 16px 18px;
-        }
-
-        .chart-card h3 {
-            font-size: 12.5px;
-            margin: 0 0 12px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--text1);
-        }
-
-        .chart-card .chart-holder {
-            position: relative;
-            height: 260px;
-        }
-
-        .chart-holder.chart-holder-x-scroll {
-            overflow-x: auto;
-            overflow-y: hidden;
-        }
-
-        .chart-holder.chart-holder-x-scroll .chart-scroll-inner {
-            height: 100%;
-        }
-
-        /* thin, unobtrusive scrollbar for the employer chart */
-        .chart-holder.chart-holder-x-scroll {
-            scrollbar-width: thin;
-            scrollbar-color: #cbd5e1 #f8fafc;
-        }
-
-        .chart-holder.chart-holder-x-scroll::-webkit-scrollbar {
-            height: 6px;
-        }
-
-        .chart-holder.chart-holder-x-scroll::-webkit-scrollbar-track {
-            background: #f8fafc;
-        }
-
-        .chart-holder.chart-holder-x-scroll::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 999px;
-        }
-
-        /* Applicant table + custom dropdown option list scrollbars */
-        .table-scroll,
-        .rs-option-list {
-            scrollbar-width: thin;
-            scrollbar-color: #cbd5e1 #f8fafc;
-        }
-
-        .table-scroll::-webkit-scrollbar,
-        .rs-option-list::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-
-        .table-scroll::-webkit-scrollbar-track,
-        .rs-option-list::-webkit-scrollbar-track {
-            background: #f8fafc;
-        }
-
-        .table-scroll::-webkit-scrollbar-thumb,
-        .rs-option-list::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 999px;
-        }
-
-        /* ── Table ──────────────────────────────────────────────── */
-        .table-toolbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-bottom: 12px;
-        }
-
-        .quick-search {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: var(--surface2);
-            border: 1px solid var(--bdr);
-            border-radius: 8px;
-            padding: 7px 12px;
-            min-width: 240px;
-        }
-
-        .quick-search input {
-            border: none;
-            background: transparent;
-            outline: none;
-            font-size: 12.5px;
-            font-family: inherit;
-            flex: 1;
-        }
-
-        .table-scroll {
-            overflow-x: auto;
-            border: 1px solid var(--bdr);
-            border-radius: 10px;
-        }
-
-        table.data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 11.5px;
-        }
-
-        table.data-table thead th {
-            background: var(--surface2);
-            text-align: left;
-            padding: 9px 10px;
-            font-weight: 700;
-            font-size: 10.5px;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            color: var(--text2);
-            border-bottom: 2px solid var(--bdr);
-            white-space: nowrap;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        table.data-table thead th:hover {
-            color: var(--blue);
-        }
-
-        table.data-table thead th .sort-ic {
-            font-size: 9px;
-            margin-left: 4px;
-            opacity: .5;
-        }
-
-        table.data-table tbody td {
-            padding: 8px 10px;
-            border-bottom: 1px solid var(--bdr);
-            color: var(--text1);
-            white-space: nowrap;
-        }
-
-        table.data-table tbody tr {
-            cursor: pointer;
-        }
-
-        table.data-table tbody tr:hover {
-            background: #eff6ff;
-        }
-
-        table.data-table tbody tr:nth-child(even) {
-            background: #fbfcfe;
-        }
-
-        table.data-table tbody tr:nth-child(even):hover {
-            background: #eff6ff;
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 999px;
-            font-size: 10px;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-
-        .b-approved {
-            background: #d1fae5;
-            color: #047857;
-        }
-
-        .b-disapproved {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
-
-        .b-pending {
-            background: #fef3c7;
-            color: #b45309;
-        }
-
-        .b-other {
-            background: #e0e7ff;
-            color: #3730a3;
-        }
-
-        .empty-row td {
-            text-align: center;
-            color: var(--text3);
-            padding: 28px;
-            font-style: italic;
-        }
-
-        .pagination-bar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 12px;
-            font-size: 12px;
-            color: var(--text2);
-        }
-
-        .pagination-bar select {
-            border: 1px solid var(--bdr);
-            border-radius: 6px;
-            padding: 4px 8px;
-            font-size: 12px;
-            background: var(--surface);
-        }
-
-        .page-btns {
-            display: flex;
-            gap: 6px;
-        }
-
-        .page-btns button {
-            border: 1px solid var(--bdr);
-            background: var(--surface);
-            border-radius: 6px;
-            padding: 4px 10px;
-            font-size: 12px;
-            cursor: pointer;
-        }
-
-        .page-btns button:disabled {
-            opacity: .4;
-            cursor: not-allowed;
-        }
-
-        .footer-note {
-            font-size: 10.5px;
-            color: var(--text3);
-            text-align: center;
-            margin-top: 18px;
-        }
-
-        .pdf-export-wrap {
-            position: relative;
-            display: inline-block;
-        }
-
-        .pdf-export-menu {
-            display: none;
-            position: absolute;
-            top: calc(100% + 6px);
-            left: 0;
-            min-width: 260px;
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(11, 31, 75, .16);
-            z-index: 90;
-            padding: 6px;
-        }
-
-        .pdf-export-menu.open {
-            display: block;
-        }
-
-        .pdf-menu-item {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            width: 100%;
-            text-align: left;
-            padding: 9px 10px;
-            border: none;
-            background: transparent;
-            border-radius: 8px;
-            cursor: pointer;
-            font-family: inherit;
-        }
-
-        .pdf-menu-item i {
-            font-size: 13px;
-            margin-top: 2px;
-            width: 16px;
-            text-align: center;
-            flex-shrink: 0;
-        }
-
-        .pdf-menu-item span {
-            display: flex;
-            flex-direction: column;
-            gap: 1px;
-        }
-
-        .pdf-menu-item strong {
-            font-size: 12px;
-            color: var(--text1);
-            font-weight: 700;
-        }
-
-        .pdf-menu-item small {
-            font-size: 10.5px;
-            color: var(--text3);
-        }
-
-        .pdf-menu-item:hover {
-            background: var(--surface2);
-        }
-
-        .pdf-menu-divider {
-            height: 1px;
-            background: var(--bdr);
-            margin: 4px 2px;
-        }
-
-        .rs-search-input::placeholder {
-            color: var(--text3);
-        }
-
-        /*  Print  */
         @media print {
-            .no-print {
-                display: none !important;
-            }
-
             * {
                 -webkit-print-color-adjust: exact !important;
                 print-color-adjust: exact !important;
             }
-
-            body {
-                background: #fff;
-            }
-
-            .sheet {
-                max-width: 100%;
-                margin: 0;
-                padding: 0;
-            }
-
-            .letterhead,
-            .report-card {
-                border: 1px solid #d7dee7 !important;
-                box-shadow: none;
-                padding: 12px 14px;
-                margin-bottom: 12px;
-                page-break-inside: avoid;
-                break-inside: avoid;
-            }
-
-            .letterhead {
-                page-break-after: avoid;
-            }
-
-            .tiles {
-                grid-template-columns: repeat(4, 1fr);
-            }
-
-            .tile {
-                page-break-inside: avoid;
-                break-inside: avoid;
-            }
-
-            /* One chart per row, never split across a page break */
-            .charts-grid {
-                display: block;
-            }
-
-            .chart-card {
-                page-break-inside: avoid;
-                break-inside: avoid;
-                margin-bottom: 14px;
-                border: 1px solid #d7dee7 !important;
-                width: 100%;
-            }
-
-            .chart-card .chart-holder {
-                height: 230px;
-                width: 100% !important;
-            }
-
-            /* Undo horizontal scroll for print — the employer chart is resized
-               via JS (beforeprint handler below) to fit the printable width,
-               so nothing is clipped off the visible page. */
-            .chart-holder.chart-holder-x-scroll {
-                overflow: visible !important;
-            }
-
-            .chart-holder.chart-holder-x-scroll .chart-scroll-inner {
-                width: 100% !important;
-                min-width: 0 !important;
-            }
-
-            .table-scroll {
-                border: none;
-                overflow: visible !important;
-            }
-
-            table.data-table {
-                font-size: 8.5px;
-            }
-
-            table.data-table thead {
-                display: table-header-group;
-            }
-
-            table.data-table tbody tr {
-                page-break-inside: avoid;
-                break-inside: avoid;
-            }
-        }
-
-        [data-theme="dark"] {
-            --blue: #3b82f6;
-            --blue-lt: #60a5fa;
-            --ok: #34d399;
-            --amber: #fbbf24;
-            --indigo: #818cf8;
-            --gold: #facc15;
-            --red: #f87171;
-            --pink: #f472b6;
-            --text1: #e2e8f0;
-            --text2: #94a3b8;
-            --text3: #64748b;
-            --bdr: #2d3748;
-            --surface: #1e293b;
-            --surface2: #263449;
-            --selected-row: rgba(59, 130, 246, .22);
-        }
-
-        [data-theme="dark"] body {
-            background: #0f172a;
-        }
-
-        [data-theme="dark"] .filter-field select,
-        [data-theme="dark"] .filter-field input,
-        [data-theme="dark"] .date-input-wrap input[type="date"] {
-            background: var(--surface2);
-            color: var(--text1);
-            border-color: var(--bdr);
-            color-scheme: dark;
-        }
-
-        [data-theme="dark"] .filter-field select:focus,
-        [data-theme="dark"] .date-input-wrap input[type="date"]:focus {
-            background: #1a2332;
-        }
-
-        [data-theme="dark"] .date-input-wrap input[type="date"]:hover {
-            background: #1a2332;
-            border-color: #3b4658;
-        }
-
-        [data-theme="dark"] .date-input-wrap input[type="date"]::-webkit-calendar-picker-indicator {
-            filter: invert(1);
-        }
-
-        [data-theme="dark"] .date-input-wrap.dw-error input[type="date"] {
-            background: rgba(248, 113, 113, .12);
-            border-color: var(--red);
-        }
-
-        [data-theme="dark"] table.data-table tbody tr:nth-child(even) {
-            background: #1a2332;
-        }
-
-        [data-theme="dark"] table.data-table tbody tr:hover,
-        [data-theme="dark"] table.data-table tbody tr:nth-child(even):hover {
-            background: #263449;
-        }
-
-        [data-theme="dark"] .badge.b-approved {
-            background: rgba(16, 185, 129, .18);
-            color: #34d399;
-        }
-
-        [data-theme="dark"] .badge.b-disapproved {
-            background: rgba(220, 38, 38, .20);
-            color: #f87171;
-        }
-
-        [data-theme="dark"] .badge.b-pending {
-            background: rgba(217, 119, 6, .20);
-            color: #fbbf24;
-        }
-
-        [data-theme="dark"] .badge.b-other {
-            background: rgba(99, 102, 241, .20);
-            color: #a5b4fc;
-        }
-
-        [data-theme="dark"] .quick-search {
-            background: var(--surface2);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .quick-search input {
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] .pagination-bar select,
-        [data-theme="dark"] .page-btns button {
-            background: var(--surface);
-            border-color: var(--bdr);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] .chart-holder.chart-holder-x-scroll {
-            scrollbar-color: #3b4658 #1e293b;
-        }
-
-        [data-theme="dark"] .chart-holder.chart-holder-x-scroll::-webkit-scrollbar-track {
-            background: #1e293b;
-        }
-
-        [data-theme="dark"] .chart-holder.chart-holder-x-scroll::-webkit-scrollbar-thumb {
-            background: #3b4658;
-        }
-
-        [data-theme="dark"] .table-scroll,
-        [data-theme="dark"] .rs-option-list {
-            scrollbar-color: #3b4658 #1e293b;
-        }
-
-        [data-theme="dark"] .table-scroll::-webkit-scrollbar-track,
-        [data-theme="dark"] .rs-option-list::-webkit-scrollbar-track {
-            background: #1e293b;
-        }
-
-        [data-theme="dark"] .table-scroll::-webkit-scrollbar-thumb,
-        [data-theme="dark"] .rs-option-list::-webkit-scrollbar-thumb {
-            background: #3b4658;
         }
     </style>
     <script>
@@ -1536,10 +688,10 @@ $generatedAt = date('F j, Y g:i A');
     </script>
 </head>
 
-<body>
+<body class="m-0 font-sans !bg-[#eef2f7] dark:!bg-slate-900 text-slate-900 dark:text-slate-200 print:!bg-white">
 
     <!--  TOP BAR  -->
-    <header class="topbar no-print">
+    <header class="topbar no-print print:hidden">
         <div class="topbar-brand">
             <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
             <div class="brand-divider"></div>
@@ -1565,284 +717,274 @@ $generatedAt = date('F j, Y g:i A');
         </div>
     </header>
 
-    <div class="sheet">
+    <div class="max-w-[1280px] mx-auto mt-4 sm:mt-5 px-3 sm:px-4 pb-28 print:max-w-full print:m-0 print:p-0">
 
-        <div class="letterhead">
-            <div class="letterhead-left">
-                <img src="../pictures/dmw_logo.png" alt="DMW logo">
-                <div>
-                    <h1>Applicant Reports</h1>
-                    <p><?= htmlspecialchars($greeting) ?>, <?= htmlspecialchars($admin_name) ?> — Filter, analyze, and export applicant data</p>
+        <!-- LETTERHEAD -->
+        <div class="<?= $cardCls ?> flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div class="flex items-center gap-3.5 min-w-0">
+                <img src="../pictures/dmw_logo.png" alt="DMW logo" class="h-11 sm:h-[46px] w-auto shrink-0">
+                <div class="min-w-0">
+                    <h1 class="m-0 mb-0.5 font-serif text-base sm:text-lg font-normal text-slate-900 dark:text-slate-100">Applicant Reports</h1>
+                    <p class="m-0 text-[11px] text-slate-600 dark:text-slate-400"><?= htmlspecialchars($greeting) ?>, <?= htmlspecialchars($admin_name) ?> — Filter, analyze, and export applicant data</p>
                 </div>
             </div>
-            <div class="letterhead-right">
-                <div>Generated: <b><?= htmlspecialchars($generatedAt) ?></b></div>
-                <div>Records matched: <b><?= (int) $summary['total'] ?></b></div>
+            <div class="flex flex-row sm:flex-col gap-x-4 gap-y-0.5 flex-wrap sm:text-right text-[11px] text-slate-600 dark:text-slate-400">
+                <div>Generated: <b class="text-slate-900 dark:text-slate-100"><?= htmlspecialchars($generatedAt) ?></b></div>
+                <div>Records matched: <b class="text-slate-900 dark:text-slate-100"><?= (int) $summary['total'] ?></b></div>
             </div>
         </div>
 
-        <div class="toolbar-actions no-print">
-            <a href="dashboard.php" class="btn"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
-            <button class="btn" onclick="window.print()"><i class="fas fa-print"></i> Print Report</button>
-            <button class="btn btn-green" onclick="exportExcel()"><i class="fas fa-file-excel"></i> Export Excel</button>
-            <button class="btn" onclick="exportCSV()"><i class="fas fa-file-csv"></i> Export CSV</button>
-            <div class="pdf-export-wrap no-print">
-                <button class="btn btn-red" id="btnPdf" onclick="togglePdfMenu(event)" aria-haspopup="true" aria-expanded="false">
-                    <i class="fas fa-file-pdf"></i> Export PDF <i class="fas fa-chevron-down" style="font-size:9px;margin-left:2px;"></i>
+        <!-- ACTIONS -->
+        <div class="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 mb-4 no-print print:hidden">
+            <a href="dashboard.php" class="<?= $btnDef ?>"><i class="fas fa-arrow-left"></i> Back<span class="hidden sm:inline">&nbsp;to Dashboard</span></a>
+            <button class="<?= $btnDef ?>" onclick="window.print()"><i class="fas fa-print"></i> Print<span class="hidden sm:inline">&nbsp;Report</span></button>
+            <button class="<?= $btnGreen ?>" onclick="exportExcel()"><i class="fas fa-file-excel"></i> Export Excel</button>
+            <button class="<?= $btnDef ?>" onclick="exportCSV()"><i class="fas fa-file-csv"></i> Export CSV</button>
+            <div class="relative col-span-2 sm:col-span-1 pdf-export-wrap">
+                <button class="<?= $btnRed ?> w-full sm:w-auto" id="btnPdf" onclick="togglePdfMenu(event)" aria-haspopup="true" aria-expanded="false">
+                    <i class="fas fa-file-pdf"></i> Export PDF <i class="fas fa-chevron-down text-[9px] ml-0.5"></i>
                 </button>
-                <div class="pdf-export-menu" id="pdfExportMenu">
-                    <button type="button" class="pdf-menu-item" onclick="exportPDF('details')">
-                        <i class="fas fa-table-list" style="color:var(--blue-lt)"></i>
-                        <span>
-                            <strong>Applicant Details Only</strong>
-                            <small>Summary cards + applicant table + full records</small>
+                <div id="pdfExportMenu" class="hidden absolute top-full left-0 right-0 sm:right-auto sm:w-72 mt-1.5 p-1.5 z-[90] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[10px] shadow-xl">
+                    <button type="button" class="flex items-start gap-2.5 w-full text-left p-2.5 rounded-lg bg-transparent border-0 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700" onclick="exportPDF('details')">
+                        <i class="fas fa-table-list text-blue-500 text-[13px] mt-0.5 w-4 text-center shrink-0"></i>
+                        <span class="flex flex-col gap-px">
+                            <strong class="text-xs font-bold text-slate-900 dark:text-slate-100">Applicant Details Only</strong>
+                            <small class="text-[10.5px] text-slate-500 dark:text-slate-400">Summary cards + applicant table + full records</small>
                         </span>
                     </button>
-                    <button type="button" class="pdf-menu-item" onclick="exportPDF('charts')">
-                        <i class="fas fa-chart-column" style="color:var(--indigo)"></i>
-                        <span>
-                            <strong>Graphs Only</strong>
-                            <small>Visual analytics charts</small>
+                    <button type="button" class="flex items-start gap-2.5 w-full text-left p-2.5 rounded-lg bg-transparent border-0 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700" onclick="exportPDF('charts')">
+                        <i class="fas fa-chart-column text-indigo-500 text-[13px] mt-0.5 w-4 text-center shrink-0"></i>
+                        <span class="flex flex-col gap-px">
+                            <strong class="text-xs font-bold text-slate-900 dark:text-slate-100">Graphs Only</strong>
+                            <small class="text-[10.5px] text-slate-500 dark:text-slate-400">Visual analytics charts</small>
                         </span>
                     </button>
-                    <div class="pdf-menu-divider"></div>
-                    <button type="button" class="pdf-menu-item" onclick="exportPDF('both')">
-                        <i class="fas fa-file-pdf" style="color:var(--red)"></i>
-                        <span>
-                            <strong>Both (Complete Report)</strong>
-                            <small>Downloads both PDF files</small>
+                    <div class="h-px bg-slate-200 dark:bg-slate-700 my-1 mx-0.5"></div>
+                    <button type="button" class="flex items-start gap-2.5 w-full text-left p-2.5 rounded-lg bg-transparent border-0 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700" onclick="exportPDF('both')">
+                        <i class="fas fa-file-pdf text-red-600 text-[13px] mt-0.5 w-4 text-center shrink-0"></i>
+                        <span class="flex flex-col gap-px">
+                            <strong class="text-xs font-bold text-slate-900 dark:text-slate-100">Both (Complete Report)</strong>
+                            <small class="text-[10.5px] text-slate-500 dark:text-slate-400">Downloads both PDF files</small>
                         </span>
                     </button>
                 </div>
             </div>
         </div>
 
-        <!--  FILTERS  -->
-        <form class="report-card no-print" id="filterForm" method="GET" action="applicant-reports.php">
-            <h2><i class="fas fa-sliders" style="color:var(--blue-lt)"></i> Filters</h2>
-            <p class="sub">Generate a report by date range and any combination of the filters below. All filters apply together to the summary cards, charts, table, and exports.</p>
+        <!-- FILTERS -->
+        <form class="<?= $cardCls ?> no-print print:hidden" id="filterForm" method="GET" action="applicant-reports.php">
+            <div class="flex items-center justify-between gap-2">
+                <h2 class="<?= $h2Cls ?>"><i class="fas fa-sliders text-blue-500"></i> Filters</h2>
+                <button type="button" id="filterToggle" class="md:hidden <?= $btnDef ?> !px-3 !py-1.5" aria-controls="filterBody" aria-expanded="<?= $filterSummaryParts ? 'true' : 'false' ?>">
+                    <i class="fas fa-chevron-down text-[9px] transition-transform <?= $filterSummaryParts ? 'rotate-180' : '' ?>" id="filterToggleIcon"></i>
+                    <span id="filterToggleText"><?= $filterSummaryParts ? 'Hide filters' : 'Show filters' ?></span>
+                </button>
+            </div>
 
-            <div class="filter-grid">
-                <div class="filter-field">
-                    <label>Date Range</label>
-                    <select name="date_preset" id="datePreset">
-                        <option value="" <?= $f_date_preset === '' ? 'selected' : '' ?>>All Time</option>
-                        <option value="today" <?= $f_date_preset === 'today' ? 'selected' : '' ?>>Today</option>
-                        <option value="week" <?= $f_date_preset === 'week' ? 'selected' : '' ?>>This Week</option>
-                        <option value="month" <?= $f_date_preset === 'month' ? 'selected' : '' ?>>This Month</option>
-                        <option value="year" <?= $f_date_preset === 'year' ? 'selected' : '' ?>>This Year</option>
-                        <option value="custom" <?= $f_date_preset === 'custom' ? 'selected' : '' ?>>Custom Range</option>
-                    </select>
-                </div>
-                <div class="filter-field" style="grid-column: span 2;">
-                    <label>Custom Range</label>
-                    <div class="custom-range <?= $f_date_preset === 'custom' ? 'show' : '' ?>" id="customRange">
-                        <div class="date-input-group">
-                            <span class="di-label"><i class="fas fa-calendar-day"></i> From</span>
-                            <div class="date-input-wrap" id="fromWrap">
-                                <i class="fas fa-calendar di-icon"></i>
-                                <input type="date" name="date_from" id="dateFrom" value="<?= htmlspecialchars($f_date_from) ?>" max="<?= htmlspecialchars($f_date_to !== '' && $f_date_to < $today_date ? $f_date_to : $today_date) ?>">
+            <div id="filterBody" class="<?= $filterSummaryParts ? '' : 'hidden' ?> md:block mt-1">
+                <p class="<?= $subCls ?>">Generate a report by date range and any combination of the filters below. All filters apply together to the summary cards, charts, table, and exports.</p>
+
+                <div class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,190px),1fr))] gap-3">
+                    <div>
+                        <label class="<?= $labelCls ?>">Date Range</label>
+                        <select name="date_preset" id="datePreset" class="<?= $fieldCls ?>">
+                            <option value="" <?= $f_date_preset === '' ? 'selected' : '' ?>>All Time</option>
+                            <option value="today" <?= $f_date_preset === 'today' ? 'selected' : '' ?>>Today</option>
+                            <option value="week" <?= $f_date_preset === 'week' ? 'selected' : '' ?>>This Week</option>
+                            <option value="month" <?= $f_date_preset === 'month' ? 'selected' : '' ?>>This Month</option>
+                            <option value="year" <?= $f_date_preset === 'year' ? 'selected' : '' ?>>This Year</option>
+                            <option value="custom" <?= $f_date_preset === 'custom' ? 'selected' : '' ?>>Custom Range</option>
+                        </select>
+                    </div>
+
+                    <div class="col-span-full sm:col-span-2">
+                        <label class="<?= $labelCls ?>">Custom Range</label>
+                        <div id="customRange" class="grid-cols-1 sm:grid-cols-2 gap-3 <?= $f_date_preset === 'custom' ? 'grid' : 'hidden' ?>">
+                            <div class="flex flex-col gap-1.5">
+                                <span class="<?= $dateLbl ?>"><i class="fas fa-calendar-day text-[9px] text-blue-500"></i> From</span>
+                                <div class="group relative flex items-center" id="fromWrap">
+                                    <i class="fas fa-calendar absolute left-2.5 text-xs text-slate-400 pointer-events-none"></i>
+                                    <input type="date" name="date_from" id="dateFrom" class="<?= $dateCls ?>" value="<?= htmlspecialchars($f_date_from) ?>" max="<?= htmlspecialchars($f_date_to !== '' && $f_date_to < $today_date ? $f_date_to : $today_date) ?>">
+                                </div>
                             </div>
-                        </div>
-                        <div class="date-input-group">
-                            <span class="di-label"><i class="fas fa-calendar-check"></i> To</span>
-                            <div class="date-input-wrap" id="toWrap">
-                                <i class="fas fa-calendar di-icon"></i>
-                                <input type="date" name="date_to" id="dateTo" value="<?= htmlspecialchars($f_date_to) ?>" min="<?= htmlspecialchars($f_date_from ?: '') ?>" max="<?= htmlspecialchars($today_date) ?>">
+                            <div class="flex flex-col gap-1.5">
+                                <span class="<?= $dateLbl ?>"><i class="fas fa-calendar-check text-[9px] text-blue-500"></i> To</span>
+                                <div class="group relative flex items-center" id="toWrap">
+                                    <i class="fas fa-calendar absolute left-2.5 text-xs text-slate-400 pointer-events-none"></i>
+                                    <input type="date" name="date_to" id="dateTo" class="<?= $dateCls ?>" value="<?= htmlspecialchars($f_date_to) ?>" min="<?= htmlspecialchars($f_date_from ?: '') ?>" max="<?= htmlspecialchars($today_date) ?>">
+                                </div>
                             </div>
+                            <div id="rangeHint" class="col-span-full flex items-center gap-1.5 min-h-[14px] text-[10.5px] text-slate-400 [&.err]:text-red-600 [&.err]:font-semibold"><i class="fas fa-circle-info text-[10px]"></i> Select both a start and end date.</div>
                         </div>
-                        <div class="date-range-hint" id="rangeHint"><i class="fas fa-circle-info"></i> Select both a start and end date.</div>
+                    </div>
+
+                    <div>
+                        <label class="<?= $labelCls ?>">Job / Position</label>
+                        <select name="rsf_id" class="<?= $fieldCls ?>">
+                            <option value="0">All Positions</option>
+                            <?php foreach ($rsfOptions as $o): ?>
+                                <option value="<?= (int) $o['id'] ?>" <?= $f_rsf_id === (int) $o['id'] ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($o['position_title'] . ' — ' . $o['employer_name']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="<?= $labelCls ?>">Country</label>
+                        <select name="country" class="<?= $fieldCls ?>">
+                            <option value="">All Countries</option>
+                            <?php foreach ($countryOptions as $c): ?>
+                                <option value="<?= htmlspecialchars($c) ?>" <?= $f_country === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="<?= $labelCls ?>">Status</label>
+                        <select name="status" class="<?= $fieldCls ?>">
+                            <option value="">All Statuses</option>
+                            <?php foreach ($validStatuses as $s): ?>
+                                <option value="<?= $s ?>" <?= $f_status === $s ? 'selected' : '' ?>><?= statusLabel($s) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="<?= $labelCls ?>">Evaluator</label>
+                        <select name="evaluator_id" class="<?= $fieldCls ?>">
+                            <option value="0">All Evaluators</option>
+                            <?php foreach ($evaluatorOptions as $o): ?>
+                                <option value="<?= (int) $o['eid'] ?>" <?= $f_evaluator_id === (int) $o['eid'] ? 'selected' : '' ?>><?= htmlspecialchars($o['full_name'] ?: $o['email']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="<?= $labelCls ?>">Employer</label>
+                        <select name="employer" class="<?= $fieldCls ?>">
+                            <option value="">All Employers</option>
+                            <?php foreach ($employerOptions as $e): ?>
+                                <option value="<?= htmlspecialchars($e) ?>" <?= $f_employer === $e ? 'selected' : '' ?>><?= htmlspecialchars($e) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="col-span-full sm:col-span-2">
+                        <label class="<?= $labelCls ?>">Search (Name / Email / Application ID)</label>
+                        <input type="text" name="search" class="<?= $fieldCls ?>" value="<?= htmlspecialchars($f_search) ?>" placeholder="e.g. Marcus Mangubat, mgmangubat@ccc.edu.ph, 123">
                     </div>
                 </div>
 
-                <div class="filter-field">
-                    <label>Job / Position</label>
-                    <select name="rsf_id">
-                        <option value="0">All Positions</option>
-                        <?php foreach ($rsfOptions as $o): ?>
-                            <option value="<?= (int) $o['id'] ?>" <?= $f_rsf_id === (int) $o['id'] ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($o['position_title'] . ' — ' . $o['employer_name']) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
+                <div class="grid grid-cols-2 sm:flex gap-2 mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+                    <button type="submit" class="<?= $btnPri ?>"><i class="fas fa-filter"></i> Generate Report</button>
+                    <a href="applicant-reports.php" class="<?= $btnDef ?>"><i class="fas fa-rotate-left"></i> Reset Filters</a>
                 </div>
-
-
-                <div class="filter-field">
-                    <label>Country</label>
-                    <select name="country">
-                        <option value="">All Countries</option>
-                        <?php foreach ($countryOptions as $c): ?>
-                            <option value="<?= htmlspecialchars($c) ?>" <?= $f_country === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="filter-field">
-                    <label>Status</label>
-                    <select name="status">
-                        <option value="">All Statuses</option>
-                        <?php foreach ($validStatuses as $s): ?>
-                            <option value="<?= $s ?>" <?= $f_status === $s ? 'selected' : '' ?>><?= statusLabel($s) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="filter-field">
-                    <label>Evaluator</label>
-                    <select name="evaluator_id">
-                        <option value="0">All Evaluators</option>
-                        <?php foreach ($evaluatorOptions as $o): ?>
-                            <option value="<?= (int) $o['eid'] ?>" <?= $f_evaluator_id === (int) $o['eid'] ? 'selected' : '' ?>><?= htmlspecialchars($o['full_name'] ?: $o['email']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="filter-field">
-                    <label>Employer</label>
-                    <select name="employer">
-                        <option value="">All Employers</option>
-                        <?php foreach ($employerOptions as $e): ?>
-                            <option value="<?= htmlspecialchars($e) ?>" <?= $f_employer === $e ? 'selected' : '' ?>><?= htmlspecialchars($e) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="filter-field" style="grid-column: span 2;">
-                    <label>Search (Name / Email / Application ID)</label>
-                    <input type="text" name="search" value="<?= htmlspecialchars($f_search) ?>" placeholder="e.g. Marcus Mangubat, mgmangubat@ccc.edu.ph, 123">
-                </div>
-            </div>
-
-            <div class="filter-actions">
-                <button type="submit" class="btn btn-primary"><i class="fas fa-filter"></i> Generate Report</button>
-                <a href="applicant-reports.php" class="btn"><i class="fas fa-rotate-left"></i> Reset Filters</a>
             </div>
         </form>
 
-        <!--  SUMMARY CARDS  -->
-        <div class="report-card">
-            <h2><i class="fas fa-chart-simple" style="color:var(--blue-lt)"></i> Report Summary</h2>
-            <p class="sub">Totals for the applications matching the current filters.</p>
-            <div class="tiles">
-                <div class="tile" style="border-color:var(--blue-lt)">
-                    <div class="tv"><?= $summary['total'] ?></div>
-                    <div class="tl">Total Applicants</div>
-                </div>
-                <div class="tile" style="border-color:var(--gold)">
-                    <div class="tv"><?= $summary['pending'] ?></div>
-                    <div class="tl">Pending</div>
-                </div>
-                <div class="tile" style="border-color:var(--indigo)">
-                    <div class="tv"><?= $summary['under_evaluation'] ?></div>
-                    <div class="tl">Under Evaluation</div>
-                </div>
-                <div class="tile" style="border-color:var(--amber)">
-                    <div class="tv"><?= $summary['for_compliance'] ?></div>
-                    <div class="tl">For Compliance</div>
-                </div>
-                <div class="tile" style="border-color:var(--pink)">
-                    <div class="tv"><?= $summary['resubmitted'] ?></div>
-                    <div class="tl">Resubmitted</div>
-                </div>
-                <div class="tile" style="border-color:var(--ok)">
-                    <div class="tv"><?= $summary['approved'] ?></div>
-                    <div class="tl">Approved</div>
-                </div>
-                <div class="tile" style="border-color:var(--red)">
-                    <div class="tv"><?= $summary['disapproved'] ?></div>
-                    <div class="tl">Disapproved</div>
-                </div>
-                <div class="tile" style="border-color:var(--blue)">
-                    <div class="tv"><?= $summary['active'] ?></div>
-                    <div class="tl">Active Applications</div>
-                </div>
+        <!-- SUMMARY CARDS -->
+        <div class="<?= $cardCls ?>">
+            <h2 class="<?= $h2Cls ?>"><i class="fas fa-chart-simple text-blue-500"></i> Report Summary</h2>
+            <p class="<?= $subCls ?>">Totals for the applications matching the current filters.</p>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 lg:flex lg:overflow-x-auto lg:pb-2 print:flex print:flex-wrap">
+                <?php foreach ($tiles as [$tv, $tl, $tc]): ?>
+                    <div class="<?= $tileCls ?> <?= $tc ?>">
+                        <div class="text-xl sm:text-[22px] font-extrabold leading-tight"><?= htmlspecialchars((string) $tv) ?></div>
+                        <div class="mt-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400"><?= htmlspecialchars($tl) ?></div>
+                    </div>
+                <?php endforeach; ?>
             </div>
         </div>
 
-        <!--  CHARTS  -->
-        <div class="report-card">
-            <h2><i class="fas fa-chart-column" style="color:var(--indigo)"></i> Visual Analytics</h2>
-            <p class="sub">All charts reflect the currently applied filters.</p>
-            <div class="charts-grid">
-                <div class="chart-card">
-                    <h3><i class="fas fa-chart-line" style="color:var(--blue-lt)"></i> Applications Over Time (<?= $granularity ?>)</h3>
-                    <div class="chart-holder"><canvas id="chartTrend"></canvas></div>
+        <!-- CHARTS -->
+        <div class="<?= $cardCls ?> print:break-inside-auto">
+            <h2 class="<?= $h2Cls ?>"><i class="fas fa-chart-column text-indigo-500"></i> Visual Analytics</h2>
+            <p class="<?= $subCls ?>">All charts reflect the currently applied filters.</p>
+            <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,360px),1fr))] gap-4 print:block">
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-chart-line text-blue-500"></i> Applications Over Time (<?= $granularity ?>)</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartTrend"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-chart-pie" style="color:var(--indigo)"></i> Status Distribution</h3>
-                    <div class="chart-holder"><canvas id="chartStatus"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-chart-pie text-indigo-500"></i> Status Distribution</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartStatus"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-globe" style="color:var(--amber)"></i> By Country</h3>
-                    <div class="chart-holder"><canvas id="chartCountry"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-globe text-amber-600"></i> By Country</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartCountry"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-briefcase" style="color:var(--gold)"></i> By Position</h3>
-                    <div class="chart-holder"><canvas id="chartPosition"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-briefcase text-yellow-500"></i> By Position</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartPosition"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-building" style="color:var(--pink)"></i> By Employer</h3>
-                    <p style="font-size:10.5px;color:var(--text3);margin:-8px 0 8px;">
-                        <i class="fas fa-arrows-left-right"></i> Scroll horizontally to view full employer names
-                    </p>
-                    <div class="chart-holder chart-holder-x-scroll" id="employerScrollHolder">
-                        <div class="chart-scroll-inner" id="employerScrollInner">
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-building text-pink-500"></i> By Employer</h3>
+                    <p class="-mt-2 mb-2 text-[10.5px] text-slate-400"><i class="fas fa-arrows-left-right"></i> Scroll horizontally to view full employer names</p>
+                    <div id="employerScrollHolder" class="<?= $chartBox ?> overflow-x-auto overflow-y-hidden print:overflow-visible [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:bg-slate-300 dark:[&::-webkit-scrollbar-thumb]:bg-slate-600 [&::-webkit-scrollbar-thumb]:rounded-full">
+                        <div id="employerScrollInner" class="h-full print:!w-full print:!min-w-0">
                             <canvas id="chartEmployer"></canvas>
                         </div>
                     </div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-user-tie" style="color:var(--red)"></i> By Evaluator</h3>
-                    <div class="chart-holder"><canvas id="chartEvaluator"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-user-tie text-red-600"></i> By Evaluator</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartEvaluator"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-scale-balanced" style="color:var(--blue)"></i> Approved vs. Disapproved</h3>
-                    <div class="chart-holder"><canvas id="chartApprovedVs"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-scale-balanced text-blue-700"></i> Approved vs. Disapproved</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartApprovedVs"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-hourglass-half" style="color:#0891b2"></i> Avg. Processing Time by Evaluator (days)</h3>
-                    <div class="chart-holder"><canvas id="chartAvgProcessing"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-hourglass-half text-cyan-600"></i> Avg. Processing Time by Evaluator (days)</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartAvgProcessing"></canvas></div>
                 </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-users-rectangle" style="color:#64748b"></i> RSF Fill Rate (Applications vs. Slots)</h3>
-                    <div class="chart-holder"><canvas id="chartFillRate"></canvas></div>
+                <div class="<?= $chartCard ?>">
+                    <h3 class="<?= $chartH3 ?>"><i class="fas fa-users-rectangle text-slate-500"></i> RSF Fill Rate (Applications vs. Slots)</h3>
+                    <div class="<?= $chartBox ?>"><canvas id="chartFillRate"></canvas></div>
                 </div>
             </div>
         </div>
 
-        <!--  APPLICANT TABLE  -->
-        <div class="report-card">
-            <h2><i class="fas fa-table-list" style="color:var(--blue-lt)"></i> Applicant Table</h2>
-            <p class="sub">One row per application. Click a row to view the full application detail. Click a column header to sort.</p>
+        <!-- APPLICANT TABLE / MOBILE CARDS -->
+        <div class="<?= $cardCls ?> print:break-inside-auto">
+            <h2 class="<?= $h2Cls ?>"><i class="fas fa-table-list text-blue-500"></i> Applicant Table</h2>
+            <p class="<?= $subCls ?>">One row per application. <span class="md:hidden">Tap a card to view the full application detail.</span><span class="hidden md:inline">Click a row to view the full application detail. Click a column header to sort.</span></p>
 
-            <div class="table-toolbar no-print">
-                <div class="quick-search">
-                    <i class="fas fa-magnifying-glass" style="color:var(--text3)"></i>
-                    <input type="text" id="quickFilter" placeholder="Quick filter current results...">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 mb-3 no-print print:hidden">
+                <div class="flex items-center gap-2 w-full sm:w-auto sm:min-w-[240px] px-3 py-2 sm:py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700">
+                    <i class="fas fa-magnifying-glass text-slate-400"></i>
+                    <input type="text" id="quickFilter" class="flex-1 min-w-0 bg-transparent border-0 outline-none text-base sm:text-[12.5px] text-slate-900 dark:text-slate-100 placeholder:text-slate-400" placeholder="Quick filter current results...">
                 </div>
-                <div style="font-size:12px;color:var(--text2)">
-                    Showing <span id="rangeLabel">0</span> of <span id="totalLabel">0</span> results
+                <div class="flex items-center justify-between gap-3">
+                    <select id="mobileSort" class="md:hidden flex-1 px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-base text-slate-900 dark:text-slate-100" aria-label="Sort applications"></select>
+                    <div class="text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                        Showing <span id="rangeLabel">0</span> of <span id="totalLabel">0</span> results
+                    </div>
                 </div>
             </div>
 
-            <div class="table-scroll">
-                <table class="data-table" id="dataTable">
-                    <thead>
+            <!-- Desktop / tablet / print: table -->
+            <div class="hidden md:block print:block overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-[10px] print:overflow-visible print:border-0">
+                <table class="w-full border-collapse text-[11.5px] print:text-[8.5px]" id="dataTable">
+                    <thead class="print:table-header-group">
                         <tr id="tableHeadRow"></tr>
                     </thead>
                     <tbody id="tableBody">
-                        <tr class="empty-row">
-                            <td colspan="9">Loading...</td>
+                        <tr>
+                            <td colspan="9" class="text-center text-slate-400 italic p-7">Loading...</td>
                         </tr>
                     </tbody>
                 </table>
             </div>
 
-            <div class="pagination-bar no-print">
-                <div>
+            <!-- Mobile: card list -->
+            <div id="mobileList" class="md:hidden print:hidden flex flex-col gap-2.5"></div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-3 text-xs text-slate-600 dark:text-slate-400 no-print print:hidden">
+                <div class="flex items-center gap-2">
                     Rows per page:
-                    <select id="pageSizeSelect">
+                    <select id="pageSizeSelect" class="border border-slate-200 dark:border-slate-600 rounded-md px-2 py-1 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                         <option value="10">10</option>
                         <option value="25" selected>25</option>
                         <option value="50">50</option>
@@ -1850,33 +992,21 @@ $generatedAt = date('F j, Y g:i A');
                         <option value="all">All</option>
                     </select>
                 </div>
-                <div class="page-btns">
-                    <button id="prevPageBtn" onclick="changePage(-1)"><i class="fas fa-chevron-left"></i></button>
-                    <span id="pageIndicator" style="align-self:center;padding:0 6px;">Page 1</span>
-                    <button id="nextPageBtn" onclick="changePage(1)"><i class="fas fa-chevron-right"></i></button>
+                <div class="flex items-center justify-between sm:justify-end gap-1.5">
+                    <button id="prevPageBtn" onclick="changePage(-1)" class="px-3.5 py-2 sm:px-2.5 sm:py-1 border border-slate-200 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Previous page"><i class="fas fa-chevron-left"></i></button>
+                    <span id="pageIndicator" class="px-1.5 text-center">Page 1</span>
+                    <button id="nextPageBtn" onclick="changePage(1)" class="px-3.5 py-2 sm:px-2.5 sm:py-1 border border-slate-200 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Next page"><i class="fas fa-chevron-right"></i></button>
                 </div>
             </div>
         </div>
 
-        <p class="footer-note">DMW Regional Office IV-A — CALABARZON &nbsp;•&nbsp; Applicant Reports &nbsp;•&nbsp; For official use only</p>
+        <p class="mt-4 text-center text-[10.5px] text-slate-400">DMW Regional Office IV-A — CALABARZON &nbsp;•&nbsp; Applicant Reports &nbsp;•&nbsp; For official use only</p>
     </div>
 
     <script>
-        /* Wraps a native <select> with a styled trigger + dropdown panel,
-           matching this page's own :root variables (--bdr, --blue,
-           --blue-lt, --text1/2/3, --surface, --surface2) instead of the
-           var(--border)/var(--navy) theme used elsewhere. The original
-           <select> stays in the DOM (hidden) with its `name`/`id` intact,
-           so filterForm's submit and every existing JS reference
-           (e.g. datePreset.addEventListener('change', ...)) keeps
-           working unchanged — our trigger dispatches a real 'change'
-           event on the hidden select whenever a row is picked.
+        /* ───────── Custom searchable dropdown (replaces native selects, Tailwind-styled) ───────── */
+        const ENHANCED_CLOSERS = [];
 
-           opts.emptyValue: the value of the "All ___" option (usually ''
-           but 'rsf_id'/'evaluator_id' use '0'). opts.includeEmpty: true
-           here for every select on this page, since "All Positions" /
-           "All Countries" / etc. are real, selectable reset choices —
-           not throwaway placeholders — so they stay visible in the list. */
         function enhanceReportSelect(select, opts) {
             opts = opts || {};
             const emptyValue = opts.emptyValue !== undefined ? opts.emptyValue : '';
@@ -1887,57 +1017,56 @@ $generatedAt = date('F j, Y g:i A');
             const placeholder = placeholderOpt ? placeholderOpt.textContent : 'Select…';
 
             const wrapper = document.createElement('div');
-            wrapper.style.cssText = inline ? 'position:relative;display:inline-flex;vertical-align:middle;' : 'position:relative;';
+            wrapper.className = inline ? 'relative inline-flex align-middle' : 'relative';
             select.parentNode.insertBefore(wrapper, select);
             wrapper.appendChild(select);
             select.style.display = 'none';
             select.tabIndex = -1;
 
+            const TRIGGER_CLS = inline ?
+                'px-2 py-1 border rounded-md text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 inline-flex items-center gap-1.5 cursor-pointer transition-colors' :
+                'w-full px-2.5 py-2 border rounded-lg text-base sm:text-[12.5px] bg-slate-50 dark:bg-slate-700 flex items-center justify-between gap-2 cursor-pointer transition-colors text-left';
+            const TRIGGER_IDLE = ' border-slate-200 dark:border-slate-600';
+            const TRIGGER_OPEN = ' border-blue-400 ring-2 ring-blue-400/30';
+
             const trigger = document.createElement('button');
             trigger.type = 'button';
+            trigger.className = TRIGGER_CLS + TRIGGER_IDLE;
             trigger.setAttribute('aria-haspopup', 'listbox');
             trigger.setAttribute('aria-expanded', 'false');
-            trigger.style.cssText = inline ?
-                'padding:4px 8px;border:1px solid var(--bdr);border-radius:6px;font-size:12px;font-family:inherit;background:var(--surface);color:var(--text1);display:inline-flex;align-items:center;gap:6px;cursor:pointer;transition:border-color .15s;' :
-                'width:100%;padding:8px 10px;border:1px solid var(--bdr);border-radius:8px;font-size:12.5px;font-family:inherit;background:var(--surface2);color:var(--text1);display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;transition:border-color .15s,background .15s;';
-            trigger.innerHTML = '<span class="rs-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>' +
-                '<i class="fas fa-chevron-down" style="font-size:9px;color:var(--text3);transition:transform .15s;flex-shrink:0;"></i>';
+            trigger.innerHTML = '<span class="rs-label overflow-hidden text-ellipsis whitespace-nowrap"></span>' +
+                '<i class="fas fa-chevron-down text-[9px] text-slate-400 transition-transform shrink-0"></i>';
             wrapper.appendChild(trigger);
 
             const panel = document.createElement('div');
             panel.setAttribute('role', 'listbox');
-            panel.style.cssText = (inline ?
-                    'display:none;position:absolute;top:100%;left:0;min-width:110px;' :
-                    'display:none;position:absolute;top:100%;left:0;right:0;') +
-                'margin-top:6px;background:var(--surface);border:1px solid var(--bdr);border-radius:10px;box-shadow:0 10px 30px rgba(11,31,75,.16);z-index:80;overflow:hidden;';
+            panel.className = 'hidden absolute left-0 z-[80] overflow-hidden bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[10px] shadow-xl ' +
+                (inline ? 'bottom-full mb-1.5 min-w-[110px]' : 'top-full mt-1.5 right-0');
             wrapper.appendChild(panel);
 
             let searchInput = null;
             if (searchable) {
                 const searchWrap = document.createElement('div');
-                searchWrap.style.cssText = 'padding:8px;border-bottom:1px solid var(--bdr);';
-                searchWrap.innerHTML = '<div style="position:relative;">' +
-                    '<i class="fas fa-magnifying-glass" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--text3);"></i>' +
-                    '<input type="text" class="rs-search-input" placeholder="Search…" style="width:100%;box-sizing:border-box;padding:7px 8px 7px 26px;border:1px solid var(--bdr);border-radius:7px;font-size:11.5px;outline:none;background:var(--surface);color:var(--text1);">' +
+                searchWrap.className = 'p-2 border-b border-slate-200 dark:border-slate-700';
+                searchWrap.innerHTML = '<div class="relative">' +
+                    '<i class="fas fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-slate-400"></i>' +
+                    '<input type="text" placeholder="Search…" class="w-full py-2 pl-7 pr-2 border border-slate-200 dark:border-slate-600 rounded-[7px] text-base sm:text-[11.5px] outline-none bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-400">' +
                     '</div>';
                 panel.appendChild(searchWrap);
                 searchInput = searchWrap.querySelector('input');
             }
 
             const list = document.createElement('div');
-            list.className = 'rs-option-list';
-            list.style.cssText = 'max-height:240px;overflow-y:auto;padding:4px 0;';
+            list.className = 'max-h-60 overflow-y-auto py-1';
             panel.appendChild(list);
 
             function buildRow(optionEl) {
                 const row = document.createElement('div');
                 row.setAttribute('role', 'option');
-                row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;font-size:12.5px;color:var(--text1);cursor:pointer;';
+                row.className = 'flex items-center justify-between gap-2 px-3 py-2.5 sm:py-2 text-[12.5px] cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700';
                 row.dataset.value = optionEl.value;
-                row.addEventListener('mouseenter', () => row.style.background = 'var(--surface2)');
-                row.addEventListener('mouseleave', () => row.style.background = row.dataset.selected === '1' ? 'var(--selected-row)' : '');
                 const label = document.createElement('span');
-                label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                label.className = 'overflow-hidden text-ellipsis whitespace-nowrap';
                 label.textContent = optionEl.textContent;
                 row.appendChild(label);
                 row.addEventListener('click', () => {
@@ -1963,25 +1092,25 @@ $generatedAt = date('F j, Y g:i A');
                 });
                 if (!any) {
                     const empty = document.createElement('div');
-                    empty.style.cssText = 'padding:16px 12px;text-align:center;font-size:11.5px;color:var(--text3);';
+                    empty.className = 'px-3 py-4 text-center text-[11.5px] text-slate-400';
                     empty.textContent = 'No matches found.';
                     list.appendChild(empty);
                 }
                 markSelected();
             }
 
+            const SEL_ON = ['bg-blue-50', 'dark:bg-blue-500/20', 'text-blue-700', 'dark:text-blue-300', 'font-bold'];
+            const SEL_OFF = ['text-slate-900', 'dark:text-slate-100', 'font-normal'];
+
             function markSelected() {
                 list.querySelectorAll('[role="option"]').forEach(row => {
                     const selected = row.dataset.value === select.value;
-                    row.dataset.selected = selected ? '1' : '0';
-                    row.style.background = selected ? 'var(--selected-row)' : '';
-                    row.style.color = selected ? 'var(--blue)' : 'var(--text1)';
-                    row.style.fontWeight = selected ? '700' : '400';
-                    let check = row.querySelector('.fa-check');
+                    row.classList.remove(...(selected ? SEL_OFF : SEL_ON));
+                    row.classList.add(...(selected ? SEL_ON : SEL_OFF));
+                    const check = row.querySelector('.fa-check');
                     if (selected && !check) {
                         const icon = document.createElement('i');
-                        icon.className = 'fas fa-check';
-                        icon.style.cssText = 'font-size:10px;color:var(--blue-lt);flex-shrink:0;';
+                        icon.className = 'fas fa-check text-[10px] text-blue-500 shrink-0';
                         row.appendChild(icon);
                     } else if (!selected && check) {
                         check.remove();
@@ -1994,26 +1123,23 @@ $generatedAt = date('F j, Y g:i A');
                 const label = trigger.querySelector('.rs-label');
                 if (select.value === emptyValue || !opt) {
                     label.textContent = placeholder;
-                    label.style.color = 'var(--text2)';
-                    label.style.fontWeight = '400';
+                    label.className = 'rs-label overflow-hidden text-ellipsis whitespace-nowrap text-slate-600 dark:text-slate-400 font-normal';
                 } else {
                     label.textContent = opt.textContent;
-                    label.style.color = 'var(--text1)';
-                    label.style.fontWeight = '600';
+                    label.className = 'rs-label overflow-hidden text-ellipsis whitespace-nowrap text-slate-900 dark:text-slate-100 font-semibold';
                 }
                 markSelected();
             }
 
             function openPanel() {
-                document.querySelectorAll('[role="listbox"]').forEach(p => {
-                    if (p !== panel) p.style.display = 'none';
+                ENHANCED_CLOSERS.forEach(fn => {
+                    if (fn !== closePanel) fn();
                 });
                 renderList('');
-                panel.style.display = 'block';
-                trigger.style.borderColor = 'var(--blue-lt)';
-                trigger.style.background = 'var(--surface)';
+                panel.classList.remove('hidden');
+                trigger.className = TRIGGER_CLS + TRIGGER_OPEN;
                 trigger.setAttribute('aria-expanded', 'true');
-                trigger.querySelector('.fa-chevron-down').style.transform = 'rotate(180deg)';
+                trigger.querySelector('.fa-chevron-down').classList.add('rotate-180');
                 if (searchInput) {
                     searchInput.value = '';
                     setTimeout(() => searchInput.focus(), 10);
@@ -2021,16 +1147,16 @@ $generatedAt = date('F j, Y g:i A');
             }
 
             function closePanel() {
-                panel.style.display = 'none';
-                trigger.style.borderColor = 'var(--bdr)';
-                trigger.style.background = 'var(--surface2)';
+                panel.classList.add('hidden');
+                trigger.className = TRIGGER_CLS + TRIGGER_IDLE;
                 trigger.setAttribute('aria-expanded', 'false');
-                trigger.querySelector('.fa-chevron-down').style.transform = '';
+                trigger.querySelector('.fa-chevron-down').classList.remove('rotate-180');
             }
+            ENHANCED_CLOSERS.push(closePanel);
 
             trigger.addEventListener('click', (e) => {
                 e.stopPropagation();
-                panel.style.display === 'block' ? closePanel() : openPanel();
+                panel.classList.contains('hidden') ? openPanel() : closePanel();
             });
             trigger.addEventListener('keydown', (e) => {
                 if (['Enter', ' ', 'ArrowDown'].includes(e.key)) {
@@ -2082,6 +1208,20 @@ $generatedAt = date('F j, Y g:i A');
             searchable: false,
             inline: true
         });
+
+        /* Mobile: collapsible filter panel */
+        (function() {
+            const btn = document.getElementById('filterToggle');
+            const body = document.getElementById('filterBody');
+            const icon = document.getElementById('filterToggleIcon');
+            const txt = document.getElementById('filterToggleText');
+            btn.addEventListener('click', () => {
+                const nowHidden = body.classList.toggle('hidden');
+                icon.classList.toggle('rotate-180', !nowHidden);
+                txt.textContent = nowHidden ? 'Show filters' : 'Hide filters';
+                btn.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+            });
+        })();
     </script>
     <script>
         /*  DATA FROM SERVER  */
@@ -2095,8 +1235,6 @@ $generatedAt = date('F j, Y g:i A');
                             ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 
         /*  PDF REPORT CONFIG  */
-        // Configurable logo path. Point this at a locally-hosted file (e.g. '../assets/dmw-logo.png')
-        // if the remote dmw.gov.ph image ever fails to embed due to CORS.
         const DMW_LOGO_URL = '../pictures/dmw_logo.png';
 
         const STATUS_LABELS = {
@@ -2117,9 +1255,16 @@ $generatedAt = date('F j, Y g:i A');
             disapproved: [185, 28, 28]
         };
 
-        /* PDF style tokens — mirrors the navy government-document design used in
-           application-detail.php's Export PDF output, so both reports look
-           consistent. */
+        // Tailwind badge styles per status (UI only)
+        const BADGE_BASE = 'inline-block px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap ';
+        const BADGE_CLS = {
+            approved: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
+            disapproved: 'bg-red-100 text-red-700 dark:bg-red-600/20 dark:text-red-400',
+            pending: 'bg-amber-100 text-amber-700 dark:bg-amber-600/20 dark:text-amber-400',
+            other: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-500/20 dark:text-indigo-300'
+        };
+
+        /* PDF style tokens — navy government-document design */
         const PDF_NAVY = [11, 31, 75];
         const PDF_TEXT1 = [31, 41, 55];
         const PDF_TEXT2 = [75, 85, 99];
@@ -2127,8 +1272,6 @@ $generatedAt = date('F j, Y g:i A');
         const PDF_BORDER = [229, 231, 235];
         const PDF_LBL_BG = [248, 250, 252];
 
-        /* Draws a navy section-title bar, matching .pr-section-title / .section-title
-           in application-detail.php. Returns the Y position just below the bar. */
         function sectionTitleBar(doc, x, y, width, text, opts = {}) {
             const h = opts.height || 20;
             doc.setFillColor(...PDF_NAVY);
@@ -2145,10 +1288,8 @@ $generatedAt = date('F j, Y g:i A');
         }
 
         /*  CHART INSTANCE REGISTRY  */
-        // Needed by (1) the print handler, which must force chart.resize() before print
-        // since Chart.js sizes canvases at creation time and won't auto-redraw for print
-        // media otherwise, and (2) the PDF exporter, which embeds these as images.
         const chartInstances = {};
+
         /*  TABLE RENDER / SORT / PAGINATE / QUICK FILTER  */
         let currentRows = REPORT_ROWS.slice();
         let sortKey = 'submitted_at';
@@ -2156,17 +1297,22 @@ $generatedAt = date('F j, Y g:i A');
         let page = 1;
         let pageSize = 25;
 
+        const TH_CLS = 'bg-slate-50 dark:bg-slate-700 text-left px-2.5 py-2.5 font-bold text-[10.5px] uppercase tracking-wide text-slate-600 dark:text-slate-300 border-b-2 border-slate-200 dark:border-slate-600 whitespace-nowrap cursor-pointer select-none hover:text-blue-700 dark:hover:text-blue-400';
+        const TD_CLS = 'px-2.5 py-2 border-b border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 whitespace-nowrap';
+        const TR_CLS = 'cursor-pointer hover:bg-blue-50 dark:hover:bg-slate-700 even:bg-slate-50/70 dark:even:bg-slate-800/70 print:break-inside-avoid';
+
         function buildHead() {
             const tr = document.getElementById('tableHeadRow');
             tr.innerHTML = '';
             TABLE_COLUMNS.forEach(col => {
                 const th = document.createElement('th');
+                th.className = TH_CLS;
                 th.dataset.key = col.key;
                 const span = document.createElement('span');
                 span.textContent = col.label;
                 th.appendChild(span);
                 const ic = document.createElement('i');
-                ic.className = 'fas fa-sort sort-ic';
+                ic.className = 'fas fa-sort sort-ic ml-1 text-[9px] opacity-50';
                 th.appendChild(ic);
                 th.addEventListener('click', () => {
                     if (sortKey === col.key) {
@@ -2180,11 +1326,38 @@ $generatedAt = date('F j, Y g:i A');
                 });
                 tr.appendChild(th);
             });
-            // Extra "Actions" column
             const thAction = document.createElement('th');
+            thAction.className = TH_CLS.replace('cursor-pointer', 'cursor-default');
             thAction.textContent = 'View';
             tr.appendChild(thAction);
         }
+
+        /* Mobile sort control (cards have no clickable headers) */
+        const MOBILE_SORTS = [
+            ['submitted_at|desc', 'Newest first'],
+            ['submitted_at|asc', 'Oldest first'],
+            ['applicant_name|asc', 'Applicant (A–Z)'],
+            ['status_label|asc', 'Status (A–Z)'],
+            ['position_title|asc', 'Position (A–Z)'],
+            ['worksite_country|asc', 'Country (A–Z)'],
+            ['evaluator_name|asc', 'Evaluator (A–Z)']
+        ];
+        (function buildMobileSort() {
+            const sel = document.getElementById('mobileSort');
+            MOBILE_SORTS.forEach(([v, l]) => {
+                const o = document.createElement('option');
+                o.value = v;
+                o.textContent = 'Sort: ' + l;
+                sel.appendChild(o);
+            });
+            sel.addEventListener('change', () => {
+                const [k, d] = sel.value.split('|');
+                sortKey = k;
+                sortDir = d;
+                page = 1;
+                renderTable();
+            });
+        })();
 
         function applyQuickFilter() {
             const q = document.getElementById('quickFilter').value.trim().toLowerCase();
@@ -2224,11 +1397,61 @@ $generatedAt = date('F j, Y g:i A');
             return sorted;
         }
 
-        function badgeSpan(text, cls) {
+        function badgeSpan(text, status) {
             const span = document.createElement('span');
-            span.className = 'badge ' + cls;
+            span.className = BADGE_BASE + (BADGE_CLS[status] || BADGE_CLS.other);
             span.textContent = text;
             return span;
+        }
+
+        function el(tag, cls, text) {
+            const e = document.createElement(tag);
+            if (cls) e.className = cls;
+            if (text !== undefined) e.textContent = text;
+            return e;
+        }
+
+        function openApplication(r) {
+            window.open('application-detail.php?id=' + encodeURIComponent(r.application_id), '_blank');
+        }
+
+        function mobileField(label, value, span) {
+            const d = el('div', span ? 'col-span-2' : '');
+            d.appendChild(el('dt', 'text-[9.5px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400', label));
+            d.appendChild(el('dd', 'm-0 mt-0.5 text-xs text-slate-900 dark:text-slate-100 break-words', nz(value)));
+            return d;
+        }
+
+        function buildMobileCard(r) {
+            const card = el('div', 'rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 p-3.5 cursor-pointer active:bg-blue-50 dark:active:bg-slate-700');
+            card.setAttribute('role', 'link');
+            card.tabIndex = 0;
+            card.addEventListener('click', () => openApplication(r));
+            card.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') openApplication(r);
+            });
+
+            const top = el('div', 'flex items-start justify-between gap-2');
+            const left = el('div', 'min-w-0');
+            left.appendChild(el('p', 'm-0 text-sm font-bold text-slate-900 dark:text-slate-100 break-words', nz(r.applicant_name)));
+            left.appendChild(el('p', 'm-0 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 break-all', nz(r.applicant_email)));
+            top.appendChild(left);
+            top.appendChild(badgeSpan(r.status_label, r.status));
+            card.appendChild(top);
+
+            const dl = el('dl', 'grid grid-cols-2 gap-x-3 gap-y-2.5 m-0 mt-3 pt-3 border-t border-slate-200 dark:border-slate-700');
+            dl.appendChild(mobileField('Position', r.position_title, true));
+            dl.appendChild(mobileField('Employer', r.employer_name, true));
+            dl.appendChild(mobileField('Country', r.worksite_country));
+            dl.appendChild(mobileField('Evaluator', r.evaluator_name));
+            dl.appendChild(mobileField('Application Date', r.submitted_at_fmt));
+            dl.appendChild(mobileField('Application ID', '#' + r.application_id));
+            card.appendChild(dl);
+
+            const foot = el('div', 'flex items-center justify-end gap-1.5 mt-3 text-[11px] font-semibold text-blue-700 dark:text-blue-400');
+            foot.innerHTML = 'View application <i class="fas fa-arrow-up-right-from-square text-[10px]"></i>';
+            card.appendChild(foot);
+            return card;
         }
 
         function renderTable() {
@@ -2242,26 +1465,27 @@ $generatedAt = date('F j, Y g:i A');
             const pageRows = sorted.slice(start, start + size);
 
             const tbody = document.getElementById('tableBody');
+            const mlist = document.getElementById('mobileList');
             tbody.innerHTML = '';
+            mlist.innerHTML = '';
 
             if (!pageRows.length) {
                 const tr = document.createElement('tr');
-                tr.className = 'empty-row';
-                const td = document.createElement('td');
+                const td = el('td', 'text-center text-slate-400 italic p-7', 'No applications found for the selected filters.');
                 td.colSpan = TABLE_COLUMNS.length + 1;
-                td.textContent = 'No applications found for the selected filters.';
                 tr.appendChild(td);
                 tbody.appendChild(tr);
+                mlist.appendChild(el('div', 'text-center text-slate-400 italic p-7 border border-dashed border-slate-300 dark:border-slate-600 rounded-xl text-sm', 'No applications found for the selected filters.'));
             } else {
                 pageRows.forEach(r => {
                     const tr = document.createElement('tr');
-                    tr.addEventListener('click', () => {
-                        window.open('application-detail.php?id=' + encodeURIComponent(r.application_id), '_blank');
-                    });
+                    tr.className = TR_CLS;
+                    tr.addEventListener('click', () => openApplication(r));
                     TABLE_COLUMNS.forEach(col => {
                         const td = document.createElement('td');
+                        td.className = TD_CLS;
                         if (col.key === 'status_label') {
-                            td.appendChild(badgeSpan(r.status_label, 'b-' + r.status));
+                            td.appendChild(badgeSpan(r.status_label, r.status));
                         } else if (col.key === 'profile_completion') {
                             td.textContent = r.profile_completion + '%';
                         } else {
@@ -2270,11 +1494,12 @@ $generatedAt = date('F j, Y g:i A');
                         tr.appendChild(td);
                     });
                     const tdView = document.createElement('td');
-                    const link = document.createElement('span');
-                    link.innerHTML = '<i class="fas fa-arrow-up-right-from-square" style="color:var(--blue-lt)"></i>';
-                    tdView.appendChild(link);
+                    tdView.className = TD_CLS;
+                    tdView.innerHTML = '<i class="fas fa-arrow-up-right-from-square text-blue-500"></i>';
                     tr.appendChild(tdView);
                     tbody.appendChild(tr);
+
+                    mlist.appendChild(buildMobileCard(r));
                 });
             }
 
@@ -2288,13 +1513,16 @@ $generatedAt = date('F j, Y g:i A');
                 const ic = th.querySelector('.sort-ic');
                 if (!ic) return;
                 if (th.dataset.key === sortKey) {
-                    ic.className = 'fas sort-ic ' + (sortDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down');
-                    ic.style.opacity = '1';
+                    ic.className = 'fas sort-ic ml-1 text-[9px] opacity-100 ' + (sortDir === 'asc' ? 'fa-sort-up' : 'fa-sort-down');
                 } else {
-                    ic.className = 'fas fa-sort sort-ic';
-                    ic.style.opacity = '.5';
+                    ic.className = 'fas fa-sort sort-ic ml-1 text-[9px] opacity-50';
                 }
             });
+
+            // Keep the mobile sort control in sync with column-header sorting
+            const ms = document.getElementById('mobileSort');
+            const cur = sortKey + '|' + sortDir;
+            if (MOBILE_SORTS.some(s => s[0] === cur)) ms.value = cur;
         }
 
         function changePage(delta) {
@@ -2319,8 +1547,10 @@ $generatedAt = date('F j, Y g:i A');
         const datePreset = document.getElementById('datePreset');
         const customRange = document.getElementById('customRange');
         datePreset.addEventListener('change', () => {
-            customRange.classList.toggle('show', datePreset.value === 'custom');
-            if (datePreset.value === 'custom') validateDateRange();
+            const isCustom = datePreset.value === 'custom';
+            customRange.classList.toggle('hidden', !isCustom);
+            customRange.classList.toggle('grid', isCustom);
+            if (isCustom) validateDateRange();
         });
 
         /*  From/To live validation & mutual constraints  */
@@ -2373,7 +1603,7 @@ $generatedAt = date('F j, Y g:i A');
             }
 
             const days = Math.round((new Date(dateTo.value) - new Date(dateFrom.value)) / 86400000) + 1;
-            rangeHint.innerHTML = `<i class="fas fa-check-circle" style="color:var(--ok)"></i> ${days} day${days === 1 ? '' : 's'} selected (${dateFrom.value} → ${dateTo.value})`;
+            rangeHint.innerHTML = `<i class="fas fa-check-circle text-emerald-500"></i> ${days} day${days === 1 ? '' : 's'} selected (${dateFrom.value} → ${dateTo.value})`;
             return true;
         }
 
@@ -2381,9 +1611,6 @@ $generatedAt = date('F j, Y g:i A');
             dateFrom.addEventListener(evt, validateDateRange);
             dateTo.addEventListener(evt, validateDateRange);
         });
-
-        dateFrom.addEventListener('change', validateDateRange);
-        dateTo.addEventListener('change', validateDateRange);
         if (datePreset.value === 'custom') validateDateRange();
 
         filterForm.addEventListener('submit', (e) => {
@@ -2391,8 +1618,6 @@ $generatedAt = date('F j, Y g:i A');
                 e.preventDefault();
             }
         });
-
-
 
         /*  EXPORTS  */
         function escapeCsv(val) {
@@ -2445,7 +1670,6 @@ $generatedAt = date('F j, Y g:i A');
             for_compliance: ['FFFFEDD5', 'FFC2410C'],
             resubmitted: ['FFFCE7F3', 'FF9D174D']
         };
-        // Columns kept as text (never converted to numbers)
         const XL_TEXT_KEYS = ['applicant_phone', 'applicant_email'];
         const xlThin = () => ({
             style: 'thin',
@@ -2548,7 +1772,6 @@ $generatedAt = date('F j, Y g:i A');
             wb.company = 'DMW Regional Office IV-A';
             wb.created = new Date();
 
-            // Logo (reuses the PDF logo loader)
             let logo = null;
             const logoData = await loadImageAsDataURL(DMW_LOGO_URL);
             if (logoData) {
@@ -2919,8 +2142,29 @@ $generatedAt = date('F j, Y g:i A');
             setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         }
 
-        /*  PDF REPORT: HELPERS  */
+        /*  PDF EXPORT MENU TOGGLE  */
+        function togglePdfMenu(e) {
+            e.stopPropagation();
+            const menu = document.getElementById('pdfExportMenu');
+            const btn = document.getElementById('btnPdf');
+            const willOpen = menu.classList.contains('hidden');
+            menu.classList.toggle('hidden', !willOpen);
+            btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        }
 
+        function closePdfMenu() {
+            const menu = document.getElementById('pdfExportMenu');
+            const btn = document.getElementById('btnPdf');
+            menu.classList.add('hidden');
+            btn.setAttribute('aria-expanded', 'false');
+        }
+
+        document.addEventListener('click', (e) => {
+            const wrap = document.querySelector('.pdf-export-wrap');
+            if (wrap && !wrap.contains(e.target)) closePdfMenu();
+        });
+
+        /*  PDF REPORT: HELPERS  */
         async function loadImageAsDataURL(url) {
             try {
                 const response = await fetch(url, {
@@ -2936,7 +2180,7 @@ $generatedAt = date('F j, Y g:i A');
                 });
                 return await downscaleLogo(dataUrl, 160);
             } catch (err) {
-                console.warn('DMW logo could not be embedded in the PDF (likely a CORS restriction on the remote image). The report will still generate without it.', err);
+                console.warn('DMW logo could not be embedded in the PDF. The report will still generate without it.', err);
                 return null;
             }
         }
@@ -3047,7 +2291,6 @@ $generatedAt = date('F j, Y g:i A');
             return metaY + 22;
         }
 
-        /* New — mirrors .pr-intro in application-detail.php */
         function drawIntro(doc, startY, totalRecords, customText = null) {
             const pageWidth = doc.internal.pageSize.getWidth();
             const marginX = 30;
@@ -3173,13 +2416,6 @@ $generatedAt = date('F j, Y g:i A');
                     },
                     6: {
                         cellWidth: 90
-                    }
-                },
-                didParseCell: (data) => {
-                    if (data.section === 'body' && data.column.index === 4) {
-                        const statusKey = rows[data.row.index].status;
-                        data.cell.styles.textColor = STATUS_COLORS[statusKey] || PDF_TEXT2;
-                        data.cell.styles.fontStyle = 'bold';
                     }
                 },
                 didParseCell: (data) => {
@@ -3582,29 +2818,6 @@ $generatedAt = date('F j, Y g:i A');
                 }
             });
         }
-        /*  PDF REPORT: MAIN EXPORT  */
-
-        /*  PDF EXPORT MENU TOGGLE  */
-        function togglePdfMenu(e) {
-            e.stopPropagation();
-            const menu = document.getElementById('pdfExportMenu');
-            const btn = document.getElementById('btnPdf');
-            const willOpen = !menu.classList.contains('open');
-            menu.classList.toggle('open', willOpen);
-            btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-        }
-
-        function closePdfMenu() {
-            const menu = document.getElementById('pdfExportMenu');
-            const btn = document.getElementById('btnPdf');
-            menu.classList.remove('open');
-            btn.setAttribute('aria-expanded', 'false');
-        }
-
-        document.addEventListener('click', (e) => {
-            const wrap = document.querySelector('.pdf-export-wrap');
-            if (wrap && !wrap.contains(e.target)) closePdfMenu();
-        });
 
         /*  PDF REPORT: MAIN EXPORT — mode: 'details' | 'charts' | 'both'  */
         async function exportPDF(mode) {
@@ -3689,14 +2902,11 @@ $generatedAt = date('F j, Y g:i A');
             const textColor = dark ? '#cbd5e1' : '#475569';
             const gridColor = dark ? '#334155' : '#e2e8f0';
 
-            // Still set defaults so any chart created AFTER this point (e.g. a future
-            // re-render) picks up the right colors immediately.
+            // Defaults apply to charts created AFTER this point.
             Chart.defaults.color = textColor;
             Chart.defaults.borderColor = gridColor;
 
-            // Chart.js merges defaults into each chart's own options at creation time,
-            // so already-created charts never see later default changes. We have to
-            // patch each instance's resolved options directly, then update().
+            // Already-created charts keep their resolved options, so patch each instance.
             Object.values(chartInstances).forEach(chart => {
                 if (!chart || !chart.options) return;
 
@@ -3708,7 +2918,7 @@ $generatedAt = date('F j, Y g:i A');
                         if (!scale) return;
                         if (scale.ticks) scale.ticks.color = textColor;
                         if (scale.grid) scale.grid.color = gridColor;
-                        if (scale.border) scale.border.color = gridColor; // axis line, Chart.js v4
+                        if (scale.border) scale.border.color = gridColor;
                     });
                 }
 
@@ -3716,7 +2926,7 @@ $generatedAt = date('F j, Y g:i A');
             });
         }
         applyChartTheme();
-        applyChartTheme();
+
         chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
             type: 'line',
             data: {
@@ -3814,8 +3024,6 @@ $generatedAt = date('F j, Y g:i A');
             const holder = document.getElementById(holderId);
             const canvas = document.getElementById(canvasId);
 
-            // Measure real rendered width of the longest label using the same font
-            // Chart.js will use for ticks, instead of guessing chars * px.
             const ctx = canvas.getContext('2d');
             ctx.font = '11px "DM Sans", system-ui, sans-serif';
             const longestLabelWidth = labels.reduce(
@@ -3824,7 +3032,6 @@ $generatedAt = date('F j, Y g:i A');
             );
 
             const baseWidth = holder.clientWidth || 320;
-            // longest label width + fixed room for the bar area itself
             const neededWidth = Math.max(baseWidth, longestLabelWidth + 260);
             inner.style.width = neededWidth + 'px';
             inner.style.minWidth = neededWidth + 'px';

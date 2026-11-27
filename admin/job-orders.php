@@ -484,10 +484,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             ");
             $evaluators = $eval_stmt->fetch_all(MYSQLI_ASSOC);
 
+            // Slot check: NULL = job order doesn't track a limit; otherwise must be > 0
+            $slotStmt = $database->prepare("SELECT slots_available FROM rsf_job_orders WHERE id = ? LIMIT 1");
+            $slotStmt->bind_param('i', $rsf_id);
+            $slotStmt->execute();
+            $slotRow = $slotStmt->get_result()->fetch_assoc();
+            $slotStmt->close();
+
+            if (!$slotRow) {
+                echo json_encode(['status' => 'error', 'message' => 'Job order not found.']);
+                exit;
+            }
+            $slotsAvailable = $slotRow['slots_available'] === null ? null : (int) $slotRow['slots_available'];
+            $hasSlot = $slotsAvailable === null || $slotsAvailable > 0;
+
             echo json_encode([
-                'status'     => 'success',
-                'applicants' => $applicants,
-                'evaluators' => $evaluators,
+                'status'          => 'success',
+                'applicants'      => $applicants,
+                'evaluators'      => $evaluators,
+                'slots_available' => $slotsAvailable,
+                'has_slot'        => $hasSlot,
             ]);
         } catch (Throwable $e) {
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
@@ -560,6 +576,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             if (!$evaluatorIsActive) {
                 echo json_encode(['status' => 'error', 'message' => "The selected evaluator's account is deactivated. Please choose an active evaluator."]);
+                exit;
+            }
+
+            // Check the job order still has a slot before assigning
+            $slotChk = $database->prepare("
+                SELECT r.slots_available
+                FROM applications a
+                JOIN rsf_job_orders r ON r.id = a.rsf_id
+                WHERE a.id = ?
+                LIMIT 1
+            ");
+            $slotChk->bind_param('i', $application_id);
+            $slotChk->execute();
+            $slotInfo = $slotChk->get_result()->fetch_assoc();
+            $slotChk->close();
+
+            if (!$slotInfo) {
+                echo json_encode(['status' => 'error', 'message' => 'Application not found.']);
+                exit;
+            }
+            if ($slotInfo['slots_available'] !== null && (int) $slotInfo['slots_available'] <= 0) {
+                echo json_encode(['status' => 'error', 'message' => 'No slot available.']);
                 exit;
             }
 
@@ -2732,7 +2770,7 @@ if ($rateStmt) {
 
                 if (data.status !== 'success') throw new Error(data.message || 'Failed to load.');
                 _currentEvaluators = data.evaluators || [];
-                renderApplicants(data.applicants, rsfId);
+                renderApplicants(data.applicants, rsfId, data.has_slot !== false);
             } catch (err) {
                 document.getElementById('appl-body').innerHTML =
                     `<div class="text-center py-16 text-red-500"><i class="fas fa-circle-exclamation mr-2"></i>${err.message}</div>`;
@@ -2743,7 +2781,7 @@ if ($rateStmt) {
             document.getElementById('applicantsModal').classList.add('hidden');
         }
 
-        function renderApplicants(applicants, rsfId) {
+        function renderApplicants(applicants, rsfId, hasSlot = true) {
             const statsBar = document.getElementById('appl-stats-bar');
             const body = document.getElementById('appl-body');
 
@@ -2773,7 +2811,10 @@ if ($rateStmt) {
 
             const rows = applicants.map(a => {
                 const isUnassigned = ['unassign', 'pending'].includes((a.status || '').toLowerCase());
-                const assignCell = isUnassigned ?
+                const noSlotCell = `<span class="text-red-600 text-xs font-semibold">
+                            <i class="fas fa-ban mr-1"></i>No slot available.
+                    </span>`;
+                const assignCell = (isUnassigned && !hasSlot) ? noSlotCell : isUnassigned ?
                     `<div class="assign-row flex items-center gap-2">
                             <select id="sel-${a.application_id}">
                                 <option value="">— Select evaluator —</option>

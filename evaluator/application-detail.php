@@ -46,17 +46,19 @@ function statusLabel(string $status): string
     return $labels[$status] ?? ucwords(str_replace('_', ' ', $status));
 }
 
+/* Returns Tailwind utility classes (base + color) for a status badge. */
 function badgeClass(?string $status): string
 {
+    $base = 'inline-block px-2.5 py-[3px] rounded-full text-[11px] font-bold ';
     switch ($status) {
         case 'approved':
-            return 'b-approved';
+            return $base . 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/[.18] dark:text-emerald-400';
         case 'disapproved':
-            return 'b-disapproved';
+            return $base . 'bg-red-100 text-red-700 dark:bg-red-600/20 dark:text-red-400';
         case 'pending':
-            return 'b-pending';
+            return $base . 'bg-amber-100 text-amber-700 dark:bg-amber-600/20 dark:text-amber-400';
         default:
-            return 'b-other';
+            return $base . 'bg-[#e9edf7] text-dmw-navy dark:bg-indigo-500/[.22] dark:text-indigo-300';
     }
 }
 
@@ -347,6 +349,32 @@ if (!$app) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Application #<?= (int) $id ?> – DMW RO IV-A</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]'],
+            theme: {
+                extend: {
+                    colors: {
+                        'dmw-navy': 'var(--navy)',
+                        'dmw-navy-soft': 'var(--navy-soft)',
+                        'dmw-ok': 'var(--ok)',
+                        'dmw-red': 'var(--red)',
+                        'dmw-t1': 'var(--text1)',
+                        'dmw-t2': 'var(--text2)',
+                        'dmw-t3': 'var(--text3)',
+                        'dmw-bdr': 'var(--bdr)',
+                        'dmw-lbl': 'var(--lbl-bg)',
+                        'dmw-surf': 'var(--surface)',
+                        'dmw-surf2': 'var(--surface2)'
+                    },
+                    fontFamily: {
+                        dmw: ['DM Sans', 'system-ui', 'sans-serif'],
+                        dmwpdf: ['DM Sans', 'Arial', 'Helvetica', 'sans-serif']
+                    }
+                }
+            }
+        };
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../css/dashboard.css">
@@ -354,21 +382,13 @@ if (!$app) {
     <?php include '../includes/theme-init.php'; ?>
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-    <style>
-        .topbar-brand img {
-            width: 42px;
-            height: auto;
-            display: block;
-            background: transparent;
-            filter: none;
-        }
-    </style>
+
+    <!-- Theme color tokens (consumed by the dmw-* Tailwind colors) + A4 page size. Everything else is Tailwind. -->
     <style>
         :root {
             --navy: #0b1f4b;
             --navy-soft: #13295e;
             --ok: #059669;
-            --amber: #b45309;
             --red: #b91c1c;
             --text1: #1f2937;
             --text2: #4b5563;
@@ -379,790 +399,10 @@ if (!$app) {
             --surface2: #f8fafc;
         }
 
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            margin: 0;
-            font-family: 'DM Sans', system-ui, sans-serif;
-            background: #eef1f6;
-            color: var(--text1);
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            border-radius: 6px;
-            border: 1px solid var(--bdr);
-            background: var(--surface);
-            color: var(--text1);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        .btn:hover {
-            background: var(--surface2);
-        }
-
-        .btn-primary {
-            background: var(--navy);
-            border-color: var(--navy);
-            color: #fff;
-        }
-
-        .sheet {
-            max-width: 1000px;
-            margin: 20px auto;
-            padding: 0 16px 110px;
-        }
-
-        .toolbar-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 16px;
-        }
-
-        .doc-sheet {
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 10px;
-            padding: 30px 34px 36px;
-        }
-
-        .doc-header-table {
-            width: 100%;
-            border-bottom: 3px solid var(--navy);
-            padding-bottom: 10px;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        .doc-header-table img {
-            width: 48px;
-            height: auto;
-            flex-shrink: 0;
-        }
-
-        .republic-line {
-            font-size: 10.5px;
-            color: var(--text2);
-            margin: 0;
-        }
-
-        .agency-name {
-            font-size: 16px;
-            font-weight: 800;
-            color: var(--navy);
-            margin: 1px 0 2px;
-        }
-
-        .agency-sub {
-            font-size: 10.5px;
-            color: var(--text2);
-            line-height: 1.5;
-            margin: 0;
-        }
-
-        .doc-title {
-            text-align: center;
-            margin: 18px 0 3px;
-            font-size: 17px;
-            font-weight: 800;
-            color: var(--navy);
-            text-transform: uppercase;
-            letter-spacing: .02em;
-        }
-
-        .doc-subtitle {
-            text-align: center;
-            font-size: 12px;
-            color: var(--text2);
-            margin-bottom: 16px;
-        }
-
-        table.ref-table {
-            width: 100%;
-            margin-bottom: 20px;
-            font-size: 12px;
-            border-collapse: collapse;
-        }
-
-        table.ref-table td {
-            padding: 3px 0;
-            vertical-align: middle;
-        }
-
-        table.ref-table td.ref-label {
-            font-weight: 700;
-            width: 160px;
-            color: var(--text1);
-        }
-
-        .intro-note {
-            font-size: 12.5px;
-            line-height: 1.65;
-            color: var(--text2);
-            text-align: justify;
-            margin: 0 0 18px;
-        }
-
-        .role-note {
-            font-size: 12px;
-            font-weight: 600;
-            padding: 9px 12px;
-            border-radius: 6px;
-            margin-bottom: 18px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .role-note.role-current {
-            background: #d1fae5;
-            border: 1px solid #a7f3d0;
-            color: #047857;
-        }
-
-        .role-note.role-past {
-            background: #e9edf7;
-            border: 1px solid #c7d2fe;
-            color: var(--navy);
-        }
-
-        .summary-panel {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 0;
-            border: 1px solid var(--bdr);
-            border-radius: 6px;
-            overflow: hidden;
-            margin-bottom: 18px;
-        }
-
-        .summary-cell {
-            padding: 12px 14px;
-            border-right: 1px solid var(--bdr);
-            border-bottom: 1px solid var(--bdr);
-            background: var(--surface2);
-        }
-
-        .summary-cell:last-child {
-            border-right: none;
-        }
-
-        .summary-cell .sc-num {
-            font-size: 20px;
-            font-weight: 800;
-            color: var(--navy);
-            line-height: 1.1;
-        }
-
-        .summary-cell .sc-lbl {
-            font-size: 10px;
-            font-weight: 600;
-            color: var(--text2);
-            text-transform: uppercase;
-            letter-spacing: .03em;
-            margin-top: 3px;
-        }
-
-        .summary-cell.sc-warn .sc-num {
-            color: var(--red);
-        }
-
-        .alert-note {
-            background: #fef3c7;
-            border: 1px solid #fde68a;
-            color: #92400e;
-            font-size: 12px;
-            font-weight: 600;
-            padding: 9px 12px;
-            border-radius: 6px;
-            margin-bottom: 18px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .section-hint {
-            font-size: 11.5px;
-            color: var(--text3);
-            font-style: italic;
-            margin: -4px 0 10px;
-        }
-
-        .section {
-            margin-bottom: 22px;
-        }
-
-        .section-title {
-            background: var(--navy);
-            color: #fff;
-            font-size: 12px;
-            font-weight: 700;
-            padding: 7px 12px;
-            margin: 0 0 10px;
-            text-transform: uppercase;
-            letter-spacing: .04em;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-radius: 3px;
-        }
-
-        table.info-table {
-            width: 100%;
-            border-collapse: collapse;
-            border: 1px solid var(--bdr);
-            margin-bottom: 4px;
-        }
-
-        table.info-table td {
-            border: 1px solid var(--bdr);
-            padding: 7px 12px;
-            vertical-align: top;
-            font-size: 12.5px;
-        }
-
-        table.info-table td.lbl {
-            width: 30%;
-            background: var(--lbl-bg);
-            font-weight: 700;
-            color: var(--text1);
-            font-size: 11px;
-        }
-
-        table.info-table td.val {
-            color: var(--text1);
-            font-weight: 500;
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 700;
-        }
-
-        .b-approved {
-            background: #d1fae5;
-            color: #047857;
-        }
-
-        .b-disapproved {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
-
-        .b-pending {
-            background: #fef3c7;
-            color: #b45309;
-        }
-
-        .b-other {
-            background: #e9edf7;
-            color: var(--navy);
-        }
-
-        .badge-me {
-            display: inline-block;
-            padding: 1px 7px;
-            border-radius: 999px;
-            font-size: 9.5px;
-            font-weight: 700;
-            background: var(--navy);
-            color: #fff;
-            margin-left: 6px;
-        }
-
-        .pill {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 600;
-            background: var(--surface2);
-            border: 1px solid var(--bdr);
-            margin: 2px 4px 2px 0;
-        }
-
-        table.detail-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-            border: 1px solid var(--bdr);
-        }
-
-        table.detail-table th {
-            background: var(--lbl-bg);
-            text-align: left;
-            padding: 8px 10px;
-            font-weight: 700;
-            font-size: 10.5px;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            color: var(--text2);
-            border: 1px solid var(--bdr);
-        }
-
-        table.detail-table td {
-            padding: 8px 10px;
-            border: 1px solid var(--bdr);
-            vertical-align: top;
-        }
-
-        table.detail-table tbody tr:nth-child(even) {
-            background: #fbfcfe;
-        }
-
-        .empty-note {
-            font-size: 12px;
-            color: var(--text3);
-            font-style: italic;
-            padding: 10px 0;
-        }
-
-        .timeline {
-            border-left: 2px solid var(--bdr);
-            margin-left: 6px;
-            padding-left: 18px;
-        }
-
-        .timeline-item {
-            position: relative;
-            padding-bottom: 16px;
-        }
-
-        .timeline-item::before {
-            content: '';
-            position: absolute;
-            left: -23px;
-            top: 3px;
-            width: 9px;
-            height: 9px;
-            border-radius: 50%;
-            background: var(--navy);
-        }
-
-        .timeline-item.mine::before {
-            background: var(--ok);
-        }
-
-        .timeline-item .tt {
-            font-size: 12.5px;
-            font-weight: 700;
-            color: var(--text1);
-        }
-
-        .timeline-item .ts {
-            font-size: 10.5px;
-            color: var(--text3);
-        }
-
-        .timeline-item .td-note {
-            font-size: 12px;
-            color: var(--text2);
-            margin-top: 2px;
-        }
-
-        .doc-card {
-            border: 1px solid var(--bdr);
-            border-radius: 6px;
-            padding: 12px 14px;
-            margin-bottom: 10px;
-            background: var(--surface2);
-        }
-
-        .doc-card .dh {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-
-        .doc-comment {
-            background: #fff;
-            border: 1px solid var(--bdr);
-            border-radius: 6px;
-            padding: 8px 10px;
-            margin-top: 8px;
-            font-size: 12px;
-        }
-
-        .doc-comment .dc-meta {
-            font-size: 10.5px;
-            color: var(--text3);
-            margin-bottom: 3px;
-        }
-
-        .footer-note {
-            font-size: 10px;
-            color: var(--text3);
-            text-align: center;
-            border-top: 1px solid var(--bdr);
-            padding-top: 10px;
-            margin-top: 24px;
-        }
-
-        #printReport {
-            display: none;
-            background: #fff;
-            color: #1f2937;
-            font-family: 'DM Sans', Arial, Helvetica, sans-serif;
-            width: 100%;
-            max-width: 190mm;
-            margin: 0 auto;
-            padding: 0;
-        }
-
-        #printReport .pr-page-header {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            border-bottom: 3px solid #0b1f4b;
-            padding-bottom: 10px;
-            margin-bottom: 6px;
-        }
-
-        #printReport .pr-page-header img {
-            height: 42px;
-            width: auto;
-        }
-
-        #printReport .pr-republic {
-            font-size: 8.5pt;
-            color: #4b5563;
-            margin: 0 0 1px;
-        }
-
-        #printReport .pr-agency {
-            font-size: 12.5pt;
-            font-weight: 800;
-            color: #0b1f4b;
-            letter-spacing: .01em;
-        }
-
-        #printReport .pr-office {
-            font-size: 8.7pt;
-            color: #4b5563;
-            margin-top: 2px;
-            line-height: 1.5;
-        }
-
-        #printReport .pr-report-title {
-            text-align: center;
-            margin: 14px 0 6px;
-        }
-
-        #printReport .pr-report-title h1 {
-            font-family: 'DM Sans', Arial, sans-serif;
-            font-weight: 800;
-            font-size: 14pt;
-            margin: 0;
-            color: #0b1f4b;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-        }
-
-        #printReport .pr-report-title p {
-            font-size: 9.5pt;
-            color: #6b7280;
-            margin: 3px 0 0;
-        }
-
-        #printReport .pr-meta-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 8.5pt;
-            color: #4b5563;
-            border-bottom: 1px solid #e5e7eb;
-            padding-bottom: 8px;
-            margin-bottom: 16px;
-        }
-
-        #printReport .pr-status-badge {
-            font-weight: 700;
-            padding: 2px 9px;
-            border-radius: 4px;
-            border: 1px solid #9ca3af;
-            color: #1f2937;
-        }
-
-        #printReport .pr-intro {
-            font-size: 9pt;
-            line-height: 1.6;
-            color: #374151;
-            text-align: justify;
-            margin: 0 0 12px;
-        }
-
-        #printReport .pr-alert {
-            background: #fef3c7;
-            border: 1px solid #fde68a;
-            color: #92400e;
-            font-size: 8.7pt;
-            font-weight: 700;
-            padding: 6px 10px;
-            border-radius: 4px;
-            margin-bottom: 12px;
-        }
-
-        #printReport .pr-role-note {
-            font-size: 8.7pt;
-            font-weight: 700;
-            padding: 6px 10px;
-            border-radius: 4px;
-            margin-bottom: 12px;
-            background: #e9edf7;
-            color: #0b1f4b;
-        }
-
-        #printReport .pr-summary-panel {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 14px;
-            table-layout: fixed;
-        }
-
-        #printReport .pr-summary-panel td {
-            border: 1px solid #e5e7eb;
-            background: #f8fafc;
-            text-align: center;
-            padding: 8px 4px;
-        }
-
-        #printReport .pr-summary-panel .sc-num {
-            font-size: 13pt;
-            font-weight: 800;
-            color: #0b1f4b;
-            display: block;
-        }
-
-        #printReport .pr-summary-panel .sc-lbl {
-            font-size: 6.7pt;
-            font-weight: 700;
-            color: #4b5563;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            display: block;
-            margin-top: 2px;
-        }
-
-        #printReport .pr-section-hint {
-            font-size: 7.8pt;
-            color: #9ca3af;
-            font-style: italic;
-            margin: -5px 0 6px;
-        }
-
-        #printReport .pr-notes-list {
-            font-size: 8.7pt;
-            color: #374151;
-            line-height: 1.7;
-            margin: 0;
-            padding-left: 15px;
-        }
-
-        #printReport .pr-section {
-            margin-bottom: 16px;
-            page-break-inside: avoid;
-        }
-
-        #printReport .pr-section-title {
-            font-size: 10.5pt;
-            font-weight: 700;
-            color: #fff;
-            background: #0b1f4b;
-            padding: 5px 9px;
-            margin: 0 0 8px;
-            text-transform: uppercase;
-            letter-spacing: .03em;
-        }
-
-        #printReport table.pr-grid {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 4px;
-        }
-
-        #printReport table.pr-grid td {
-            font-size: 9pt;
-            padding: 4px 6px;
-            vertical-align: top;
-            border-bottom: 1px dotted #e5e7eb;
-        }
-
-        #printReport table.pr-grid td.pr-label {
-            color: #4b5563;
-            font-weight: 700;
-            width: 16%;
-            white-space: nowrap;
-        }
-
-        #printReport table.pr-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 8.5pt;
-            margin-top: 4px;
-        }
-
-        #printReport table.pr-table th {
-            background: #f8fafc;
-            border: 1px solid #e5e7eb;
-            text-align: left;
-            padding: 6px 8px;
-            font-size: 8pt;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            color: #374151;
-        }
-
-        #printReport table.pr-table td {
-            border: 1px solid #e5e7eb;
-            padding: 6px 8px;
-            vertical-align: top;
-        }
-
-        #printReport table.pr-table thead {
-            display: table-header-group;
-        }
-
-        #printReport table.pr-table tr {
-            page-break-inside: avoid;
-        }
-
-        #printReport table.pr-table tbody tr:nth-child(even) {
-            background: #f8fafc;
-        }
-
-        #printReport .pr-empty {
-            font-size: 8.5pt;
-            color: #9ca3af;
-            font-style: italic;
-            padding: 4px 0;
-        }
-
-        #printReport .pr-badge-ok {
-            color: #047857;
-            font-weight: 700;
-        }
-
-        #printReport .pr-badge-bad {
-            color: #b91c1c;
-            font-weight: 700;
-        }
-
-        #printReport .pr-compliance-note {
-            font-size: 8.5pt;
-            color: #4b5563;
-            margin: 0 0 8px;
-        }
-
-        #printReport .pr-signoff {
-            margin-top: 46px;
-            display: flex;
-            justify-content: space-between;
-            font-size: 8.5pt;
-            page-break-inside: avoid;
-        }
-
-        #printReport .pr-signoff .pr-sig-line {
-            width: 42%;
-            text-align: center;
-        }
-
-        #printReport .pr-signoff .pr-sig-line .line {
-            border-top: 1px solid #1f2937;
-            margin-top: 34px;
-            padding-top: 4px;
-            color: #374151;
-        }
-
-        #printReport .pr-footer {
-            margin-top: 22px;
-            padding-top: 8px;
-            border-top: 1px solid #9ca3af;
-        }
-
-        #printReport .pr-footer-columns {
-            display: flex;
-            align-items: stretch;
-            gap: 16px;
-        }
-
-        #printReport .pr-footer-left {
-            flex: 1 1 60%;
-            display: flex;
-            align-items: center;
-        }
-
-        #printReport .pr-footer-disclaimer {
-            font-size: 7.3pt;
-            color: #6b7280;
-            line-height: 1.55;
-            text-align: left;
-            margin: 0;
-        }
-
-        #printReport .pr-footer-right {
-            flex: 0 0 34%;
-            border-left: 1px solid #d1d5db;
-            padding-left: 14px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 3px;
-            font-size: 7.3pt;
-            color: #6b7280;
-        }
-
-        #printReport .pr-footer-right span:first-child {
-            color: #374151;
-        }
-
-        @media print {
-
-            .no-print,
-            .webView {
-                display: none !important;
-            }
-
-            #printReport {
-                display: block !important;
-            }
-
-            body {
-                background: #fff;
-            }
-
-            .sheet {
-                max-width: 100%;
-                margin: 0;
-                padding: 0;
-            }
-
-            @page {
-                size: A4;
-                margin: 14mm 12mm;
-            }
-        }
-
         [data-theme="dark"] {
             --navy: #3b82f6;
             --navy-soft: #1e3a8a;
             --ok: #34d399;
-            --amber: #fbbf24;
             --red: #f87171;
             --text1: #e2e8f0;
             --text2: #94a3b8;
@@ -1173,175 +413,9 @@ if (!$app) {
             --surface2: #263449;
         }
 
-        [data-theme="dark"] body {
-            background: #0f172a;
-        }
-
-        [data-theme="dark"] .btn {
-            background: var(--surface);
-            color: var(--text1);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .btn:hover {
-            background: var(--surface2);
-        }
-
-        [data-theme="dark"] .doc-sheet {
-            background: var(--surface);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .agency-name,
-        [data-theme="dark"] .doc-title {
-            color: var(--navy);
-        }
-
-        [data-theme="dark"] .republic-line,
-        [data-theme="dark"] .agency-sub,
-        [data-theme="dark"] .doc-subtitle,
-        [data-theme="dark"] .intro-note,
-        [data-theme="dark"] .section-hint,
-        [data-theme="dark"] .empty-note,
-        [data-theme="dark"] .footer-note,
-        [data-theme="dark"] .timeline-item .ts,
-        [data-theme="dark"] .timeline-item .td-note {
-            color: var(--text2);
-        }
-
-        [data-theme="dark"] .section-title {
-            background: var(--navy-soft);
-            color: #f8fafc;
-        }
-
-        [data-theme="dark"] .role-note.role-current {
-            background: rgba(16, 185, 129, .15);
-            border-color: rgba(52, 211, 153, .35);
-            color: #34d399;
-        }
-
-        [data-theme="dark"] .role-note.role-past {
-            background: var(--surface2);
-            border-color: var(--bdr);
-            color: var(--navy);
-        }
-
-        [data-theme="dark"] .summary-panel {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .summary-cell {
-            background: var(--surface2);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .summary-cell .sc-num {
-            color: var(--navy);
-        }
-
-        [data-theme="dark"] .summary-cell.sc-warn .sc-num {
-            color: var(--red);
-        }
-
-        [data-theme="dark"] .alert-note {
-            background: rgba(217, 119, 6, .15);
-            border-color: rgba(251, 191, 36, .35);
-            color: #fbbf24;
-        }
-
-        [data-theme="dark"] table.info-table,
-        [data-theme="dark"] table.detail-table {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] table.info-table td,
-        [data-theme="dark"] table.detail-table th,
-        [data-theme="dark"] table.detail-table td {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] table.info-table td.lbl {
-            background: var(--lbl-bg);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] table.info-table td.val {
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] table.detail-table th {
-            background: var(--lbl-bg);
-            color: var(--text2);
-        }
-
-        [data-theme="dark"] table.detail-table td {
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] table.detail-table tbody tr:nth-child(even) {
-            background: #202f45;
-        }
-
-        [data-theme="dark"] .pill {
-            background: var(--surface2);
-            border-color: var(--bdr);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] .badge-me {
-            background: var(--navy);
-            color: #0f172a;
-        }
-
-        [data-theme="dark"] .timeline {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .timeline-item::before {
-            background: var(--navy);
-        }
-
-        [data-theme="dark"] .timeline-item.mine::before {
-            background: var(--ok);
-        }
-
-        [data-theme="dark"] .timeline-item .tt {
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] .doc-card {
-            background: var(--surface2);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .doc-comment {
-            background: var(--surface);
-            border-color: var(--bdr);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] .doc-comment .dc-meta {
-            color: var(--text3);
-        }
-
-        [data-theme="dark"] .badge.b-approved {
-            background: rgba(16, 185, 129, .18);
-            color: #34d399;
-        }
-
-        [data-theme="dark"] .badge.b-disapproved {
-            background: rgba(220, 38, 38, .20);
-            color: #f87171;
-        }
-
-        [data-theme="dark"] .badge.b-pending {
-            background: rgba(217, 119, 6, .20);
-            color: #fbbf24;
-        }
-
-        [data-theme="dark"] .badge.b-other {
-            background: rgba(99, 102, 241, .22);
-            color: #a5b4fc;
+        @page {
+            size: A4;
+            margin: 14mm 12mm;
         }
     </style>
     <script>
@@ -1352,11 +426,11 @@ if (!$app) {
     </script>
 </head>
 
-<body>
+<body class="m-0 font-dmw bg-[#eef1f6] dark:bg-[#0f172a] text-dmw-t1">
 
-    <header class="topbar no-print">
+    <header class="topbar no-print print:!hidden">
         <div class="topbar-brand">
-            <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
+            <img src="../pictures/dmw_logo.png" alt="DMW" class="!w-[42px] !h-auto !block !bg-transparent ![filter:none]">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -1380,35 +454,35 @@ if (!$app) {
         </div>
     </header>
 
-    <div class="sheet">
+    <div class="sheet max-w-[1000px] mx-auto my-3 sm:my-5 px-3 sm:px-4 pb-[110px] print:!max-w-full print:!m-0 print:!p-0">
 
         <?php if ($notFound): ?>
-            <div class="doc-sheet" style="text-align:center;padding:60px 24px;">
-                <i class="fas fa-circle-exclamation" style="font-size:36px;color:var(--red);margin-bottom:12px;"></i>
-                <h2 style="justify-content:center;color:var(--navy);">Application #<?= (int) $id ?> not found</h2>
-                <p style="color:var(--text2);font-size:13px;">This application does not exist, or you do not have access to it. You can only view applications you currently handle or have evaluated in the past.</p>
-                <a href="evaluator-reports.php" class="btn btn-primary" style="margin-top:14px;"><i class="fas fa-arrow-left"></i> Back to My Reports</a>
+            <div class="bg-dmw-surf border border-dmw-bdr rounded-[10px] text-center px-6 py-[60px]">
+                <i class="fas fa-circle-exclamation text-4xl text-dmw-red mb-3"></i>
+                <h2 class="flex justify-center text-dmw-navy">Application #<?= (int) $id ?> not found</h2>
+                <p class="text-dmw-t2 text-[13px]">This application does not exist, or you do not have access to it. You can only view applications you currently handle or have evaluated in the past.</p>
+                <a href="evaluator-reports.php" class="inline-flex items-center justify-center gap-1.5 mt-3.5 px-3.5 py-2 rounded-md border border-dmw-navy bg-dmw-navy text-white dark:bg-dmw-surf dark:text-dmw-t1 dark:border-dmw-bdr text-xs font-semibold no-underline"><i class="fas fa-arrow-left"></i> Back to My Reports</a>
             </div>
         <?php else: ?>
 
-            <div class="toolbar-actions no-print">
-                <a href="evaluator-reports.php" class="btn"><i class="fas fa-arrow-left"></i> Back to My Reports</a>
-                <button class="btn" onclick="window.print()"><i class="fas fa-print"></i> Print</button>
-                <button class="btn btn-primary" id="exportPdfBtn" onclick="exportToPdf()"><i class="fas fa-file-pdf"></i> Export to PDF</button>
+            <div class="toolbar-actions no-print print:!hidden flex flex-wrap gap-2 mb-4">
+                <a href="evaluator-reports.php" class="inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3.5 py-2 rounded-md border border-dmw-bdr bg-dmw-surf text-dmw-t1 text-xs font-semibold no-underline cursor-pointer hover:bg-dmw-surf2"><i class="fas fa-arrow-left"></i> Back to My Reports</a>
+                <button class="inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3.5 py-2 rounded-md border border-dmw-bdr bg-dmw-surf text-dmw-t1 text-xs font-semibold cursor-pointer hover:bg-dmw-surf2" onclick="window.print()"><i class="fas fa-print"></i> Print</button>
+                <button class="inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3.5 py-2 rounded-md border border-dmw-navy bg-dmw-navy text-white dark:bg-dmw-surf dark:text-dmw-t1 dark:border-dmw-bdr text-xs font-semibold cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed" id="exportPdfBtn" onclick="exportToPdf()"><i class="fas fa-file-pdf"></i> Export to PDF</button>
             </div>
 
             <!--WEB VIEW -->
 
-            <div class="webView">
-                <div class="doc-sheet">
+            <div class="webView print:!hidden">
+                <div class="bg-dmw-surf border border-dmw-bdr rounded-[10px] p-4 sm:p-6 lg:px-[34px] lg:pt-[30px] lg:pb-9">
 
                     <!--  HEADER  -->
-                    <div class="doc-header-table">
-                        <img src="../pictures/dmw_logo.png" alt="DMW logo">
-                        <div>
-                            <p class="republic-line">Republic of the Philippines</p>
-                            <p class="agency-name">DEPARTMENT OF MIGRANT WORKERS</p>
-                            <p class="agency-sub">
+                    <div class="w-full flex items-center gap-3 sm:gap-3.5 border-b-[3px] border-dmw-navy pb-2.5 mb-1">
+                        <img src="../pictures/dmw_logo.png" alt="DMW logo" class="w-10 sm:w-12 h-auto shrink-0">
+                        <div class="min-w-0">
+                            <p class="text-[10.5px] text-dmw-t2 m-0">Republic of the Philippines</p>
+                            <p class="text-sm sm:text-base font-extrabold text-dmw-navy mt-px mb-0.5">DEPARTMENT OF MIGRANT WORKERS</p>
+                            <p class="text-[10.5px] text-dmw-t2 leading-[1.5] m-0 break-words">
                                 Regional Office IV-A (CALABARZON)<br>
                                 Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027<br>
                                 Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph
@@ -1416,42 +490,42 @@ if (!$app) {
                         </div>
                     </div>
 
-                    <div class="doc-title">Application Report</div>
-                    <div class="doc-subtitle">
+                    <div class="text-center mt-[18px] mb-[3px] text-base sm:text-[17px] font-extrabold text-dmw-navy uppercase tracking-[.02em]">Application Report</div>
+                    <div class="text-center text-xs text-dmw-t2 mb-4 break-words">
                         <?= htmlspecialchars($applicantName) ?> — <?= htmlspecialchars($app['position_title']) ?> at <?= htmlspecialchars($app['employer_name']) ?>
                     </div>
 
-                    <table class="ref-table">
+                    <table class="w-full mb-5 text-xs border-collapse [&_td]:py-[3px] [&_td]:align-middle [&_td:first-child]:font-bold [&_td:first-child]:w-[110px] sm:[&_td:first-child]:w-40 [&_td:first-child]:text-dmw-t1">
                         <tr>
-                            <td class="ref-label">Application No.:</td>
+                            <td>Application No.:</td>
                             <td>#<?= (int) $app['application_id'] ?></td>
                         </tr>
                         <tr>
-                            <td class="ref-label">RSF Number:</td>
-                            <td><?= htmlspecialchars($app['rsf_number']) ?></td>
+                            <td>RSF Number:</td>
+                            <td class="break-words"><?= htmlspecialchars($app['rsf_number']) ?></td>
                         </tr>
                         <tr>
-                            <td class="ref-label">Current Status:</td>
-                            <td><span class="badge <?= badgeClass($app['status']) ?>"><?= statusLabel($app['status']) ?></span></td>
+                            <td>Current Status:</td>
+                            <td><span class="<?= badgeClass($app['status']) ?>"><?= statusLabel($app['status']) ?></span></td>
                         </tr>
                     </table>
 
                     <?php if ($isCurrentEvaluator): ?>
-                        <div class="role-note role-current">
-                            <i class="fas fa-user-check"></i>
-                            You are the <strong>current evaluator</strong> assigned to this application.
-                            <?php if ($myEvaluationCount > 0): ?>&nbsp;You have logged <?= $myEvaluationCount ?> evaluation entr<?= $myEvaluationCount === 1 ? 'y' : 'ies' ?> on this case.<?php endif; ?>
+                        <div class="text-xs font-semibold px-3 py-[9px] rounded-md mb-[18px] flex items-start sm:items-center gap-2 bg-emerald-100 border border-emerald-200 text-emerald-700 dark:bg-emerald-500/15 dark:border-emerald-400/35 dark:text-emerald-400">
+                            <i class="fas fa-user-check mt-0.5 sm:mt-0"></i>
+                            <span>You are the <strong>current evaluator</strong> assigned to this application.
+                                <?php if ($myEvaluationCount > 0): ?>&nbsp;You have logged <?= $myEvaluationCount ?> evaluation entr<?= $myEvaluationCount === 1 ? 'y' : 'ies' ?> on this case.<?php endif; ?></span>
                         </div>
                     <?php else: ?>
-                        <div class="role-note role-past">
-                            <i class="fas fa-clock-rotate-left"></i>
-                            This application is no longer assigned to you — it is currently with
-                            <strong><?= htmlspecialchars(nz($app['evaluator_name'], 'no evaluator')) ?></strong>.
-                            You have <?= $myEvaluationCount ?> past evaluation entr<?= $myEvaluationCount === 1 ? 'y' : 'ies' ?> on record for this case.
+                        <div class="text-xs font-semibold px-3 py-[9px] rounded-md mb-[18px] flex items-start sm:items-center gap-2 bg-[#e9edf7] border border-indigo-200 text-dmw-navy dark:bg-dmw-surf2 dark:border-dmw-bdr">
+                            <i class="fas fa-clock-rotate-left mt-0.5 sm:mt-0"></i>
+                            <span>This application is no longer assigned to you — it is currently with
+                                <strong><?= htmlspecialchars(nz($app['evaluator_name'], 'no evaluator')) ?></strong>.
+                                You have <?= $myEvaluationCount ?> past evaluation entr<?= $myEvaluationCount === 1 ? 'y' : 'ies' ?> on record for this case.</span>
                         </div>
                     <?php endif; ?>
 
-                    <p class="intro-note">
+                    <p class="text-[12.5px] leading-[1.65] text-dmw-t2 text-left sm:text-justify mb-[18px]">
                         This report presents the complete case record of <strong><?= htmlspecialchars($applicantName) ?></strong>'s
                         application for <strong><?= htmlspecialchars($app['position_title']) ?></strong> at
                         <strong><?= htmlspecialchars($app['employer_name']) ?></strong> (RSF <?= htmlspecialchars($app['rsf_number']) ?>),
@@ -1462,145 +536,145 @@ if (!$app) {
                     </p>
 
                     <?php if ($isPastDeadline): ?>
-                        <div class="alert-note">
-                            <i class="fas fa-triangle-exclamation"></i>
-                            This application is still <?= strtolower(statusLabel($app['status'])) ?> and the job order deadline
-                            (<?= htmlspecialchars(date('M j, Y', strtotime($app['job_deadline']))) ?>) has already passed. Prioritize review or escalate to the admin.
+                        <div class="text-xs font-semibold px-3 py-[9px] rounded-md mb-[18px] flex items-start gap-2 bg-amber-100 border border-amber-200 text-amber-800 dark:bg-amber-600/15 dark:border-amber-400/35 dark:text-amber-400">
+                            <i class="fas fa-triangle-exclamation mt-0.5"></i>
+                            <span>This application is still <?= strtolower(statusLabel($app['status'])) ?> and the job order deadline
+                                (<?= htmlspecialchars(date('M j, Y', strtotime($app['job_deadline']))) ?>) has already passed. Prioritize review or escalate to the admin.</span>
                         </div>
                     <?php endif; ?>
 
-                    <div class="summary-panel">
-                        <div class="summary-cell">
-                            <div class="sc-num"><?= $daysInProcess ?></div>
-                            <div class="sc-lbl"><?= $isClosed ? 'Days to Close' : 'Days in Process' ?></div>
+                    <div class="grid grid-cols-2 sm:grid-cols-[repeat(auto-fit,minmax(150px,1fr))] border border-dmw-bdr rounded-md overflow-hidden mb-[18px] [&>div]:px-3.5 [&>div]:py-3 [&>div]:border-r [&>div]:border-b [&>div]:border-dmw-bdr [&>div]:bg-dmw-surf2 [&>div:last-child]:border-r-0">
+                        <div>
+                            <div class="text-xl font-extrabold text-dmw-navy leading-[1.1]"><?= $daysInProcess ?></div>
+                            <div class="text-[10px] font-semibold text-dmw-t2 uppercase tracking-[.03em] mt-[3px]"><?= $isClosed ? 'Days to Close' : 'Days in Process' ?></div>
                         </div>
-                        <div class="summary-cell">
-                            <div class="sc-num"><?= $statusChangeCount ?></div>
-                            <div class="sc-lbl">Status Changes</div>
+                        <div>
+                            <div class="text-xl font-extrabold text-dmw-navy leading-[1.1]"><?= $statusChangeCount ?></div>
+                            <div class="text-[10px] font-semibold text-dmw-t2 uppercase tracking-[.03em] mt-[3px]">Status Changes</div>
                         </div>
-                        <div class="summary-cell">
-                            <div class="sc-num"><?= $evaluatorCount ?></div>
-                            <div class="sc-lbl">Evaluator(s) Involved</div>
+                        <div>
+                            <div class="text-xl font-extrabold text-dmw-navy leading-[1.1]"><?= $evaluatorCount ?></div>
+                            <div class="text-[10px] font-semibold text-dmw-t2 uppercase tracking-[.03em] mt-[3px]">Evaluator(s) Involved</div>
                         </div>
-                        <div class="summary-cell <?= $complianceRounds > 2 ? 'sc-warn' : '' ?>">
-                            <div class="sc-num"><?= $complianceRounds ?></div>
-                            <div class="sc-lbl">Compliance Rounds</div>
+                        <div>
+                            <div class="text-xl font-extrabold leading-[1.1] <?= $complianceRounds > 2 ? 'text-dmw-red' : 'text-dmw-navy' ?>"><?= $complianceRounds ?></div>
+                            <div class="text-[10px] font-semibold text-dmw-t2 uppercase tracking-[.03em] mt-[3px]">Compliance Rounds</div>
                         </div>
-                        <div class="summary-cell <?= $completionPct < 100 ? 'sc-warn' : '' ?>">
-                            <div class="sc-num"><?= $completionPct ?>%</div>
-                            <div class="sc-lbl">Docs Complete</div>
+                        <div>
+                            <div class="text-xl font-extrabold leading-[1.1] <?= $completionPct < 100 ? 'text-dmw-red' : 'text-dmw-navy' ?>"><?= $completionPct ?>%</div>
+                            <div class="text-[10px] font-semibold text-dmw-t2 uppercase tracking-[.03em] mt-[3px]">Docs Complete</div>
                         </div>
                     </div>
 
                     <!-- APPLICANT PROFILE  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-user"></i> I. Applicant Profile</div>
-                        <p class="section-hint">Personal, educational, and preference details as declared by the applicant. Cross-check against submitted documents below.</p>
-                        <table class="info-table">
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-user"></i> I. Applicant Profile</div>
+                        <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Personal, educational, and preference details as declared by the applicant. Cross-check against submitted documents below.</p>
+                        <table class="w-full border-collapse border border-dmw-bdr mb-1 [&_td]:border [&_td]:border-dmw-bdr [&_td]:px-3 [&_td]:py-[7px] [&_td]:align-top [&_td]:text-[12.5px] [&_td]:text-dmw-t1 [&_td]:font-medium [&_td]:break-words [&_td:first-child]:w-[30%] [&_td:first-child]:bg-dmw-lbl [&_td:first-child]:font-bold [&_td:first-child]:text-[11px] max-sm:block max-sm:[&_tbody]:block max-sm:[&_tr]:block max-sm:[&_td]:block max-sm:[&_td:first-child]:w-full">
                             <tr>
-                                <td class="lbl">Full Name</td>
-                                <td class="val"><?= htmlspecialchars($applicantName) ?></td>
+                                <td>Full Name</td>
+                                <td><?= htmlspecialchars($applicantName) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Email</td>
-                                <td class="val"><?= htmlspecialchars($app['applicant_email']) ?></td>
+                                <td>Email</td>
+                                <td><?= htmlspecialchars($app['applicant_email']) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Phone</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['phone'])) ?></td>
+                                <td>Phone</td>
+                                <td><?= htmlspecialchars(nz($app['phone'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Date of Birth / Age</td>
-                                <td class="val"><?= $app['dob'] ? htmlspecialchars(date('M j, Y', strtotime($app['dob']))) . ' (' . $age . ' yrs)' : '—' ?></td>
+                                <td>Date of Birth / Age</td>
+                                <td><?= $app['dob'] ? htmlspecialchars(date('M j, Y', strtotime($app['dob']))) . ' (' . $age . ' yrs)' : '—' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Gender</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['gender'])) ?></td>
+                                <td>Gender</td>
+                                <td><?= htmlspecialchars(nz($app['gender'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Civil Status</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['civil_status'])) ?></td>
+                                <td>Civil Status</td>
+                                <td><?= htmlspecialchars(nz($app['civil_status'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Citizenship</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['citizenship'])) ?></td>
+                                <td>Citizenship</td>
+                                <td><?= htmlspecialchars(nz($app['citizenship'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Religion</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['religion'])) ?></td>
+                                <td>Religion</td>
+                                <td><?= htmlspecialchars(nz($app['religion'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Height / Weight</td>
-                                <td class="val"><?= $app['height_cm'] ? htmlspecialchars($app['height_cm']) . ' cm' : '—' ?> / <?= $app['weight_kg'] ? htmlspecialchars($app['weight_kg']) . ' kg' : '—' ?></td>
+                                <td>Height / Weight</td>
+                                <td><?= $app['height_cm'] ? htmlspecialchars($app['height_cm']) . ' cm' : '—' ?> / <?= $app['weight_kg'] ? htmlspecialchars($app['weight_kg']) . ' kg' : '—' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Address</td>
-                                <td class="val"><?= htmlspecialchars(implode(', ', array_filter([$app['address'], $app['barangay'], $app['city_municipality'], $app['province']]))) ?></td>
+                                <td>Address</td>
+                                <td><?= htmlspecialchars(implode(', ', array_filter([$app['address'], $app['barangay'], $app['city_municipality'], $app['province']]))) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Educational Attainment</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['educational_attainment'])) ?></td>
+                                <td>Educational Attainment</td>
+                                <td><?= htmlspecialchars(nz($app['educational_attainment'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Degree / Course</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['degree_name'] ?: $app['course_degree'])) ?></td>
+                                <td>Degree / Course</td>
+                                <td><?= htmlspecialchars(nz($app['degree_name'] ?: $app['course_degree'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">School</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['school_name'])) ?></td>
+                                <td>School</td>
+                                <td><?= htmlspecialchars(nz($app['school_name'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Year Graduated</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['year_graduated'])) ?></td>
+                                <td>Year Graduated</td>
+                                <td><?= htmlspecialchars(nz($app['year_graduated'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Work Experience</td>
-                                <td class="val"><?= $app['work_experience_years'] !== null ? htmlspecialchars($app['work_experience_years']) . ' yr(s)' : '—' ?></td>
+                                <td>Work Experience</td>
+                                <td><?= $app['work_experience_years'] !== null ? htmlspecialchars($app['work_experience_years']) . ' yr(s)' : '—' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Last Employer / Position</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['last_employer'])) ?> <?= $app['last_position'] ? '— ' . htmlspecialchars($app['last_position']) : '' ?></td>
+                                <td>Last Employer / Position</td>
+                                <td><?= htmlspecialchars(nz($app['last_employer'])) ?> <?= $app['last_position'] ? '— ' . htmlspecialchars($app['last_position']) : '' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Profile Completed</td>
-                                <td class="val"><?= $app['profile_completed_at'] ? fmtDate($app['profile_completed_at'], 'M j, Y') : 'Not completed' ?></td>
+                                <td>Profile Completed</td>
+                                <td><?= $app['profile_completed_at'] ? fmtDate($app['profile_completed_at'], 'M j, Y') : 'Not completed' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Preferred Countries</td>
-                                <td class="val">
+                                <td>Preferred Countries</td>
+                                <td>
                                     <?php if ($preferredCountries): ?>
                                         <?php foreach ($preferredCountries as $pc): ?>
-                                            <span class="pill">#<?= (int) $pc['priority_order'] ?> <?= htmlspecialchars($pc['country']) ?></span>
+                                            <span class="inline-block px-2.5 py-[3px] rounded-full text-[11px] font-semibold bg-dmw-surf2 border border-dmw-bdr my-0.5 mr-1">#<?= (int) $pc['priority_order'] ?> <?= htmlspecialchars($pc['country']) ?></span>
                                         <?php endforeach; ?>
                                         <?php else: ?>—<?php endif; ?>
                                 </td>
                             </tr>
                             <tr>
-                                <td class="lbl">Preferred Positions</td>
-                                <td class="val">
+                                <td>Preferred Positions</td>
+                                <td>
                                     <?php if ($preferredPositions): ?>
                                         <?php foreach ($preferredPositions as $pp): ?>
-                                            <span class="pill">#<?= (int) $pp['priority_order'] ?> <?= htmlspecialchars($pp['subcategory_name']) ?></span>
+                                            <span class="inline-block px-2.5 py-[3px] rounded-full text-[11px] font-semibold bg-dmw-surf2 border border-dmw-bdr my-0.5 mr-1">#<?= (int) $pp['priority_order'] ?> <?= htmlspecialchars($pp['subcategory_name']) ?></span>
                                         <?php endforeach; ?>
                                         <?php else: ?>—<?php endif; ?>
                                 </td>
                             </tr>
                             <?php if ($clientSkills): ?>
                                 <tr>
-                                    <td class="lbl">Skills</td>
-                                    <td class="val">
+                                    <td>Skills</td>
+                                    <td>
                                         <?php foreach ($clientSkills as $sk): ?>
-                                            <span class="pill"><?= htmlspecialchars($sk['skill_name']) ?> (<?= htmlspecialchars($sk['proficiency_level']) ?>)</span>
+                                            <span class="inline-block px-2.5 py-[3px] rounded-full text-[11px] font-semibold bg-dmw-surf2 border border-dmw-bdr my-0.5 mr-1"><?= htmlspecialchars($sk['skill_name']) ?> (<?= htmlspecialchars($sk['proficiency_level']) ?>)</span>
                                         <?php endforeach; ?>
                                     </td>
                                 </tr>
                             <?php endif; ?>
                             <?php if ($clientLicenses): ?>
                                 <tr>
-                                    <td class="lbl">Professional Licenses</td>
-                                    <td class="val">
+                                    <td>Professional Licenses</td>
+                                    <td>
                                         <?php foreach ($clientLicenses as $lic): ?>
-                                            <span class="pill"><?= htmlspecialchars($lic['license_name']) ?></span>
+                                            <span class="inline-block px-2.5 py-[3px] rounded-full text-[11px] font-semibold bg-dmw-surf2 border border-dmw-bdr my-0.5 mr-1"><?= htmlspecialchars($lic['license_name']) ?></span>
                                         <?php endforeach; ?>
                                     </td>
                                 </tr>
@@ -1609,79 +683,79 @@ if (!$app) {
                     </div>
 
                     <!--  APPLICATION / JOB ORDER INFO  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-briefcase"></i> II. Application &amp; Job Order Information</div>
-                        <p class="section-hint">Recruitment slot the applicant is being matched against — verify qualifications, salary, and deadline align with the applicant's profile.</p>
-                        <table class="info-table">
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-briefcase"></i> II. Application &amp; Job Order Information</div>
+                        <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Recruitment slot the applicant is being matched against — verify qualifications, salary, and deadline align with the applicant's profile.</p>
+                        <table class="w-full border-collapse border border-dmw-bdr mb-1 [&_td]:border [&_td]:border-dmw-bdr [&_td]:px-3 [&_td]:py-[7px] [&_td]:align-top [&_td]:text-[12.5px] [&_td]:text-dmw-t1 [&_td]:font-medium [&_td]:break-words [&_td:first-child]:w-[30%] [&_td:first-child]:bg-dmw-lbl [&_td:first-child]:font-bold [&_td:first-child]:text-[11px] max-sm:block max-sm:[&_tbody]:block max-sm:[&_tr]:block max-sm:[&_td]:block max-sm:[&_td:first-child]:w-full">
                             <tr>
-                                <td class="lbl">RSF Number</td>
-                                <td class="val"><?= htmlspecialchars($app['rsf_number']) ?></td>
+                                <td>RSF Number</td>
+                                <td><?= htmlspecialchars($app['rsf_number']) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Position</td>
-                                <td class="val"><?= htmlspecialchars($app['position_title']) ?></td>
+                                <td>Position</td>
+                                <td><?= htmlspecialchars($app['position_title']) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Category / Subcategory</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['category_name'])) ?> / <?= htmlspecialchars(nz($app['subcategory_name'])) ?></td>
+                                <td>Category / Subcategory</td>
+                                <td><?= htmlspecialchars(nz($app['category_name'])) ?> / <?= htmlspecialchars(nz($app['subcategory_name'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Employer</td>
-                                <td class="val"><?= htmlspecialchars($app['employer_name']) ?></td>
+                                <td>Employer</td>
+                                <td><?= htmlspecialchars($app['employer_name']) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Worksite Country</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['worksite_country'])) ?></td>
+                                <td>Worksite Country</td>
+                                <td><?= htmlspecialchars(nz($app['worksite_country'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Classification</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['classification'])) ?></td>
+                                <td>Classification</td>
+                                <td><?= htmlspecialchars(nz($app['classification'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Slots Available</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['slots_available'])) ?></td>
+                                <td>Slots Available</td>
+                                <td><?= htmlspecialchars(nz($app['slots_available'])) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Salary Range</td>
-                                <td class="val"><?= ($app['salary_min'] !== null && $app['salary_max'] !== null) ? htmlspecialchars(number_format($app['salary_min'], 2) . ' – ' . number_format($app['salary_max'], 2) . ' ' . ($app['salary_currency'] ?: 'PHP')) : '—' ?></td>
+                                <td>Salary Range</td>
+                                <td><?= ($app['salary_min'] !== null && $app['salary_max'] !== null) ? htmlspecialchars(number_format($app['salary_min'], 2) . ' – ' . number_format($app['salary_max'], 2) . ' ' . ($app['salary_currency'] ?: 'PHP')) : '—' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Job Order Deadline</td>
-                                <td class="val"><?= $app['job_deadline'] ? htmlspecialchars(date('M j, Y', strtotime($app['job_deadline']))) : '—' ?></td>
+                                <td>Job Order Deadline</td>
+                                <td><?= $app['job_deadline'] ? htmlspecialchars(date('M j, Y', strtotime($app['job_deadline']))) : '—' ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Handling Party</td>
-                                <td class="val"><?= htmlspecialchars(nz($app['handling_party'] ? ucfirst($app['handling_party']) : null)) ?></td>
+                                <td>Handling Party</td>
+                                <td><?= htmlspecialchars(nz($app['handling_party'] ? ucfirst($app['handling_party']) : null)) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Current Evaluator</td>
-                                <td class="val">
+                                <td>Current Evaluator</td>
+                                <td>
                                     <?= htmlspecialchars(nz($app['evaluator_name'])) ?>
-                                    <?php if ($isCurrentEvaluator): ?><span class="badge-me">YOU</span><?php endif; ?>
+                                    <?php if ($isCurrentEvaluator): ?><span class="inline-block px-[7px] py-px rounded-full text-[9.5px] font-bold bg-dmw-navy text-white dark:text-[#0f172a] ml-1.5">YOU</span><?php endif; ?>
                                 </td>
                             </tr>
                             <tr>
-                                <td class="lbl">Locked At</td>
-                                <td class="val"><?= fmtDate($app['locked_at']) ?></td>
+                                <td>Locked At</td>
+                                <td><?= fmtDate($app['locked_at']) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Submitted At</td>
-                                <td class="val"><?= fmtDate($app['submitted_at']) ?></td>
+                                <td>Submitted At</td>
+                                <td><?= fmtDate($app['submitted_at']) ?></td>
                             </tr>
                             <tr>
-                                <td class="lbl">Last Updated</td>
-                                <td class="val"><?= fmtDate($app['updated_at']) ?></td>
+                                <td>Last Updated</td>
+                                <td><?= fmtDate($app['updated_at']) ?></td>
                             </tr>
                             <?php if ($app['qualifications']): ?>
                                 <tr>
-                                    <td class="lbl">Job Qualifications</td>
-                                    <td class="val"><?= nl2br(htmlspecialchars($app['qualifications'])) ?></td>
+                                    <td>Job Qualifications</td>
+                                    <td><?= nl2br(htmlspecialchars($app['qualifications'])) ?></td>
                                 </tr>
                             <?php endif; ?>
                             <?php if ($app['admin_notes']): ?>
                                 <tr>
-                                    <td class="lbl">Admin Notes</td>
-                                    <td class="val"><?= nl2br(htmlspecialchars($app['admin_notes'])) ?></td>
+                                    <td>Admin Notes</td>
+                                    <td><?= nl2br(htmlspecialchars($app['admin_notes'])) ?></td>
                                 </tr>
                             <?php endif; ?>
                         </table>
@@ -1689,55 +763,57 @@ if (!$app) {
 
                     <!--  APPLICATION ANSWERS  -->
                     <?php if ($answers): ?>
-                        <div class="section">
-                            <div class="section-title"><i class="fas fa-circle-question"></i> III. Application Answers</div>
-                            <p class="section-hint">Screening questions specific to this job order, answered at the time of submission.</p>
-                            <table class="detail-table">
-                                <thead>
-                                    <tr>
-                                        <th>Question</th>
-                                        <th>Answer</th>
-                                        <th>Answered At</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($answers as $a): ?>
+                        <div class="mb-[22px]">
+                            <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-circle-question"></i> III. Application Answers</div>
+                            <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Screening questions specific to this job order, answered at the time of submission.</p>
+                            <div class="overflow-x-auto">
+                                <table class="w-full min-w-[520px] border-collapse text-xs border border-dmw-bdr [&_th]:bg-dmw-lbl [&_th]:text-left [&_th]:px-2.5 [&_th]:py-2 [&_th]:font-bold [&_th]:text-[10.5px] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-dmw-t2 [&_th]:border [&_th]:border-dmw-bdr [&_td]:px-2.5 [&_td]:py-2 [&_td]:border [&_td]:border-dmw-bdr [&_td]:align-top [&_td]:text-dmw-t1 [&_tbody_tr:nth-child(even)]:bg-[#fbfcfe] dark:[&_tbody_tr:nth-child(even)]:bg-[#202f45]">
+                                    <thead>
                                         <tr>
-                                            <td><?= htmlspecialchars($a['question_text']) ?></td>
-                                            <td><?= htmlspecialchars(nz($a['answer'])) ?></td>
-                                            <td><?= fmtDate($a['answered_at']) ?></td>
+                                            <th>Question</th>
+                                            <th>Answer</th>
+                                            <th>Answered At</th>
                                         </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($answers as $a): ?>
+                                            <tr>
+                                                <td><?= htmlspecialchars($a['question_text']) ?></td>
+                                                <td><?= htmlspecialchars(nz($a['answer'])) ?></td>
+                                                <td><?= fmtDate($a['answered_at']) ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     <?php endif; ?>
 
                     <!--  DOCUMENTS  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-folder-open"></i> IV. Documents &amp; Comments</div>
-                        <p class="section-hint">Files uploaded against this job order's requirements, with any reviewer remarks attached to each file.</p>
-                        <p style="font-size:12px;color:var(--text2);margin:0 0 14px;">
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-folder-open"></i> IV. Documents &amp; Comments</div>
+                        <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Files uploaded against this job order's requirements, with any reviewer remarks attached to each file.</p>
+                        <p class="text-xs text-dmw-t2 mb-3.5">
                             Compliance: <b><?= $submittedCount ?> / <?= $requiredCount ?></b> required documents submitted
-                            (<span class="badge <?= $completionPct == 100 ? 'b-approved' : 'b-disapproved' ?>"><?= $completionPct ?>%</span>)
+                            (<span class="<?= badgeClass($completionPct == 100 ? 'approved' : 'disapproved') ?>"><?= $completionPct ?>%</span>)
                             <?php if ($missingDocs): ?>&nbsp;•&nbsp; Missing: <b><?= htmlspecialchars(implode(', ', $missingDocs)) ?></b><?php endif; ?>
                         </p>
 
                         <?php if (!$documents): ?>
-                            <p class="empty-note">No documents uploaded for this application.</p>
+                            <p class="text-xs text-dmw-t3 dark:text-dmw-t2 italic py-2.5">No documents uploaded for this application.</p>
                         <?php else: ?>
                             <?php foreach ($documents as $doc): ?>
-                                <div class="doc-card">
-                                    <div class="dh">
-                                        <div>
-                                            <div style="font-weight:700;font-size:12.5px;"><?= htmlspecialchars($doc['document_name'] ?: ucfirst($doc['document_type'])) ?></div>
-                                            <div style="font-size:11px;color:var(--text3);"><?= htmlspecialchars($doc['file_name']) ?> &nbsp;•&nbsp; Uploaded <?= fmtDate($doc['uploaded_at']) ?></div>
+                                <div class="border border-dmw-bdr rounded-md px-3.5 py-3 mb-2.5 bg-dmw-surf2">
+                                    <div class="flex justify-between items-center flex-wrap gap-2">
+                                        <div class="min-w-0">
+                                            <div class="font-bold text-[12.5px] break-words"><?= htmlspecialchars($doc['document_name'] ?: ucfirst($doc['document_type'])) ?></div>
+                                            <div class="text-[11px] text-dmw-t3 break-all"><?= htmlspecialchars($doc['file_name']) ?> &nbsp;•&nbsp; Uploaded <?= fmtDate($doc['uploaded_at']) ?></div>
                                         </div>
-                                        <?php if ($doc['is_required']): ?><span class="badge b-other">Required</span><?php endif; ?>
+                                        <?php if ($doc['is_required']): ?><span class="<?= badgeClass('other') ?>">Required</span><?php endif; ?>
                                     </div>
                                     <?php foreach ($doc['comments'] as $c): ?>
-                                        <div class="doc-comment">
-                                            <div class="dc-meta"><?= htmlspecialchars($c['commented_by']) ?> — <?= fmtDate($c['created_at']) ?></div>
+                                        <div class="bg-dmw-surf border border-dmw-bdr rounded-md px-2.5 py-2 mt-2 text-xs text-dmw-t1 break-words">
+                                            <div class="text-[10.5px] text-dmw-t3 mb-[3px]"><?= htmlspecialchars($c['commented_by']) ?> — <?= fmtDate($c['created_at']) ?></div>
                                             <?= htmlspecialchars($c['comment']) ?>
                                         </div>
                                     <?php endforeach; ?>
@@ -1747,24 +823,24 @@ if (!$app) {
                     </div>
 
                     <!--  EVALUATION HISTORY  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-clipboard-check"></i> V. Evaluation History</div>
-                        <p class="section-hint">Every decision recorded against this application, in chronological order. Entries you authored are marked <span class="badge-me" style="margin-left:0;">YOU</span>.</p>
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-clipboard-check"></i> V. Evaluation History</div>
+                        <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Every decision recorded against this application, in chronological order. Entries you authored are marked <span class="inline-block px-[7px] py-px rounded-full text-[9.5px] font-bold bg-dmw-navy text-white dark:text-[#0f172a]">YOU</span>.</p>
                         <?php if (!$evaluations): ?>
-                            <p class="empty-note">No evaluations recorded yet.</p>
+                            <p class="text-xs text-dmw-t3 dark:text-dmw-t2 italic py-2.5">No evaluations recorded yet.</p>
                         <?php else: ?>
-                            <div class="timeline">
+                            <div class="border-l-2 border-dmw-bdr ml-1.5 pl-[18px]">
                                 <?php foreach ($evaluations as $e): ?>
                                     <?php $isMine = (int) ($e['evaluator_id'] ?? 0) === $evaluator_id; ?>
-                                    <div class="timeline-item <?= $isMine ? 'mine' : '' ?>">
-                                        <div class="tt">
+                                    <div class="relative pb-4 before:content-[''] before:absolute before:-left-[23px] before:top-[3px] before:w-[9px] before:h-[9px] before:rounded-full <?= $isMine ? 'before:bg-dmw-ok' : 'before:bg-dmw-navy' ?>">
+                                        <div class="text-[12.5px] font-bold text-dmw-t1">
                                             <?= htmlspecialchars(ucfirst($e['evaluation_type'] ?? 'evaluation')) ?> —
-                                            <span class="badge <?= badgeClass($e['decision']) ?>"><?= statusLabel($e['decision'] ?? '—') ?></span>
+                                            <span class="<?= badgeClass($e['decision']) ?>"><?= statusLabel($e['decision'] ?? '—') ?></span>
                                             by <?= htmlspecialchars($e['evaluator_name'] ?: $e['admin_name'] ?: 'System') ?>
-                                            <?php if ($isMine): ?><span class="badge-me">YOU</span><?php endif; ?>
+                                            <?php if ($isMine): ?><span class="inline-block px-[7px] py-px rounded-full text-[9.5px] font-bold bg-dmw-navy text-white dark:text-[#0f172a] ml-1.5">YOU</span><?php endif; ?>
                                         </div>
-                                        <div class="ts"><?= fmtDate($e['evaluated_at']) ?></div>
-                                        <?php if ($e['comments']): ?><div class="td-note"><?= htmlspecialchars($e['comments']) ?></div><?php endif; ?>
+                                        <div class="text-[10.5px] text-dmw-t3 dark:text-dmw-t2"><?= fmtDate($e['evaluated_at']) ?></div>
+                                        <?php if ($e['comments']): ?><div class="text-xs text-dmw-t2 mt-0.5 break-words"><?= htmlspecialchars($e['comments']) ?></div><?php endif; ?>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
@@ -1772,18 +848,18 @@ if (!$app) {
                     </div>
 
                     <!--  STATUS HISTORY  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-timeline"></i> VI. Status History</div>
-                        <p class="section-hint">Full audit trail of status transitions — useful for tracing delays or repeated compliance cycles.</p>
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-timeline"></i> VI. Status History</div>
+                        <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Full audit trail of status transitions — useful for tracing delays or repeated compliance cycles.</p>
                         <?php if (!$statusHistory): ?>
-                            <p class="empty-note">No status changes recorded yet.</p>
+                            <p class="text-xs text-dmw-t3 dark:text-dmw-t2 italic py-2.5">No status changes recorded yet.</p>
                         <?php else: ?>
-                            <div class="timeline">
+                            <div class="border-l-2 border-dmw-bdr ml-1.5 pl-[18px]">
                                 <?php foreach ($statusHistory as $h): ?>
-                                    <div class="timeline-item">
-                                        <div class="tt"><?= statusLabel($h['from_status'] ?? '—') ?> → <?= statusLabel($h['to_status'] ?? '—') ?></div>
-                                        <div class="ts">By <?= htmlspecialchars($h['changed_by'] ?: 'System') ?> — <?= fmtDate($h['changed_at']) ?></div>
-                                        <?php if ($h['reason']): ?><div class="td-note"><?= htmlspecialchars($h['reason']) ?></div><?php endif; ?>
+                                    <div class="relative pb-4 before:content-[''] before:absolute before:-left-[23px] before:top-[3px] before:w-[9px] before:h-[9px] before:rounded-full before:bg-dmw-navy">
+                                        <div class="text-[12.5px] font-bold text-dmw-t1"><?= statusLabel($h['from_status'] ?? '—') ?> → <?= statusLabel($h['to_status'] ?? '—') ?></div>
+                                        <div class="text-[10.5px] text-dmw-t3 dark:text-dmw-t2 break-words">By <?= htmlspecialchars($h['changed_by'] ?: 'System') ?> — <?= fmtDate($h['changed_at']) ?></div>
+                                        <?php if ($h['reason']): ?><div class="text-xs text-dmw-t2 mt-0.5 break-words"><?= htmlspecialchars($h['reason']) ?></div><?php endif; ?>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
@@ -1791,42 +867,44 @@ if (!$app) {
                     </div>
 
                     <!--  EVALUATOR ASSIGNMENTS  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-user-tie"></i> VII. Evaluator Assignments</div>
-                        <p class="section-hint">Which evaluator(s) have handled this case and when — helps confirm accountability and reassignment history.</p>
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-user-tie"></i> VII. Evaluator Assignments</div>
+                        <p class="text-[11.5px] text-dmw-t3 dark:text-dmw-t2 italic -mt-1 mb-2.5">Which evaluator(s) have handled this case and when — helps confirm accountability and reassignment history.</p>
                         <?php if (!$assignments): ?>
-                            <p class="empty-note">No evaluator has been assigned to this application.</p>
+                            <p class="text-xs text-dmw-t3 dark:text-dmw-t2 italic py-2.5">No evaluator has been assigned to this application.</p>
                         <?php else: ?>
-                            <table class="detail-table">
-                                <thead>
-                                    <tr>
-                                        <th>Evaluator</th>
-                                        <th>Email</th>
-                                        <th>Assigned At</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($assignments as $asg): ?>
+                            <div class="overflow-x-auto">
+                                <table class="w-full min-w-[520px] border-collapse text-xs border border-dmw-bdr [&_th]:bg-dmw-lbl [&_th]:text-left [&_th]:px-2.5 [&_th]:py-2 [&_th]:font-bold [&_th]:text-[10.5px] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-dmw-t2 [&_th]:border [&_th]:border-dmw-bdr [&_td]:px-2.5 [&_td]:py-2 [&_td]:border [&_td]:border-dmw-bdr [&_td]:align-top [&_td]:text-dmw-t1 [&_tbody_tr:nth-child(even)]:bg-[#fbfcfe] dark:[&_tbody_tr:nth-child(even)]:bg-[#202f45]">
+                                    <thead>
                                         <tr>
-                                            <td>
-                                                <?= htmlspecialchars($asg['evaluator_name']) ?>
-                                                <?php if ((int) $asg['evaluator_id'] === $evaluator_id): ?><span class="badge-me">YOU</span><?php endif; ?>
-                                            </td>
-                                            <td><?= htmlspecialchars($asg['evaluator_email']) ?></td>
-                                            <td><?= fmtDate($asg['assigned_at']) ?></td>
-                                            <td><span class="badge b-other"><?= htmlspecialchars(ucfirst($asg['status'])) ?></span></td>
+                                            <th>Evaluator</th>
+                                            <th>Email</th>
+                                            <th>Assigned At</th>
+                                            <th>Status</th>
                                         </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($assignments as $asg): ?>
+                                            <tr>
+                                                <td>
+                                                    <?= htmlspecialchars($asg['evaluator_name']) ?>
+                                                    <?php if ((int) $asg['evaluator_id'] === $evaluator_id): ?><span class="inline-block px-[7px] py-px rounded-full text-[9.5px] font-bold bg-dmw-navy text-white dark:text-[#0f172a] ml-1.5">YOU</span><?php endif; ?>
+                                                </td>
+                                                <td class="break-all"><?= htmlspecialchars($asg['evaluator_email']) ?></td>
+                                                <td><?= fmtDate($asg['assigned_at']) ?></td>
+                                                <td><span class="<?= badgeClass('other') ?>"><?= htmlspecialchars(ucfirst($asg['status'])) ?></span></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
                         <?php endif; ?>
                     </div>
 
                     <!--  NOTES  -->
-                    <div class="section">
-                        <div class="section-title"><i class="fas fa-lightbulb"></i> VIII. Notes for Evaluation</div>
-                        <ul style="font-size:12.5px;color:var(--text2);line-height:1.8;margin:0;padding-left:18px;">
+                    <div class="mb-[22px]">
+                        <div class="flex items-center gap-2 bg-dmw-navy text-white dark:bg-dmw-navy-soft dark:text-slate-50 text-xs font-bold px-3 py-[7px] mb-2.5 uppercase tracking-[.04em] rounded-[3px]"><i class="fas fa-lightbulb"></i> VIII. Notes for Evaluation</div>
+                        <ul class="text-[12.5px] text-dmw-t2 leading-[1.8] m-0 pl-[18px]">
                             <?php if ($missingDocs): ?>
                                 <li><strong>Missing documents:</strong> <?= htmlspecialchars(implode(', ', $missingDocs)) ?> — flag for compliance before approving.</li>
                             <?php elseif ($requiredCount > 0): ?>
@@ -1849,20 +927,20 @@ if (!$app) {
                         </ul>
                     </div>
 
-                    <p class="footer-note">Department of Migrant Workers — Application Management System &nbsp;|&nbsp; Application #<?= (int) $app['application_id'] ?> &nbsp;|&nbsp; For official use only</p>
+                    <p class="text-[10px] text-dmw-t3 dark:text-dmw-t2 text-center border-t border-dmw-bdr pt-2.5 mt-6">Department of Migrant Workers — Application Management System &nbsp;|&nbsp; Application #<?= (int) $app['application_id'] ?> &nbsp;|&nbsp; For official use only</p>
 
-                </div><!-- /.doc-sheet -->
+                </div><!-- /doc sheet -->
             </div><!-- /.webView -->
 
             <!-- PRINT / PDF REPORT -->
-            <div id="printReport">
+            <div id="printReport" class="hidden print:!block bg-white text-[#1f2937] font-dmwpdf w-full max-w-[190mm] mx-auto p-0">
 
-                <div class="pr-page-header">
-                    <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
+                <div class="flex items-center gap-3.5 border-b-[3px] border-[#0b1f4b] pb-2.5 mb-1.5">
+                    <img id="printLogo" class="h-[42px] w-auto" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                     <div>
-                        <div class="pr-republic">Republic of the Philippines</div>
-                        <div class="pr-agency">DEPARTMENT OF MIGRANT WORKERS</div>
-                        <div class="pr-office">
+                        <div class="text-[8.5pt] text-[#4b5563] mb-px">Republic of the Philippines</div>
+                        <div class="text-[12.5pt] font-extrabold text-[#0b1f4b] tracking-[.01em]">DEPARTMENT OF MIGRANT WORKERS</div>
+                        <div class="text-[8.7pt] text-[#4b5563] mt-0.5 leading-[1.5]">
                             Regional Office IV-A (CALABARZON)<br>
                             Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027<br>
                             Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph
@@ -1870,18 +948,18 @@ if (!$app) {
                     </div>
                 </div>
 
-                <div class="pr-report-title">
-                    <h1>Application Report</h1>
-                    <p>Application #<?= (int) $app['application_id'] ?> — <?= htmlspecialchars($applicantName) ?></p>
+                <div class="text-center mt-3.5 mb-1.5">
+                    <h1 class="font-extrabold text-[14pt] m-0 text-[#0b1f4b] uppercase tracking-[.02em]">Application Report</h1>
+                    <p class="text-[9.5pt] text-[#6b7280] mt-[3px] mb-0">Application #<?= (int) $app['application_id'] ?> — <?= htmlspecialchars($applicantName) ?></p>
                 </div>
 
-                <div class="pr-meta-bar">
+                <div class="flex justify-between items-center text-[8.5pt] text-[#4b5563] border-b border-[#e5e7eb] pb-2 mb-4">
                     <span>Generated: <?= date('M j, Y g:i A') ?></span>
-                    <span>Status: <span class="pr-status-badge"><?= statusLabel($app['status']) ?></span></span>
+                    <span>Status: <span class="font-bold px-[9px] py-0.5 rounded border border-[#9ca3af] text-[#1f2937]"><?= statusLabel($app['status']) ?></span></span>
                     <span>RSF <?= htmlspecialchars($app['rsf_number']) ?></span>
                 </div>
 
-                <div class="pr-role-note">
+                <div class="text-[8.7pt] font-bold px-2.5 py-1.5 rounded mb-3 bg-[#e9edf7] text-[#0b1f4b]">
                     <?php if ($isCurrentEvaluator): ?>
                         You are the current evaluator assigned to this application.
                     <?php else: ?>
@@ -1889,7 +967,7 @@ if (!$app) {
                     <?php endif; ?>
                 </div>
 
-                <p class="pr-intro">
+                <p class="text-[9pt] leading-[1.6] text-[#374151] text-justify mb-3">
                     This report presents the complete case record of <strong><?= htmlspecialchars($applicantName) ?></strong>'s
                     application for <strong><?= htmlspecialchars($app['position_title']) ?></strong> at
                     <strong><?= htmlspecialchars($app['employer_name']) ?></strong> (RSF <?= htmlspecialchars($app['rsf_number']) ?>),
@@ -1899,116 +977,116 @@ if (!$app) {
                 </p>
 
                 <?php if ($isPastDeadline): ?>
-                    <div class="pr-alert">
+                    <div class="bg-[#fef3c7] border border-[#fde68a] text-[#92400e] text-[8.7pt] font-bold px-2.5 py-1.5 rounded mb-3">
                         <i class="fas fa-triangle-exclamation"></i>
                         Job order deadline (<?= htmlspecialchars(date('M j, Y', strtotime($app['job_deadline']))) ?>) has passed while this application remains <?= strtolower(statusLabel($app['status'])) ?>.
                     </div>
                 <?php endif; ?>
 
-                <table class="pr-summary-panel">
+                <table class="w-full border-collapse mb-3.5 table-fixed [&_td]:border [&_td]:border-[#e5e7eb] [&_td]:bg-[#f8fafc] [&_td]:text-center [&_td]:px-1 [&_td]:py-2">
                     <tr>
                         <td>
-                            <span class="sc-num"><?= $daysInProcess ?></span>
-                            <span class="sc-lbl"><?= $isClosed ? 'Days to Close' : 'Days in Process' ?></span>
+                            <span class="block text-[13pt] font-extrabold text-[#0b1f4b]"><?= $daysInProcess ?></span>
+                            <span class="block text-[6.7pt] font-bold text-[#4b5563] uppercase tracking-[.02em] mt-0.5"><?= $isClosed ? 'Days to Close' : 'Days in Process' ?></span>
                         </td>
                         <td>
-                            <span class="sc-num"><?= $statusChangeCount ?></span>
-                            <span class="sc-lbl">Status Changes</span>
+                            <span class="block text-[13pt] font-extrabold text-[#0b1f4b]"><?= $statusChangeCount ?></span>
+                            <span class="block text-[6.7pt] font-bold text-[#4b5563] uppercase tracking-[.02em] mt-0.5">Status Changes</span>
                         </td>
                         <td>
-                            <span class="sc-num"><?= $evaluatorCount ?></span>
-                            <span class="sc-lbl">Evaluator(s)</span>
+                            <span class="block text-[13pt] font-extrabold text-[#0b1f4b]"><?= $evaluatorCount ?></span>
+                            <span class="block text-[6.7pt] font-bold text-[#4b5563] uppercase tracking-[.02em] mt-0.5">Evaluator(s)</span>
                         </td>
                         <td>
-                            <span class="sc-num"><?= $complianceRounds ?></span>
-                            <span class="sc-lbl">Compliance Rounds</span>
+                            <span class="block text-[13pt] font-extrabold text-[#0b1f4b]"><?= $complianceRounds ?></span>
+                            <span class="block text-[6.7pt] font-bold text-[#4b5563] uppercase tracking-[.02em] mt-0.5">Compliance Rounds</span>
                         </td>
                         <td>
-                            <span class="sc-num"><?= $completionPct ?>%</span>
-                            <span class="sc-lbl">Docs Complete</span>
+                            <span class="block text-[13pt] font-extrabold text-[#0b1f4b]"><?= $completionPct ?>%</span>
+                            <span class="block text-[6.7pt] font-bold text-[#4b5563] uppercase tracking-[.02em] mt-0.5">Docs Complete</span>
                         </td>
                     </tr>
                 </table>
 
                 <!-- Applicant Profile -->
-                <div class="pr-section">
-                    <div class="pr-section-title">I. Applicant Profile</div>
-                    <p class="pr-section-hint">Personal, educational, and preference details as declared by the applicant.</p>
-                    <table class="pr-grid">
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">I. Applicant Profile</div>
+                    <p class="text-[7.8pt] text-[#9ca3af] italic -mt-[5px] mb-1.5">Personal, educational, and preference details as declared by the applicant.</p>
+                    <table class="w-full border-collapse mb-1 [&_td]:text-[9pt] [&_td]:px-1.5 [&_td]:py-1 [&_td]:align-top [&_td]:border-b [&_td]:border-dotted [&_td]:border-[#e5e7eb] [&_td:nth-child(odd)]:font-bold [&_td:nth-child(odd)]:text-[#4b5563] [&_td:nth-child(odd)]:whitespace-nowrap [&_td:nth-child(odd)]:w-[16%]">
                         <tr>
-                            <td class="pr-label">Full Name</td>
+                            <td>Full Name</td>
                             <td><?= htmlspecialchars($applicantName) ?></td>
-                            <td class="pr-label">Email</td>
+                            <td>Email</td>
                             <td><?= htmlspecialchars($app['applicant_email']) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Phone</td>
+                            <td>Phone</td>
                             <td><?= htmlspecialchars(nz($app['phone'])) ?></td>
-                            <td class="pr-label">DOB / Age</td>
+                            <td>DOB / Age</td>
                             <td><?= $app['dob'] ? htmlspecialchars(date('M j, Y', strtotime($app['dob']))) . ' (' . $age . ' yrs)' : '—' ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Gender</td>
+                            <td>Gender</td>
                             <td><?= htmlspecialchars(nz($app['gender'])) ?></td>
-                            <td class="pr-label">Civil Status</td>
+                            <td>Civil Status</td>
                             <td><?= htmlspecialchars(nz($app['civil_status'])) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Citizenship</td>
+                            <td>Citizenship</td>
                             <td><?= htmlspecialchars(nz($app['citizenship'])) ?></td>
-                            <td class="pr-label">Religion</td>
+                            <td>Religion</td>
                             <td><?= htmlspecialchars(nz($app['religion'])) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Height / Weight</td>
+                            <td>Height / Weight</td>
                             <td><?= $app['height_cm'] ? htmlspecialchars($app['height_cm']) . ' cm' : '—' ?> / <?= $app['weight_kg'] ? htmlspecialchars($app['weight_kg']) . ' kg' : '—' ?></td>
-                            <td class="pr-label">Address</td>
+                            <td>Address</td>
                             <td><?= htmlspecialchars(implode(', ', array_filter([$app['address'], $app['barangay'], $app['city_municipality'], $app['province']]))) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Education</td>
+                            <td>Education</td>
                             <td><?= htmlspecialchars(nz($app['educational_attainment'])) ?></td>
-                            <td class="pr-label">Degree / Course</td>
+                            <td>Degree / Course</td>
                             <td><?= htmlspecialchars(nz($app['degree_name'] ?: $app['course_degree'])) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">School</td>
+                            <td>School</td>
                             <td><?= htmlspecialchars(nz($app['school_name'])) ?></td>
-                            <td class="pr-label">Year Graduated</td>
+                            <td>Year Graduated</td>
                             <td><?= htmlspecialchars(nz($app['year_graduated'])) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Work Experience</td>
+                            <td>Work Experience</td>
                             <td><?= $app['work_experience_years'] !== null ? htmlspecialchars($app['work_experience_years']) . ' yr(s)' : '—' ?></td>
-                            <td class="pr-label">Last Employer / Position</td>
+                            <td>Last Employer / Position</td>
                             <td><?= htmlspecialchars(nz($app['last_employer'])) ?><?= $app['last_position'] ? ' — ' . htmlspecialchars($app['last_position']) : '' ?></td>
                         </tr>
                     </table>
 
                     <?php if ($preferredCountries || $preferredPositions): ?>
-                        <table class="pr-grid">
+                        <table class="w-full border-collapse mb-1 [&_td]:text-[9pt] [&_td]:px-1.5 [&_td]:py-1 [&_td]:align-top [&_td]:border-b [&_td]:border-dotted [&_td]:border-[#e5e7eb] [&_td:nth-child(odd)]:font-bold [&_td:nth-child(odd)]:text-[#4b5563] [&_td:nth-child(odd)]:whitespace-nowrap [&_td:nth-child(odd)]:w-[16%]">
                             <tr>
-                                <td class="pr-label">Pref. Countries</td>
+                                <td>Pref. Countries</td>
                                 <td colspan="3"><?= $preferredCountries ? htmlspecialchars(implode(', ', array_map(fn($pc) => '#' . $pc['priority_order'] . ' ' . $pc['country'], $preferredCountries))) : '—' ?></td>
                             </tr>
                             <tr>
-                                <td class="pr-label">Pref. Positions</td>
+                                <td>Pref. Positions</td>
                                 <td colspan="3"><?= $preferredPositions ? htmlspecialchars(implode(', ', array_map(fn($pp) => '#' . $pp['priority_order'] . ' ' . $pp['subcategory_name'], $preferredPositions))) : '—' ?></td>
                             </tr>
                         </table>
                     <?php endif; ?>
 
                     <?php if ($clientSkills || $clientLicenses): ?>
-                        <table class="pr-grid">
+                        <table class="w-full border-collapse mb-1 [&_td]:text-[9pt] [&_td]:px-1.5 [&_td]:py-1 [&_td]:align-top [&_td]:border-b [&_td]:border-dotted [&_td]:border-[#e5e7eb] [&_td:nth-child(odd)]:font-bold [&_td:nth-child(odd)]:text-[#4b5563] [&_td:nth-child(odd)]:whitespace-nowrap [&_td:nth-child(odd)]:w-[16%]">
                             <?php if ($clientSkills): ?>
                                 <tr>
-                                    <td class="pr-label">Skills</td>
+                                    <td>Skills</td>
                                     <td colspan="3"><?= htmlspecialchars(implode(', ', array_map(fn($sk) => $sk['skill_name'] . ' (' . $sk['proficiency_level'] . ')', $clientSkills))) ?></td>
                                 </tr>
                             <?php endif; ?>
                             <?php if ($clientLicenses): ?>
                                 <tr>
-                                    <td class="pr-label">Licenses</td>
+                                    <td>Licenses</td>
                                     <td colspan="3"><?= htmlspecialchars(implode(', ', array_column($clientLicenses, 'license_name'))) ?></td>
                                 </tr>
                             <?php endif; ?>
@@ -2017,65 +1095,65 @@ if (!$app) {
                 </div>
 
                 <!-- Application & Job Order -->
-                <div class="pr-section">
-                    <div class="pr-section-title">II. Application &amp; Job Order Information</div>
-                    <p class="pr-section-hint">Recruitment slot the applicant is being matched against.</p>
-                    <table class="pr-grid">
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">II. Application &amp; Job Order Information</div>
+                    <p class="text-[7.8pt] text-[#9ca3af] italic -mt-[5px] mb-1.5">Recruitment slot the applicant is being matched against.</p>
+                    <table class="w-full border-collapse mb-1 [&_td]:text-[9pt] [&_td]:px-1.5 [&_td]:py-1 [&_td]:align-top [&_td]:border-b [&_td]:border-dotted [&_td]:border-[#e5e7eb] [&_td:nth-child(odd)]:font-bold [&_td:nth-child(odd)]:text-[#4b5563] [&_td:nth-child(odd)]:whitespace-nowrap [&_td:nth-child(odd)]:w-[16%]">
                         <tr>
-                            <td class="pr-label">RSF Number</td>
+                            <td>RSF Number</td>
                             <td><?= htmlspecialchars($app['rsf_number']) ?></td>
-                            <td class="pr-label">Position</td>
+                            <td>Position</td>
                             <td><?= htmlspecialchars($app['position_title']) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Category</td>
+                            <td>Category</td>
                             <td><?= htmlspecialchars(nz($app['category_name'])) ?> / <?= htmlspecialchars(nz($app['subcategory_name'])) ?></td>
-                            <td class="pr-label">Employer</td>
+                            <td>Employer</td>
                             <td><?= htmlspecialchars($app['employer_name']) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Worksite Country</td>
+                            <td>Worksite Country</td>
                             <td><?= htmlspecialchars(nz($app['worksite_country'])) ?></td>
-                            <td class="pr-label">Classification</td>
+                            <td>Classification</td>
                             <td><?= htmlspecialchars(nz($app['classification'])) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Slots Available</td>
+                            <td>Slots Available</td>
                             <td><?= htmlspecialchars(nz($app['slots_available'])) ?></td>
-                            <td class="pr-label">Salary Range</td>
+                            <td>Salary Range</td>
                             <td><?= ($app['salary_min'] !== null && $app['salary_max'] !== null) ? htmlspecialchars(number_format($app['salary_min'], 2) . ' – ' . number_format($app['salary_max'], 2) . ' ' . ($app['salary_currency'] ?: 'PHP')) : '—' ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Job Deadline</td>
+                            <td>Job Deadline</td>
                             <td><?= $app['job_deadline'] ? htmlspecialchars(date('M j, Y', strtotime($app['job_deadline']))) : '—' ?></td>
-                            <td class="pr-label">Handling Party</td>
+                            <td>Handling Party</td>
                             <td><?= htmlspecialchars(nz($app['handling_party'] ? ucfirst($app['handling_party']) : null)) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Current Evaluator</td>
+                            <td>Current Evaluator</td>
                             <td><?= htmlspecialchars(nz($app['evaluator_name'])) ?></td>
-                            <td class="pr-label">Submitted At</td>
+                            <td>Submitted At</td>
                             <td><?= fmtDate($app['submitted_at']) ?></td>
                         </tr>
                         <tr>
-                            <td class="pr-label">Locked At</td>
+                            <td>Locked At</td>
                             <td><?= fmtDate($app['locked_at']) ?></td>
-                            <td class="pr-label">Last Updated</td>
+                            <td>Last Updated</td>
                             <td><?= fmtDate($app['updated_at']) ?></td>
                         </tr>
                     </table>
                     <?php if ($app['qualifications']): ?>
-                        <table class="pr-grid">
+                        <table class="w-full border-collapse mb-1 [&_td]:text-[9pt] [&_td]:px-1.5 [&_td]:py-1 [&_td]:align-top [&_td]:border-b [&_td]:border-dotted [&_td]:border-[#e5e7eb] [&_td:nth-child(odd)]:font-bold [&_td:nth-child(odd)]:text-[#4b5563] [&_td:nth-child(odd)]:whitespace-nowrap [&_td:nth-child(odd)]:w-[16%]">
                             <tr>
-                                <td class="pr-label">Qualifications</td>
+                                <td>Qualifications</td>
                                 <td colspan="3"><?= nl2br(htmlspecialchars($app['qualifications'])) ?></td>
                             </tr>
                         </table>
                     <?php endif; ?>
                     <?php if ($app['admin_notes']): ?>
-                        <table class="pr-grid">
+                        <table class="w-full border-collapse mb-1 [&_td]:text-[9pt] [&_td]:px-1.5 [&_td]:py-1 [&_td]:align-top [&_td]:border-b [&_td]:border-dotted [&_td]:border-[#e5e7eb] [&_td:nth-child(odd)]:font-bold [&_td:nth-child(odd)]:text-[#4b5563] [&_td:nth-child(odd)]:whitespace-nowrap [&_td:nth-child(odd)]:w-[16%]">
                             <tr>
-                                <td class="pr-label">Admin Notes</td>
+                                <td>Admin Notes</td>
                                 <td colspan="3"><?= nl2br(htmlspecialchars($app['admin_notes'])) ?></td>
                             </tr>
                         </table>
@@ -2084,14 +1162,14 @@ if (!$app) {
 
                 <!-- Application Answers -->
                 <?php if ($answers): ?>
-                    <div class="pr-section">
-                        <div class="pr-section-title">III. Application Answers</div>
-                        <table class="pr-table">
+                    <div class="mb-4 break-inside-avoid">
+                        <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">III. Application Answers</div>
+                        <table class="w-full border-collapse text-[8.5pt] mt-1 [&_th]:bg-[#f8fafc] [&_th]:border [&_th]:border-[#e5e7eb] [&_th]:text-left [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-[8pt] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-[#374151] [&_td]:border [&_td]:border-[#e5e7eb] [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_thead]:table-header-group [&_tr]:break-inside-avoid [&_tbody_tr:nth-child(even)]:bg-[#f8fafc]">
                             <thead>
                                 <tr>
-                                    <th style="width:48%;">Question</th>
-                                    <th style="width:32%;">Answer</th>
-                                    <th style="width:20%;">Answered At</th>
+                                    <th class="w-[48%]">Question</th>
+                                    <th class="w-[32%]">Answer</th>
+                                    <th class="w-[20%]">Answered At</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2108,25 +1186,25 @@ if (!$app) {
                 <?php endif; ?>
 
                 <!-- Documents -->
-                <div class="pr-section">
-                    <div class="pr-section-title">IV. Document Compliance</div>
-                    <p class="pr-section-hint">Files uploaded against this job order's requirements, with reviewer remarks.</p>
-                    <p class="pr-compliance-note">
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">IV. Document Compliance</div>
+                    <p class="text-[7.8pt] text-[#9ca3af] italic -mt-[5px] mb-1.5">Files uploaded against this job order's requirements, with reviewer remarks.</p>
+                    <p class="text-[8.5pt] text-[#4b5563] mb-2">
                         Required documents submitted: <b><?= $submittedCount ?> / <?= $requiredCount ?></b>
-                        (<span class="<?= $completionPct == 100 ? 'pr-badge-ok' : 'pr-badge-bad' ?>"><?= $completionPct ?>%</span>)
+                        (<span class="font-bold <?= $completionPct == 100 ? 'text-[#047857]' : 'text-[#b91c1c]' ?>"><?= $completionPct ?>%</span>)
                         <?php if ($missingDocs): ?> — Missing: <b><?= htmlspecialchars(implode(', ', $missingDocs)) ?></b><?php endif; ?>
                     </p>
                     <?php if (!$documents): ?>
-                        <p class="pr-empty">No documents uploaded for this application.</p>
+                        <p class="text-[8.5pt] text-[#9ca3af] italic py-1">No documents uploaded for this application.</p>
                     <?php else: ?>
-                        <table class="pr-table">
+                        <table class="w-full border-collapse text-[8.5pt] mt-1 [&_th]:bg-[#f8fafc] [&_th]:border [&_th]:border-[#e5e7eb] [&_th]:text-left [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-[8pt] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-[#374151] [&_td]:border [&_td]:border-[#e5e7eb] [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_thead]:table-header-group [&_tr]:break-inside-avoid [&_tbody_tr:nth-child(even)]:bg-[#f8fafc]">
                             <thead>
                                 <tr>
-                                    <th style="width:20%;">Document</th>
-                                    <th style="width:22%;">File Name</th>
-                                    <th style="width:14%;">Uploaded</th>
-                                    <th style="width:10%;">Required</th>
-                                    <th style="width:34%;">Comments</th>
+                                    <th class="w-[20%]">Document</th>
+                                    <th class="w-[22%]">File Name</th>
+                                    <th class="w-[14%]">Uploaded</th>
+                                    <th class="w-[10%]">Required</th>
+                                    <th class="w-[34%]">Comments</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2151,19 +1229,19 @@ if (!$app) {
                 </div>
 
                 <!-- Evaluation History -->
-                <div class="pr-section">
-                    <div class="pr-section-title">V. Evaluation History</div>
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">V. Evaluation History</div>
                     <?php if (!$evaluations): ?>
-                        <p class="pr-empty">No evaluations recorded yet.</p>
+                        <p class="text-[8.5pt] text-[#9ca3af] italic py-1">No evaluations recorded yet.</p>
                     <?php else: ?>
-                        <table class="pr-table">
+                        <table class="w-full border-collapse text-[8.5pt] mt-1 [&_th]:bg-[#f8fafc] [&_th]:border [&_th]:border-[#e5e7eb] [&_th]:text-left [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-[8pt] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-[#374151] [&_td]:border [&_td]:border-[#e5e7eb] [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_thead]:table-header-group [&_tr]:break-inside-avoid [&_tbody_tr:nth-child(even)]:bg-[#f8fafc]">
                             <thead>
                                 <tr>
-                                    <th style="width:16%;">Date</th>
-                                    <th style="width:12%;">Type</th>
-                                    <th style="width:14%;">Decision</th>
-                                    <th style="width:18%;">By</th>
-                                    <th style="width:40%;">Comments</th>
+                                    <th class="w-[16%]">Date</th>
+                                    <th class="w-[12%]">Type</th>
+                                    <th class="w-[14%]">Decision</th>
+                                    <th class="w-[18%]">By</th>
+                                    <th class="w-[40%]">Comments</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2182,19 +1260,19 @@ if (!$app) {
                 </div>
 
                 <!-- Status History -->
-                <div class="pr-section">
-                    <div class="pr-section-title">VI. Status History</div>
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">VI. Status History</div>
                     <?php if (!$statusHistory): ?>
-                        <p class="pr-empty">No status changes recorded yet.</p>
+                        <p class="text-[8.5pt] text-[#9ca3af] italic py-1">No status changes recorded yet.</p>
                     <?php else: ?>
-                        <table class="pr-table">
+                        <table class="w-full border-collapse text-[8.5pt] mt-1 [&_th]:bg-[#f8fafc] [&_th]:border [&_th]:border-[#e5e7eb] [&_th]:text-left [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-[8pt] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-[#374151] [&_td]:border [&_td]:border-[#e5e7eb] [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_thead]:table-header-group [&_tr]:break-inside-avoid [&_tbody_tr:nth-child(even)]:bg-[#f8fafc]">
                             <thead>
                                 <tr>
-                                    <th style="width:16%;">Date</th>
-                                    <th style="width:16%;">From</th>
-                                    <th style="width:16%;">To</th>
-                                    <th style="width:18%;">By</th>
-                                    <th style="width:34%;">Reason</th>
+                                    <th class="w-[16%]">Date</th>
+                                    <th class="w-[16%]">From</th>
+                                    <th class="w-[16%]">To</th>
+                                    <th class="w-[18%]">By</th>
+                                    <th class="w-[34%]">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2213,18 +1291,18 @@ if (!$app) {
                 </div>
 
                 <!-- Evaluator Assignments -->
-                <div class="pr-section">
-                    <div class="pr-section-title">VII. Evaluator Assignments</div>
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">VII. Evaluator Assignments</div>
                     <?php if (!$assignments): ?>
-                        <p class="pr-empty">No evaluator has been assigned to this application.</p>
+                        <p class="text-[8.5pt] text-[#9ca3af] italic py-1">No evaluator has been assigned to this application.</p>
                     <?php else: ?>
-                        <table class="pr-table">
+                        <table class="w-full border-collapse text-[8.5pt] mt-1 [&_th]:bg-[#f8fafc] [&_th]:border [&_th]:border-[#e5e7eb] [&_th]:text-left [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-[8pt] [&_th]:uppercase [&_th]:tracking-[.02em] [&_th]:text-[#374151] [&_td]:border [&_td]:border-[#e5e7eb] [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_thead]:table-header-group [&_tr]:break-inside-avoid [&_tbody_tr:nth-child(even)]:bg-[#f8fafc]">
                             <thead>
                                 <tr>
-                                    <th style="width:28%;">Evaluator</th>
-                                    <th style="width:32%;">Email</th>
-                                    <th style="width:24%;">Assigned At</th>
-                                    <th style="width:16%;">Status</th>
+                                    <th class="w-[28%]">Evaluator</th>
+                                    <th class="w-[32%]">Email</th>
+                                    <th class="w-[24%]">Assigned At</th>
+                                    <th class="w-[16%]">Status</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2242,9 +1320,9 @@ if (!$app) {
                 </div>
 
                 <!-- Notes -->
-                <div class="pr-section">
-                    <div class="pr-section-title">VIII. Notes for Evaluation</div>
-                    <ul class="pr-notes-list">
+                <div class="mb-4 break-inside-avoid">
+                    <div class="text-[10.5pt] font-bold text-white bg-[#0b1f4b] px-[9px] py-[5px] mb-2 uppercase tracking-[.03em]">VIII. Notes for Evaluation</div>
+                    <ul class="text-[8.7pt] text-[#374151] leading-[1.7] m-0 pl-[15px]">
                         <?php if ($missingDocs): ?>
                             <li><strong>Missing documents:</strong> <?= htmlspecialchars(implode(', ', $missingDocs)) ?> — flag for compliance before approving.</li>
                         <?php elseif ($requiredCount > 0): ?>
@@ -2267,25 +1345,25 @@ if (!$app) {
                     </ul>
                 </div>
 
-                <div class="pr-signoff">
-                    <div class="pr-sig-line">
-                        <div class="line">Evaluator</div>
+                <div class="mt-[46px] flex justify-between text-[8.5pt] break-inside-avoid">
+                    <div class="w-[42%] text-center">
+                        <div class="border-t border-[#1f2937] mt-[34px] pt-1 text-[#374151]">Evaluator</div>
                     </div>
-                    <div class="pr-sig-line">
-                        <div class="line">Authorized Signatory, DMW RO IV-A</div>
+                    <div class="w-[42%] text-center">
+                        <div class="border-t border-[#1f2937] mt-[34px] pt-1 text-[#374151]">Authorized Signatory, DMW RO IV-A</div>
                     </div>
                 </div>
 
-                <div class="pr-footer">
-                    <div class="pr-footer-columns">
-                        <div class="pr-footer-left">
-                            <p class="pr-footer-disclaimer">
+                <div class="mt-[22px] pt-2 border-t border-[#9ca3af]">
+                    <div class="flex items-stretch gap-4">
+                        <div class="flex-[1_1_60%] flex items-center">
+                            <p class="text-[7.3pt] text-[#6b7280] leading-[1.55] text-left m-0">
                                 This is an official system-generated report from the DMW Application Management System —
                                 Regional Office IV-A (CALABARZON). Information is confidential and intended solely for internal
                                 evaluation, compliance review, and official case processing.
                             </p>
                         </div>
-                        <div class="pr-footer-right">
+                        <div class="flex-none basis-[34%] border-l border-[#d1d5db] pl-3.5 flex flex-col justify-center gap-[3px] text-[7.3pt] text-[#6b7280] [&>span:first-child]:text-[#374151]">
                             <span>Department of Migrant Workers - RO IV-A (CALABARZON)</span>
                             <span>Application #<?= (int) $app['application_id'] ?></span>
                             <span>System-Generated Document • For Official Use Only</span>

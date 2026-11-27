@@ -40,6 +40,9 @@ $search_filter = trim($_GET['q'] ?? '');
 $month_filter = trim($_GET['month'] ?? '');
 $month_filter = preg_match('/^\d{4}-\d{2}$/', $month_filter) ? $month_filter : '';
 $country_filter = trim($_GET['country'] ?? '');
+// Period: 'today' or 'week' (Mon–Sun), based on submission date.
+$period_filter = $_GET['period'] ?? '';
+$period_filter = in_array($period_filter, ['today', 'week'], true) ? $period_filter : '';
 
 $filterWhere  = '';
 $filterTypes  = '';
@@ -57,7 +60,11 @@ if ($country_filter !== '') {
     $filterTypes   .= 's';
     $filterParams[] = $country_filter;
 }
-
+if ($period_filter === 'today') {
+    $filterWhere .= " AND DATE(a.submitted_at) = CURDATE()";
+} elseif ($period_filter === 'week') {
+    $filterWhere .= " AND YEARWEEK(a.submitted_at, 1) = YEARWEEK(CURDATE(), 1)";
+}
 // Pagination
 $show_all = isset($_GET['all']) && $_GET['all'] === '1';
 $per_page = 10;

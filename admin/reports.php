@@ -6,6 +6,10 @@
  * Opened from dashboard.php's "Print / Export PDF" button, carrying
  * across whatever month / province / job_type / country filters the
  * admin currently has selected on the dashboard subbar.
+ *
+ * UI refresh: Tailwind-based layout matching evaluator-reports.php
+ * (responsive toolbar, tab grid, desktop tables + mobile cards).
+ * All PHP data logic, queries, print/PDF/Excel JS are unchanged.
  */
 session_start();
 require_once '../db.php'; // gives us $database (mysqli)
@@ -36,7 +40,7 @@ $initials = strtoupper(
     (substr($parts[0] ?? '', 0, 1)) . (substr($parts[count($parts) - 1] ?? '', 0, 1))
 );
 
-/* 
+/*
    FILTERS — read straight from the querystring, same four filters as
    the dashboard subbar (month / province / job_type / country).
  */
@@ -161,9 +165,7 @@ $baseFrom = "FROM applications a
              JOIN clients c ON c.cid = a.client_id
              JOIN rsf_job_orders j ON j.id = a.rsf_id";
 
-/* 
-   REPORT 1 — Applicants by Gender
- */
+/* REPORT 1 — Applicants by Gender */
 $genderSummary = [];
 $res = q($database, "
     SELECT COALESCE(NULLIF(TRIM(c.gender), ''), 'Not Specified') AS gender,
@@ -192,9 +194,7 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $genderDetail[] = $row;
 
-/* 
-   REPORT 2 — Approved Applicants by Country
- */
+/* REPORT 2 — Approved Applicants by Country */
 $whereApproved = whereSql(array_merge($where, ["a.status = 'approved'"]));
 
 $countrySummary = [];
@@ -220,9 +220,7 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $countryDetail[] = $row;
 
-/* 
-   REPORT 3 — Application Status Summary
- */
+/* REPORT 3 — Application Status Summary */
 $statusCounts = [];
 $res = q($database, "
     SELECT a.status, COUNT(*) AS cnt
@@ -248,9 +246,7 @@ foreach ($statusOrder as $s) {
     ];
 }
 
-/* 
-   REPORT 4 — Applicants by Province / City of Origin
- */
+/* REPORT 4 — Applicants by Province / City of Origin */
 $provinceSummary = [];
 $res = q($database, "
     SELECT c.province, c.city_municipality,
@@ -264,9 +260,7 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $provinceSummary[] = $row;
 
-/* 
-   REPORT 5 — Applicants by Age Group
- */
+/* REPORT 5 — Applicants by Age Group */
 $ageSummary = [];
 $res = q($database, "
     SELECT
@@ -288,9 +282,7 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $ageSummary[] = $row;
 
-/* 
-   REPORT 6 — Applicants by Educational Attainment
- */
+/* REPORT 6 — Applicants by Educational Attainment */
 $eduSummary = [];
 $res = q($database, "
     SELECT COALESCE(cp.educational_attainment, 'Not Indicated') AS education,
@@ -305,9 +297,7 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $eduSummary[] = $row;
 
-/* 
-   REPORT 7 — Job Order Slot Utilization
- */
+/* REPORT 7 — Job Order Slot Utilization */
 $jobWhere  = [];
 $jobTypes  = '';
 $jobParams = [];
@@ -338,9 +328,7 @@ $res = q($database, "
 ", $jobTypes, $jobParams);
 while ($row = $res->fetch_assoc()) $jobSummary[] = $row;
 
-/* 
-   REPORT 8 — Evaluator Turnaround / Workload
- */
+/* REPORT 8 — Evaluator Turnaround / Workload */
 $evalWhere  = array_merge($where, ["e.decision IS NOT NULL"]);
 $evalWhereSql = whereSql($evalWhere);
 
@@ -364,12 +352,7 @@ $res = q($database, "
 ", $types, $params);
 while ($row = $res->fetch_assoc()) $evalSummary[] = $row;
 
-/* 
-   REPORT 9 — Document Compliance
-   Required vs. submitted documents per application, based on each
-   job order's rsf_required_documents list (is_required = 1) matched
-   against application_documents.document_type.
- */
+/* REPORT 9 — Document Compliance */
 $docCompliance = [];
 $res = q($database, "
     SELECT a.id, a.rsf_id,
@@ -389,7 +372,6 @@ $res = q($database, "
 while ($row = $res->fetch_assoc()) $docCompliance[] = $row;
 
 // Attach completion % + missing document names per application.
-// Reuses one prepared statement across the loop instead of re-preparing each time.
 $missingStmt = $database->prepare("
     SELECT rd.document_name
     FROM rsf_required_documents rd
@@ -446,6 +428,25 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Admin Reports – DMW RO IV-A</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Dark mode follows the project's existing [data-theme="dark"] attribute (set by theme.js / theme-init)
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]'],
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"DM Sans"', 'system-ui', 'sans-serif']
+                    },
+                    colors: {
+                        navy: {
+                            DEFAULT: '#0b1f4b',
+                            soft: '#13295e'
+                        }
+                    }
+                }
+            }
+        };
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
@@ -456,15 +457,145 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
     <?php include '../includes/theme-init.php'; ?>
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-    <style>
-        .topbar-brand img {
-            width: 42px;
-            height: auto;
-            display: block;
-            background: transparent;
-            filter: none;
+
+    <!-- Reusable Tailwind components for this page (screen layout only) -->
+    <style type="text/tailwindcss">
+        @layer components {
+
+            /* ---------- Buttons ---------- */
+            .btn {
+                @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-800 no-underline transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700;
+            }
+
+            .btn-primary {
+                @apply border-navy bg-navy text-white hover:bg-navy-soft dark:border-blue-600 dark:bg-blue-600 dark:hover:bg-blue-500;
+            }
+
+            .btn-green {
+                @apply border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 dark:border-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-500;
+            }
+
+            .btn-red {
+                @apply border-red-700 bg-red-700 text-white hover:bg-red-800 dark:border-red-600 dark:bg-red-600 dark:hover:bg-red-500;
+            }
+
+            /* ---------- Tabs (.active toggled by existing JS) ---------- */
+            .tab-btn {
+                @apply rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-center text-xs font-semibold leading-snug text-slate-600 transition-colors hover:bg-slate-50 sm:shrink-0 sm:rounded-full sm:px-3.5 sm:py-2 sm:leading-normal dark:border-slate-700 dark:bg-slate-700/60 dark:text-slate-300;
+            }
+
+            .tab-btn.active {
+                @apply border-navy bg-navy text-white dark:border-blue-500 dark:bg-blue-500;
+            }
+
+            /* ---------- Report sections (.active toggled by existing JS) ---------- */
+            .report-section {
+                @apply hidden;
+            }
+
+            .report-section.active {
+                @apply block;
+            }
+
+            /* ---------- Summary cards ---------- */
+            .summary-panel {
+                @apply mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fit,minmax(150px,1fr))];
+            }
+
+            .summary-cell {
+                @apply rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 max-sm:last:odd:col-span-2 dark:border-slate-700 dark:bg-slate-800/60;
+            }
+
+            .sc-num {
+                @apply text-xl font-extrabold leading-tight text-navy sm:text-2xl dark:text-blue-400;
+            }
+
+            .sc-lbl {
+                @apply mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+            }
+
+            .sc-warn .sc-num {
+                @apply text-red-700 dark:text-red-400;
+            }
+
+            /* ---------- Section headings ---------- */
+            .section {
+                @apply mb-6;
+            }
+
+            .section-title {
+                @apply mb-2.5 flex items-center gap-2 rounded bg-navy px-3 py-2 text-xs font-bold uppercase tracking-wider text-white dark:bg-blue-900 dark:text-slate-50;
+            }
+
+            .section-hint {
+                @apply mb-3 text-xs italic leading-relaxed text-slate-400;
+            }
+
+            /* ---------- Badges ---------- */
+            .badge {
+                @apply inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-bold;
+            }
+
+            .b-approved {
+                @apply bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400;
+            }
+
+            .b-disapproved {
+                @apply bg-red-100 text-red-700 dark:bg-red-600/20 dark:text-red-400;
+            }
+
+            .b-pending {
+                @apply bg-amber-100 text-amber-700 dark:bg-amber-600/20 dark:text-amber-300;
+            }
+
+            .b-other {
+                @apply bg-indigo-50 text-navy dark:bg-indigo-500/20 dark:text-indigo-300;
+            }
+
+            /* ---------- Tables (desktop / tablet) ---------- */
+            .report-table {
+                @apply w-full border-collapse border border-slate-200 text-xs dark:border-slate-700;
+            }
+
+            .report-table th {
+                @apply border border-slate-200 bg-slate-50 px-2.5 py-2 text-left text-[10.5px] font-bold uppercase tracking-wide text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400;
+            }
+
+            .report-table td {
+                @apply border border-slate-200 px-2.5 py-2 align-top text-slate-800 dark:border-slate-700 dark:text-slate-200;
+            }
+
+            .report-table tbody tr:nth-child(even) {
+                @apply bg-slate-50/70 dark:bg-slate-800/50;
+            }
+
+            .empty-row td,
+            .empty-note {
+                @apply px-2.5 py-3.5 text-center text-xs italic text-slate-400;
+            }
+
+            /* ---------- Mobile cards (shown below md) ---------- */
+            .m-card {
+                @apply rounded-lg border border-slate-200 bg-white p-3.5 shadow-sm dark:border-slate-700 dark:bg-slate-800;
+            }
+
+            .m-row {
+                @apply flex items-start justify-between gap-3 border-t border-slate-100 py-1.5 text-xs dark:border-slate-700;
+            }
+
+            .m-key {
+                @apply shrink-0 text-slate-500 dark:text-slate-400;
+            }
+
+            .m-val {
+                @apply min-w-0 break-words text-right font-medium text-slate-800 dark:text-slate-200;
+            }
         }
     </style>
+
+    <!-- Print / PDF engine + shared theme tokens.
+         Plain CSS on purpose: the JS print/PDF/Excel code and ../css/dashboard.css depend on these
+         exact selectors and variables, so output stays identical. -->
     <style>
         :root {
             --navy: #0b1f4b;
@@ -486,377 +617,20 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
             --selected-row: #eff6ff;
         }
 
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            margin: 0;
-            font-family: 'DM Sans', system-ui, sans-serif;
-            background: #eef1f6;
-            color: var(--text1);
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            border-radius: 6px;
-            border: 1px solid var(--bdr);
-            background: var(--surface);
-            color: var(--text1);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        .btn:hover {
-            background: var(--surface2);
-        }
-
-        .btn-primary {
-            background: var(--navy);
-            border-color: var(--navy);
-            color: #fff;
-        }
-
-        .btn-green {
-            background: var(--ok);
-            border-color: var(--ok);
-            color: #fff;
-        }
-
-        .btn-primary:hover {
-            background: var(--navy-soft);
-            border-color: var(--navy-soft);
-            color: #fff;
-        }
-
-        .btn-green:hover {
-            background: var(--ok);
-            border-color: var(--ok);
-            color: #fff;
-            filter: brightness(1.08);
-        }
-
-        .btn-red:hover {
-            background: var(--red);
-            border-color: var(--red);
-            color: #fff;
-            filter: brightness(1.08);
-        }
-
-        .btn-red {
-            background: var(--red);
-            border-color: var(--red);
-            color: #fff;
-        }
-
-        .btn-red:hover {
-            filter: brightness(1.08);
-        }
-
-        .btn-red:disabled {
-            opacity: .6;
-            cursor: not-allowed;
-        }
-
-        .sheet {
-            max-width: 1000px;
-            margin: 20px auto;
-            padding: 0 16px 110px;
-        }
-
-        .toolbar-actions {
-            display: flex;
-            flex-wrap: nowrap;
-            gap: 8px;
-            margin-bottom: 16px;
-            overflow-x: auto;
-            overflow-y: hidden;
-            -webkit-overflow-scrolling: touch;
-            padding-bottom: 6px;
-            /* keeps the scrollbar from touching the buttons */
-        }
-
-        .toolbar-actions .btn {
-            flex-shrink: 0;
-            /* buttons keep their size instead of squishing */
-            white-space: nowrap;
-            /* labels never break onto two lines */
-        }
-
-        .tabs {
-            display: flex;
-            gap: 6px;
-            padding: 0 0 14px;
-            overflow-x: auto;
-        }
-
-        .tab-btn {
-            flex-shrink: 0;
-            padding: 8px 14px;
-            border-radius: 999px;
-            border: 1px solid var(--bdr);
-            background: var(--surface);
-            color: var(--text2);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-
-        .tab-btn.active {
-            background: var(--navy);
-            border-color: var(--navy);
-            color: #fff;
-        }
-
-        .doc-sheet {
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 10px;
-            padding: 30px 34px 36px;
-        }
-
-        .doc-header-table {
-            width: 100%;
-            border-bottom: 3px solid var(--navy);
-            padding-bottom: 10px;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        .doc-header-table img {
-            width: 48px;
-            height: auto;
-            flex-shrink: 0;
-        }
-
-        .republic-line {
-            font-size: 10.5px;
-            color: var(--text2);
-            margin: 0;
-        }
-
-        .agency-name {
-            font-size: 16px;
-            font-weight: 800;
-            color: var(--navy);
-            margin: 1px 0 2px;
-        }
-
-        .agency-sub {
-            font-size: 10.5px;
-            color: var(--text2);
-            line-height: 1.5;
-            margin: 0;
-        }
-
-        .doc-title {
-            text-align: center;
-            margin: 18px 0 3px;
-            font-size: 17px;
-            font-weight: 800;
-            color: var(--navy);
-            text-transform: uppercase;
-            letter-spacing: .02em;
-        }
-
-        .doc-subtitle {
-            text-align: center;
-            font-size: 12px;
-            color: var(--text2);
-            margin-bottom: 16px;
-        }
-
-        table.ref-table {
-            width: 100%;
-            margin-bottom: 20px;
-            font-size: 12px;
-            border-collapse: collapse;
-        }
-
-        table.ref-table td {
-            padding: 3px 0;
-            vertical-align: middle;
-        }
-
-        table.ref-table td.ref-label {
-            font-weight: 700;
-            width: 160px;
-            color: var(--text1);
-        }
-
-        .intro-note {
-            font-size: 12.5px;
-            line-height: 1.65;
-            color: var(--text2);
-            text-align: justify;
-            margin: 0 0 18px;
-        }
-
-        .summary-panel {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 0;
-            border: 1px solid var(--bdr);
-            border-radius: 6px;
-            overflow: hidden;
-            margin-bottom: 18px;
-        }
-
-        .summary-cell {
-            padding: 12px 14px;
-            border-right: 1px solid var(--bdr);
-            border-bottom: 1px solid var(--bdr);
-            background: var(--surface2);
-        }
-
-        .summary-cell:last-child {
-            border-right: none;
-        }
-
-        .summary-cell .sc-num {
-            font-size: 20px;
-            font-weight: 800;
-            color: var(--navy);
-            line-height: 1.1;
-        }
-
-        .summary-cell .sc-lbl {
-            font-size: 10px;
-            font-weight: 600;
-            color: var(--text2);
-            text-transform: uppercase;
-            letter-spacing: .03em;
-            margin-top: 3px;
-        }
-
-        .summary-cell.sc-warn .sc-num {
-            color: var(--red);
-        }
-
-        .section-hint {
-            font-size: 11.5px;
-            color: var(--text3);
-            font-style: italic;
-            margin: -4px 0 10px;
-        }
-
-        .section {
-            margin-bottom: 22px;
-        }
-
-        .section-title {
-            background: var(--navy);
-            color: #fff;
-            font-size: 12px;
-            font-weight: 700;
-            padding: 7px 12px;
-            margin: 0 0 10px;
-            text-transform: uppercase;
-            letter-spacing: .04em;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-radius: 3px;
-        }
-
-        .report-section {
-            display: none;
-        }
-
-        .report-section.active {
-            display: block;
-        }
-
-        .chart-wrap {
-            max-width: 360px;
-            margin: 0 auto 18px;
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 700;
-        }
-
-        .b-approved {
-            background: #d1fae5;
-            color: #047857;
-        }
-
-        .b-disapproved {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
-
-        .b-pending {
-            background: #fef3c7;
-            color: #b45309;
-        }
-
-        .b-other {
-            background: #e9edf7;
-            color: var(--navy);
-        }
-
-        table.report-table,
-        table.detail-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-            border: 1px solid var(--bdr);
-        }
-
-        table.report-table th,
-        table.detail-table th {
-            background: var(--lbl-bg);
-            text-align: left;
-            padding: 8px 10px;
-            font-weight: 700;
-            font-size: 10.5px;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            color: var(--text2);
-            border: 1px solid var(--bdr);
-        }
-
-        table.report-table td,
-        table.detail-table td {
-            padding: 8px 10px;
-            border: 1px solid var(--bdr);
-            vertical-align: top;
-        }
-
-        table.report-table tbody tr:nth-child(even),
-        table.detail-table tbody tr:nth-child(even) {
-            background: #fbfcfe;
-        }
-
-        .empty-row td,
-        .empty-note {
-            font-size: 12px;
-            color: var(--text3);
-            font-style: italic;
-            text-align: center;
-            padding: 14px 10px;
-        }
-
-        .footer-note {
-            font-size: 10px;
-            color: var(--text3);
-            text-align: center;
-            border-top: 1px solid var(--bdr);
-            padding-top: 10px;
-            margin-top: 24px;
+        [data-theme="dark"] {
+            --navy: #3b82f6;
+            --navy-soft: #1e3a8a;
+            --ok: #34d399;
+            --amber: #fbbf24;
+            --red: #f87171;
+            --text1: #e2e8f0;
+            --text2: #94a3b8;
+            --text3: #64748b;
+            --bdr: #2d3748;
+            --lbl-bg: #1e293b;
+            --surface: #1e293b;
+            --surface2: #263449;
+            --selected-row: rgba(59, 130, 246, .22);
         }
 
         #printReport {
@@ -1138,133 +912,10 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
                 page-break-after: auto;
             }
 
-            body {
-                background: #fff;
-            }
-
-            .sheet {
-                max-width: 100%;
-                margin: 0;
-                padding: 0;
-            }
-
             @page {
                 size: A4;
                 margin: 14mm 12mm;
             }
-        }
-
-        [data-theme="dark"] {
-            --navy: #3b82f6;
-            --navy-soft: #1e3a8a;
-            --ok: #34d399;
-            --amber: #fbbf24;
-            --red: #f87171;
-            --text1: #e2e8f0;
-            --text2: #94a3b8;
-            --text3: #64748b;
-            --bdr: #2d3748;
-            --lbl-bg: #1e293b;
-            --surface: #1e293b;
-            --surface2: #263449;
-            --selected-row: rgba(59, 130, 246, .22);
-        }
-
-        [data-theme="dark"] body {
-            background: #0f172a;
-        }
-
-        [data-theme="dark"] .btn {
-            background: var(--surface);
-            color: var(--text1);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .btn:hover {
-            background: var(--surface2);
-        }
-
-        [data-theme="dark"] .tab-btn {
-            background: var(--surface2);
-            color: var(--text2);
-            border-color: var(--bdr);
-        }
-
-        html body[data-theme="dark"] .tabs .tab-btn.active,
-        html[data-theme="dark"] body .tabs .tab-btn.active {
-            background-color: #3b82f6 !important;
-            background-image: none !important;
-            color: #ffffff !important;
-            border-color: #3b82f6 !important;
-        }
-
-        html body[data-theme="dark"] .tabs .tab-btn.active i,
-        html[data-theme="dark"] body .tabs .tab-btn.active i {
-            color: #ffffff !important;
-        }
-
-        [data-theme="dark"] .doc-sheet {
-            background: var(--surface);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .agency-name,
-        [data-theme="dark"] .doc-title {
-            color: var(--navy);
-        }
-
-        [data-theme="dark"] .section-title {
-            background: var(--navy-soft);
-            color: #f8fafc;
-        }
-
-        [data-theme="dark"] .summary-cell {
-            background: var(--surface2);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] table.report-table,
-        [data-theme="dark"] table.detail-table {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] table.report-table th,
-        [data-theme="dark"] table.detail-table th,
-        [data-theme="dark"] table.report-table td,
-        [data-theme="dark"] table.detail-table td {
-            border-color: var(--bdr);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] table.report-table th,
-        [data-theme="dark"] table.detail-table th {
-            background: var(--lbl-bg);
-            color: var(--text2);
-        }
-
-        [data-theme="dark"] table.report-table tbody tr:nth-child(even),
-        [data-theme="dark"] table.detail-table tbody tr:nth-child(even) {
-            background: #202f45;
-        }
-
-        [data-theme="dark"] .badge.b-approved {
-            background: rgba(16, 185, 129, .18);
-            color: #34d399;
-        }
-
-        [data-theme="dark"] .badge.b-disapproved {
-            background: rgba(220, 38, 38, .20);
-            color: #f87171;
-        }
-
-        [data-theme="dark"] .badge.b-pending {
-            background: rgba(217, 119, 6, .20);
-            color: #fbbf24;
-        }
-
-        [data-theme="dark"] .badge.b-other {
-            background: rgba(99, 102, 241, .22);
-            color: #a5b4fc;
         }
     </style>
     <script>
@@ -1275,11 +926,11 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
     </script>
 </head>
 
-<body>
+<body class="bg-[#eef1f6] font-sans text-slate-800 antialiased print:bg-white dark:bg-slate-900 dark:text-slate-200">
 
     <header class="topbar no-print">
         <div class="topbar-brand">
-            <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
+            <img src="../pictures/dmw_logo.png" alt="DMW" class="!block !h-auto !w-[42px] !bg-transparent !filter-none">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -1310,7 +961,7 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
         <form class="filter-scroll" method="GET" action="reports.php">
             <label class="filter-pill">
                 <i class="fas fa-calendar-alt" style="color:var(--blue-lt)"></i>
-                <select name="month" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                <select name="month" class="cursor-pointer border-none bg-transparent text-xs font-semibold text-inherit outline-none">
                     <option value="">All Months</option>
                     <?php
                     for ($m = 1; $m <= 12; $m++) {
@@ -1324,7 +975,7 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
             </label>
             <label class="filter-pill">
                 <i class="fas fa-map-marker-alt" style="color:var(--ok,#10b981);font-size:10px"></i>
-                <select name="province" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                <select name="province" class="cursor-pointer border-none bg-transparent text-xs font-semibold text-inherit outline-none">
                     <option value="">CALABARZON</option>
                     <?php foreach (['Laguna', 'Batangas', 'Cavite', 'Rizal', 'Quezon'] as $prov): ?>
                         <option value="<?= htmlspecialchars($prov) ?>" <?= $prov === $f_province ? 'selected' : '' ?>><?= htmlspecialchars($prov) ?></option>
@@ -1333,7 +984,7 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
             </label>
             <label class="filter-pill">
                 <i class="fas fa-briefcase" style="color:var(--amber)"></i>
-                <select name="job_type" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                <select name="job_type" class="cursor-pointer border-none bg-transparent text-xs font-semibold text-inherit outline-none">
                     <option value="">All Job Types</option>
                     <?php foreach ($jobTypeOptions as $jt): ?>
                         <option value="<?= htmlspecialchars($jt) ?>" <?= $jt === $f_jobtype ? 'selected' : '' ?>><?= htmlspecialchars($jt) ?></option>
@@ -1342,33 +993,67 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
             </label>
             <label class="filter-pill">
                 <i class="fas fa-globe" style="color:var(--indigo)"></i>
-                <select name="country" class="bg-transparent border-none outline-none font-semibold text-xs text-inherit cursor-pointer">
+                <select name="country" class="cursor-pointer border-none bg-transparent text-xs font-semibold text-inherit outline-none">
                     <option value="">All Destinations</option>
                     <?php foreach ($countryOptions as $ctry): ?>
                         <option value="<?= htmlspecialchars($ctry) ?>" <?= $ctry === $f_country ? 'selected' : '' ?>><?= htmlspecialchars($ctry) ?></option>
                     <?php endforeach; ?>
                 </select>
             </label>
-            <button type="submit" class="filter-pill" style="cursor:pointer;border:none">
+            <button type="submit" class="filter-pill cursor-pointer border-none">
                 <i class="fas fa-filter" style="color:var(--blue-lt)"></i>
-                <span style="font-weight:600;font-size:11px">Apply Filters</span>
+                <span class="text-[11px] font-semibold">Apply Filters</span>
             </button>
+            <?php if ($f_month !== '' || $f_province !== '' || $f_jobtype !== '' || $f_country !== ''): ?>
+                <a href="reports.php" class="filter-pill no-underline">
+                    <i class="fas fa-xmark" style="color:var(--red)"></i>
+                    <span class="text-[11px] font-semibold">Clear</span>
+                </a>
+            <?php endif; ?>
         </form>
     </div>
 
-    <div class="sheet">
+    <div class="mx-auto my-4 max-w-[1000px] px-3 pb-28 sm:my-5 sm:px-4 print:m-0 print:max-w-full print:p-0">
 
-        <div class="toolbar-actions no-print">
-            <a href="dashboard.php" class="btn"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
-            <button class="btn" onclick="printCurrent()"><i class="fas fa-print"></i> Print This Report</button>
-            <button class="btn btn-green" onclick="exportCurrent()"><i class="fas fa-file-excel"></i> Export to Excel</button>
-            <button class="btn btn-red" id="exportPdfBtn" onclick="downloadCurrentPDF(this)"><i class="fas fa-file-pdf"></i> Download PDF</button>
-            <button class="btn btn-primary" onclick="printAll()"><i class="fas fa-print"></i> Print All Reports</button>
-            <button class="btn btn-primary" onclick="exportAll()"><i class="fas fa-file-excel"></i> Export All (Excel)</button>
-            <button class="btn btn-red" onclick="downloadAllPDF(this)"><i class="fas fa-file-pdf"></i> Download All (PDF)</button>
+        <!-- Toolbar: grouped 3-up grid on mobile, single wrapping row from sm up -->
+        <div class="no-print mb-4 grid grid-cols-1 gap-3 sm:flex sm:flex-wrap sm:gap-2">
+            <a href="dashboard.php" class="btn w-full sm:w-auto"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+
+            <div class="grid grid-cols-3 gap-2 sm:contents">
+                <p class="col-span-3 -mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500 sm:hidden dark:text-slate-400">This report</p>
+                <button class="btn max-sm:flex-col max-sm:gap-1 max-sm:text-[11px]" onclick="printCurrent()">
+                    <i class="fas fa-print"></i>
+                    <span class="sm:hidden">Print</span><span class="hidden sm:inline">Print This Report</span>
+                </button>
+                <button class="btn btn-green max-sm:flex-col max-sm:gap-1 max-sm:text-[11px]" onclick="exportCurrent()">
+                    <i class="fas fa-file-excel"></i>
+                    <span class="sm:hidden">Excel</span><span class="hidden sm:inline">Export to Excel</span>
+                </button>
+                <button class="btn btn-red max-sm:flex-col max-sm:gap-1 max-sm:text-[11px]" id="exportPdfBtn" onclick="downloadCurrentPDF(this)">
+                    <i class="fas fa-file-pdf"></i>
+                    <span class="sm:hidden">PDF</span><span class="hidden sm:inline">Download PDF</span>
+                </button>
+            </div>
+
+            <div class="grid grid-cols-3 gap-2 sm:contents">
+                <p class="col-span-3 -mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500 sm:hidden dark:text-slate-400">All reports</p>
+                <button class="btn btn-primary max-sm:flex-col max-sm:gap-1 max-sm:text-[11px]" onclick="printAll()">
+                    <i class="fas fa-print"></i>
+                    <span class="sm:hidden">Print</span><span class="hidden sm:inline">Print All Reports</span>
+                </button>
+                <button class="btn btn-primary max-sm:flex-col max-sm:gap-1 max-sm:text-[11px]" onclick="exportAll()">
+                    <i class="fas fa-file-excel"></i>
+                    <span class="sm:hidden">Excel</span><span class="hidden sm:inline">Export All (Excel)</span>
+                </button>
+                <button class="btn btn-red max-sm:flex-col max-sm:gap-1 max-sm:text-[11px]" onclick="downloadAllPDF(this)">
+                    <i class="fas fa-file-pdf"></i>
+                    <span class="sm:hidden">PDF</span><span class="hidden sm:inline">Download All (PDF)</span>
+                </button>
+            </div>
         </div>
 
-        <div class="tabs no-print" id="tabs">
+        <!-- Tabs: 2-col grid on mobile, pill row from sm up -->
+        <div class="no-print mb-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap" id="tabs">
             <button class="tab-btn active" data-target="rep-country">Approved by Country</button>
             <button class="tab-btn" data-target="rep-status">Status Summary</button>
             <button class="tab-btn" data-target="rep-province">Origin (Province/City)</button>
@@ -1380,40 +1065,40 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
         </div>
 
         <div class="webView">
-            <div class="doc-sheet">
+            <div class="rounded-xl border border-slate-200 bg-white p-4 sm:p-8 dark:border-slate-700 dark:bg-slate-800">
 
-                <div class="doc-header-table">
-                    <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
-                    <div>
-                        <p class="republic-line">Republic of the Philippines</p>
-                        <p class="agency-name">DEPARTMENT OF MIGRANT WORKERS</p>
-                        <p class="agency-sub">
+                <div class="mb-1 flex items-center gap-3 border-b-[3px] border-navy pb-3 sm:gap-4 dark:border-blue-500">
+                    <img src="../pictures/dmw_logo.png" alt="DMW logo" class="h-auto w-10 shrink-0 sm:w-12" onerror="this.style.visibility='hidden';">
+                    <div class="min-w-0">
+                        <p class="m-0 text-[10px] text-slate-600 sm:text-[10.5px] dark:text-slate-400">Republic of the Philippines</p>
+                        <p class="my-0.5 text-sm font-extrabold leading-tight text-navy sm:text-base dark:text-blue-400">DEPARTMENT OF MIGRANT WORKERS</p>
+                        <p class="m-0 text-[10px] leading-relaxed text-slate-600 sm:text-[10.5px] dark:text-slate-400">
                             Regional Office IV-A (CALABARZON)<br>
                             Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027<br>
-                            Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph
+                            <span class="break-words">Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph</span>
                         </p>
                     </div>
                 </div>
 
-                <div class="doc-title">Migrant Worker Application Reports</div>
-                <div class="doc-subtitle"><?= htmlspecialchars($filterRecap) ?></div>
+                <h2 class="mb-1 mt-5 text-center text-base font-extrabold uppercase tracking-wide text-navy sm:text-lg dark:text-blue-400">Migrant Worker Application Reports</h2>
+                <p class="mb-4 text-center text-xs text-slate-600 dark:text-slate-400"><?= htmlspecialchars($filterRecap) ?></p>
 
-                <table class="ref-table">
+                <table class="mb-5 w-full border-collapse text-xs">
                     <tr>
-                        <td class="ref-label">Generated:</td>
-                        <td><?= htmlspecialchars($generatedAt) ?></td>
+                        <td class="w-24 py-0.5 align-top font-bold sm:w-40">Generated:</td>
+                        <td class="py-0.5"><?= htmlspecialchars($generatedAt) ?></td>
                     </tr>
                     <tr>
-                        <td class="ref-label">Prepared by:</td>
-                        <td><?= htmlspecialchars($admin_name) ?></td>
+                        <td class="w-24 py-0.5 align-top font-bold sm:w-40">Prepared by:</td>
+                        <td class="py-0.5"><?= htmlspecialchars($admin_name) ?></td>
                     </tr>
                     <tr>
-                        <td class="ref-label">Office:</td>
-                        <td>DMW Regional Office IV-A (CALABARZON)</td>
+                        <td class="w-24 py-0.5 align-top font-bold sm:w-40">Office:</td>
+                        <td class="py-0.5">DMW Regional Office IV-A (CALABARZON)</td>
                     </tr>
                 </table>
 
-                <p class="intro-note">
+                <p class="mb-4 text-[12.5px] leading-relaxed text-slate-600 sm:text-justify dark:text-slate-400">
                     This report consolidates migrant worker application statistics processed through the DMW Application
                     Management System for Regional Office IV-A. Figures reflect the filters selected above and are intended
                     for management review, audit, outreach planning, and official case monitoring.
@@ -1442,271 +1127,391 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
                     </div>
                 </div>
 
+                <!-- ===================== I. APPROVED BY COUNTRY ===================== -->
                 <section class="report-section active" id="rep-country">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-globe"></i> I. Approved Applicants by Country</div>
                         <p class="section-hint">Approved applications grouped by worksite/destination country. <?= $countryApprovedTotal ?> approved in the current filter set.</p>
-                        <div class="chart-wrap no-print"><canvas id="chartCountry"></canvas></div>
-                        <table class="report-table detail-table" id="tbl-country-summary">
-                            <thead>
-                                <tr>
-                                    <th>Destination Country</th>
-                                    <th>Approved Applicants</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$countrySummary): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="2">No approved applications found for the selected filters.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($countrySummary as $c): ?>
+                        <div class="no-print mx-auto mb-5 h-64 max-w-md sm:h-auto"><canvas id="chartCountry"></canvas></div>
+                        <div class="overflow-x-auto">
+                            <table class="report-table detail-table" id="tbl-country-summary">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($c['country']) ?></td>
-                                        <td><?= (int)$c['approved_count'] ?></td>
+                                        <th>Destination Country</th>
+                                        <th>Approved Applicants</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$countrySummary): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="2">No approved applications found for the selected filters.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($countrySummary as $c): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($c['country']) ?></td>
+                                            <td><?= (int)$c['approved_count'] ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
+
                     <div class="section">
                         <div class="section-title"><i class="fas fa-users"></i> Approved Applicant Detail</div>
                         <p class="section-hint">Individual approved applicants corresponding to the country summary above.</p>
-                        <table class="report-table detail-table" id="tbl-country-detail">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>Gender</th>
-                                    <th>Origin</th>
-                                    <th>Country</th>
-                                    <th>Position</th>
-                                    <th>Employer</th>
-                                    <th>Approved On</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$countryDetail): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="7">No records found.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($countryDetail as $r): ?>
+
+                        <!-- Desktop / tablet table (also the Excel export source) -->
+                        <div class="hidden overflow-x-auto md:block">
+                            <table class="report-table detail-table" id="tbl-country-detail">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars(fullName($r)) ?></td>
-                                        <td><?= htmlspecialchars($r['gender']) ?></td>
-                                        <td><?= htmlspecialchars($r['city_municipality'] . ', ' . $r['province']) ?></td>
-                                        <td><?= htmlspecialchars($r['country']) ?></td>
-                                        <td><?= htmlspecialchars($r['position_title']) ?></td>
-                                        <td><?= htmlspecialchars($r['employer_name']) ?></td>
-                                        <td><?= htmlspecialchars(date('M j, Y', strtotime($r['approved_at']))) ?></td>
+                                        <th>Applicant</th>
+                                        <th>Gender</th>
+                                        <th>Origin</th>
+                                        <th>Country</th>
+                                        <th>Position</th>
+                                        <th>Employer</th>
+                                        <th>Approved On</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$countryDetail): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="7">No records found.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($countryDetail as $r): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars(fullName($r)) ?></td>
+                                            <td><?= htmlspecialchars($r['gender']) ?></td>
+                                            <td><?= htmlspecialchars($r['city_municipality'] . ', ' . $r['province']) ?></td>
+                                            <td><?= htmlspecialchars($r['country']) ?></td>
+                                            <td><?= htmlspecialchars($r['position_title']) ?></td>
+                                            <td><?= htmlspecialchars($r['employer_name']) ?></td>
+                                            <td><?= htmlspecialchars(date('M j, Y', strtotime($r['approved_at']))) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Mobile cards -->
+                        <div class="space-y-2.5 md:hidden">
+                            <?php if (!$countryDetail): ?>
+                                <p class="empty-note">No records found.</p>
+                            <?php endif; ?>
+                            <?php foreach ($countryDetail as $r): ?>
+                                <article class="m-card">
+                                    <div class="mb-2 flex items-start justify-between gap-2">
+                                        <div class="min-w-0">
+                                            <p class="break-words text-sm font-bold"><?= htmlspecialchars(fullName($r)) ?></p>
+                                            <p class="text-[11px] text-slate-500 dark:text-slate-400"><?= htmlspecialchars($r['gender']) ?></p>
+                                        </div>
+                                        <span class="badge b-approved">Approved</span>
+                                    </div>
+                                    <div class="m-row"><span class="m-key">Origin</span><span class="m-val"><?= htmlspecialchars($r['city_municipality'] . ', ' . $r['province']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Country</span><span class="m-val"><?= htmlspecialchars($r['country']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Position</span><span class="m-val"><?= htmlspecialchars($r['position_title']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Employer</span><span class="m-val"><?= htmlspecialchars($r['employer_name']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Approved On</span><span class="m-val"><?= htmlspecialchars(date('M j, Y', strtotime($r['approved_at']))) ?></span></div>
+                                </article>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== II. STATUS SUMMARY ===================== -->
                 <section class="report-section" id="rep-status">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-chart-pie"></i> II. Application Status Summary</div>
                         <p class="section-hint">Overall processing funnel — useful for management reporting and pipeline monitoring.</p>
-                        <table class="report-table detail-table" id="tbl-status">
-                            <thead>
-                                <tr>
-                                    <th>Status</th>
-                                    <th>Count</th>
-                                    <th>% of Total</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($statusSummary as $s): ?>
+                        <div class="overflow-x-auto">
+                            <table class="report-table detail-table" id="tbl-status">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($s['status']) ?></td>
-                                        <td><?= (int)$s['count'] ?></td>
-                                        <td><?= $s['pct'] ?>%</td>
+                                        <th>Status</th>
+                                        <th>Count</th>
+                                        <th>% of Total</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($statusSummary as $s): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($s['status']) ?></td>
+                                            <td><?= (int)$s['count'] ?></td>
+                                            <td><?= $s['pct'] ?>%</td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== III. PROVINCE / CITY ===================== -->
                 <section class="report-section" id="rep-province">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-map-location-dot"></i> III. Applicants by Province &amp; City of Origin</div>
                         <p class="section-hint">Where applicants are coming from within the region — useful for outreach and LGU coordination.</p>
-                        <table class="report-table detail-table" id="tbl-province">
-                            <thead>
-                                <tr>
-                                    <th>Province</th>
-                                    <th>City / Municipality</th>
-                                    <th>Applicants</th>
-                                    <th>Applications</th>
-                                    <th>Approved</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$provinceSummary): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="5">No records found for the selected filters.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($provinceSummary as $p): ?>
+
+                        <div class="hidden overflow-x-auto md:block">
+                            <table class="report-table detail-table" id="tbl-province">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($p['province']) ?></td>
-                                        <td><?= htmlspecialchars($p['city_municipality']) ?></td>
-                                        <td><?= (int)$p['applicants'] ?></td>
-                                        <td><?= (int)$p['applications'] ?></td>
-                                        <td><?= (int)$p['approved'] ?></td>
+                                        <th>Province</th>
+                                        <th>City / Municipality</th>
+                                        <th>Applicants</th>
+                                        <th>Applications</th>
+                                        <th>Approved</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$provinceSummary): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="5">No records found for the selected filters.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($provinceSummary as $p): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($p['province']) ?></td>
+                                            <td><?= htmlspecialchars($p['city_municipality']) ?></td>
+                                            <td><?= (int)$p['applicants'] ?></td>
+                                            <td><?= (int)$p['applications'] ?></td>
+                                            <td><?= (int)$p['approved'] ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="space-y-2.5 md:hidden">
+                            <?php if (!$provinceSummary): ?>
+                                <p class="empty-note">No records found for the selected filters.</p>
+                            <?php endif; ?>
+                            <?php foreach ($provinceSummary as $p): ?>
+                                <article class="m-card">
+                                    <div class="mb-2">
+                                        <p class="break-words text-sm font-bold"><?= htmlspecialchars($p['city_municipality']) ?></p>
+                                        <p class="text-[11px] text-slate-500 dark:text-slate-400"><?= htmlspecialchars($p['province']) ?></p>
+                                    </div>
+                                    <div class="m-row"><span class="m-key">Applicants</span><span class="m-val"><?= (int)$p['applicants'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">Applications</span><span class="m-val"><?= (int)$p['applications'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">Approved</span><span class="m-val"><?= (int)$p['approved'] ?></span></div>
+                                </article>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== IV. AGE GROUP ===================== -->
                 <section class="report-section" id="rep-age">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-cake-candles"></i> IV. Applicants by Age Group</div>
                         <p class="section-hint">Demographic breakdown — helps check compliance with job-order age qualifications.</p>
-                        <table class="report-table detail-table" id="tbl-age">
-                            <thead>
-                                <tr>
-                                    <th>Age Group</th>
-                                    <th>Applicants</th>
-                                    <th>Applications</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$ageSummary): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="3">No records found.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($ageSummary as $a): ?>
+                        <div class="overflow-x-auto">
+                            <table class="report-table detail-table" id="tbl-age">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($a['age_group']) ?></td>
-                                        <td><?= (int)$a['applicants'] ?></td>
-                                        <td><?= (int)$a['applications'] ?></td>
+                                        <th>Age Group</th>
+                                        <th>Applicants</th>
+                                        <th>Applications</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$ageSummary): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="3">No records found.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($ageSummary as $a): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($a['age_group']) ?></td>
+                                            <td><?= (int)$a['applicants'] ?></td>
+                                            <td><?= (int)$a['applications'] ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== V. EDUCATION ===================== -->
                 <section class="report-section" id="rep-edu">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-graduation-cap"></i> V. Applicants by Educational Attainment</div>
                         <p class="section-hint">Useful for matching applicant qualifications against job order requirements.</p>
-                        <table class="report-table detail-table" id="tbl-edu">
-                            <thead>
-                                <tr>
-                                    <th>Educational Attainment</th>
-                                    <th>Applicants</th>
-                                    <th>Applications</th>
-                                    <th>Approved</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$eduSummary): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="4">No records found.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($eduSummary as $e): ?>
+                        <div class="overflow-x-auto">
+                            <table class="report-table detail-table" id="tbl-edu">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($e['education']) ?></td>
-                                        <td><?= (int)$e['applicants'] ?></td>
-                                        <td><?= (int)$e['applications'] ?></td>
-                                        <td><?= (int)$e['approved'] ?></td>
+                                        <th>Educational Attainment</th>
+                                        <th>Applicants</th>
+                                        <th>Applications</th>
+                                        <th>Approved</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$eduSummary): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="4">No records found.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($eduSummary as $e): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($e['education']) ?></td>
+                                            <td><?= (int)$e['applicants'] ?></td>
+                                            <td><?= (int)$e['applications'] ?></td>
+                                            <td><?= (int)$e['approved'] ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== VI. JOB ORDERS ===================== -->
                 <section class="report-section" id="rep-jobs">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-briefcase"></i> VI. Job Order Slot Utilization</div>
                         <p class="section-hint">Tracks recruitment progress per RSF job order — applied vs. approved vs. remaining slots.</p>
-                        <table class="report-table detail-table" id="tbl-jobs">
-                            <thead>
-                                <tr>
-                                    <th>RSF #</th>
-                                    <th>Position</th>
-                                    <th>Employer</th>
-                                    <th>Country</th>
-                                    <th>Slots</th>
-                                    <th>Applied</th>
-                                    <th>Approved</th>
-                                    <th>Remaining</th>
-                                    <th>Deadline</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$jobSummary): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="9">No job orders found for the selected filters.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($jobSummary as $j): ?>
+
+                        <div class="hidden overflow-x-auto md:block">
+                            <table class="report-table detail-table" id="tbl-jobs">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($j['rsf_number']) ?></td>
-                                        <td><?= htmlspecialchars($j['position_title']) ?></td>
-                                        <td><?= htmlspecialchars($j['employer_name']) ?></td>
-                                        <td><?= htmlspecialchars($j['worksite_country']) ?></td>
-                                        <td><?= (int)$j['slots_available'] ?></td>
-                                        <td><?= (int)$j['applied'] ?></td>
-                                        <td><?= (int)$j['approved'] ?></td>
-                                        <td><?= (int)$j['remaining'] ?></td>
-                                        <td><?= htmlspecialchars(date('M j, Y', strtotime($j['deadline']))) ?></td>
+                                        <th>RSF #</th>
+                                        <th>Position</th>
+                                        <th>Employer</th>
+                                        <th>Country</th>
+                                        <th>Slots</th>
+                                        <th>Applied</th>
+                                        <th>Approved</th>
+                                        <th>Remaining</th>
+                                        <th>Deadline</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$jobSummary): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="9">No job orders found for the selected filters.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($jobSummary as $j): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($j['rsf_number']) ?></td>
+                                            <td><?= htmlspecialchars($j['position_title']) ?></td>
+                                            <td><?= htmlspecialchars($j['employer_name']) ?></td>
+                                            <td><?= htmlspecialchars($j['worksite_country']) ?></td>
+                                            <td><?= (int)$j['slots_available'] ?></td>
+                                            <td><?= (int)$j['applied'] ?></td>
+                                            <td><?= (int)$j['approved'] ?></td>
+                                            <td><?= (int)$j['remaining'] ?></td>
+                                            <td><?= htmlspecialchars(date('M j, Y', strtotime($j['deadline']))) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="space-y-2.5 md:hidden">
+                            <?php if (!$jobSummary): ?>
+                                <p class="empty-note">No job orders found for the selected filters.</p>
+                            <?php endif; ?>
+                            <?php foreach ($jobSummary as $j):
+                                $jSlots = (int)$j['slots_available'];
+                                $jPct   = $jSlots > 0 ? min(100, (int) round(((int)$j['approved']) / $jSlots * 100)) : 0;
+                            ?>
+                                <article class="m-card">
+                                    <div class="mb-2 flex items-start justify-between gap-2">
+                                        <div class="min-w-0">
+                                            <p class="break-words text-sm font-bold"><?= htmlspecialchars($j['position_title']) ?></p>
+                                            <p class="text-[11px] text-slate-500 dark:text-slate-400"><?= htmlspecialchars($j['rsf_number']) ?></p>
+                                        </div>
+                                        <span class="badge <?= (int)$j['remaining'] === 0 ? 'b-approved' : 'b-other' ?>"><?= (int)$j['remaining'] ?> left</span>
+                                    </div>
+                                    <div class="mb-2 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700" role="progressbar" aria-label="Slots filled" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?= $jPct ?>">
+                                        <div class="h-full rounded-full bg-emerald-500" style="width:<?= $jPct ?>%"></div>
+                                    </div>
+                                    <div class="m-row"><span class="m-key">Employer</span><span class="m-val"><?= htmlspecialchars($j['employer_name']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Country</span><span class="m-val"><?= htmlspecialchars($j['worksite_country']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Slots</span><span class="m-val"><?= $jSlots ?></span></div>
+                                    <div class="m-row"><span class="m-key">Applied</span><span class="m-val"><?= (int)$j['applied'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">Approved</span><span class="m-val"><?= (int)$j['approved'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">Deadline</span><span class="m-val"><?= htmlspecialchars(date('M j, Y', strtotime($j['deadline']))) ?></span></div>
+                                </article>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== VII. EVALUATORS ===================== -->
                 <section class="report-section" id="rep-evaluators">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-user-clock"></i> VII. Evaluator Turnaround &amp; Workload</div>
                         <p class="section-hint">Average number of days from submission to final decision, per evaluator — useful for performance monitoring.</p>
-                        <table class="report-table detail-table" id="tbl-evaluators">
-                            <thead>
-                                <tr>
-                                    <th>Evaluator</th>
-                                    <th>Email</th>
-                                    <th>Total Actions</th>
-                                    <th>Approved</th>
-                                    <th>Disapproved</th>
-                                    <th>For Compliance</th>
-                                    <th>Avg. Turnaround (days)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$evalSummary): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="7">No evaluation records found for the selected filters.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($evalSummary as $e): ?>
+
+                        <div class="hidden overflow-x-auto md:block">
+                            <table class="report-table detail-table" id="tbl-evaluators">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars($e['full_name'] ?? $e['email']) ?></td>
-                                        <td><?= htmlspecialchars($e['email']) ?></td>
-                                        <td><?= (int)$e['actions'] ?></td>
-                                        <td><?= (int)$e['approved'] ?></td>
-                                        <td><?= (int)$e['disapproved'] ?></td>
-                                        <td><?= (int)$e['for_compliance'] ?></td>
-                                        <td><?= $e['avg_days'] !== null ? round((float)$e['avg_days'], 1) : '—' ?></td>
+                                        <th>Evaluator</th>
+                                        <th>Email</th>
+                                        <th>Total Actions</th>
+                                        <th>Approved</th>
+                                        <th>Disapproved</th>
+                                        <th>For Compliance</th>
+                                        <th>Avg. Turnaround (days)</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$evalSummary): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="7">No evaluation records found for the selected filters.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($evalSummary as $e): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars($e['full_name'] ?? $e['email']) ?></td>
+                                            <td><?= htmlspecialchars($e['email']) ?></td>
+                                            <td><?= (int)$e['actions'] ?></td>
+                                            <td><?= (int)$e['approved'] ?></td>
+                                            <td><?= (int)$e['disapproved'] ?></td>
+                                            <td><?= (int)$e['for_compliance'] ?></td>
+                                            <td><?= $e['avg_days'] !== null ? round((float)$e['avg_days'], 1) : '—' ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="space-y-2.5 md:hidden">
+                            <?php if (!$evalSummary): ?>
+                                <p class="empty-note">No evaluation records found for the selected filters.</p>
+                            <?php endif; ?>
+                            <?php foreach ($evalSummary as $e): ?>
+                                <article class="m-card">
+                                    <div class="mb-2 flex items-start justify-between gap-2">
+                                        <div class="min-w-0">
+                                            <p class="break-words text-sm font-bold"><?= htmlspecialchars($e['full_name'] ?? $e['email']) ?></p>
+                                            <p class="break-all text-[11px] text-slate-500 dark:text-slate-400"><?= htmlspecialchars($e['email']) ?></p>
+                                        </div>
+                                        <span class="badge b-other"><?= (int)$e['actions'] ?> actions</span>
+                                    </div>
+                                    <div class="m-row"><span class="m-key">Approved</span><span class="m-val"><?= (int)$e['approved'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">Disapproved</span><span class="m-val"><?= (int)$e['disapproved'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">For Compliance</span><span class="m-val"><?= (int)$e['for_compliance'] ?></span></div>
+                                    <div class="m-row"><span class="m-key">Avg. Turnaround</span><span class="m-val"><?= $e['avg_days'] !== null ? round((float)$e['avg_days'], 1) . ' day(s)' : '—' ?></span></div>
+                                </article>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
                 </section>
 
+                <!-- ===================== VIII. DOCUMENT COMPLIANCE ===================== -->
                 <section class="report-section" id="rep-doccompliance">
                     <div class="section">
                         <div class="section-title"><i class="fas fa-file-circle-check"></i> VIII. Document Compliance Report</div>
@@ -1729,45 +1534,72 @@ $countryApprovedTotal = (int) array_sum(array_column($countrySummary, 'approved_
                                 <div class="sc-lbl">Avg. Completion</div>
                             </div>
                         </div>
-                        <table class="report-table detail-table" id="tbl-doccompliance">
-                            <thead>
-                                <tr>
-                                    <th>Applicant</th>
-                                    <th>RSF #</th>
-                                    <th>Employer</th>
-                                    <th>Required</th>
-                                    <th>Submitted</th>
-                                    <th>Completion</th>
-                                    <th>Missing Documents</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (!$docCompliance): ?>
-                                    <tr class="empty-row">
-                                        <td colspan="7">No applications found for the selected filters.</td>
-                                    </tr>
-                                <?php endif; ?>
-                                <?php foreach ($docCompliance as $d): ?>
+
+                        <div class="hidden overflow-x-auto md:block">
+                            <table class="report-table detail-table" id="tbl-doccompliance">
+                                <thead>
                                     <tr>
-                                        <td><?= htmlspecialchars(fullName($d)) ?></td>
-                                        <td><?= htmlspecialchars($d['rsf_number']) ?></td>
-                                        <td><?= htmlspecialchars($d['employer_name']) ?></td>
-                                        <td><?= (int)$d['required_count'] ?></td>
-                                        <td><?= (int)$d['submitted_count'] ?></td>
-                                        <td><span class="badge <?= $d['completion_pct'] == 100 ? 'b-approved' : 'b-disapproved' ?>"><?= (int)$d['completion_pct'] ?>%</span></td>
-                                        <td><?= htmlspecialchars($d['missing_documents']) ?></td>
+                                        <th>Applicant</th>
+                                        <th>RSF #</th>
+                                        <th>Employer</th>
+                                        <th>Required</th>
+                                        <th>Submitted</th>
+                                        <th>Completion</th>
+                                        <th>Missing Documents</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$docCompliance): ?>
+                                        <tr class="empty-row">
+                                            <td colspan="7">No applications found for the selected filters.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                    <?php foreach ($docCompliance as $d): ?>
+                                        <tr>
+                                            <td><?= htmlspecialchars(fullName($d)) ?></td>
+                                            <td><?= htmlspecialchars($d['rsf_number']) ?></td>
+                                            <td><?= htmlspecialchars($d['employer_name']) ?></td>
+                                            <td><?= (int)$d['required_count'] ?></td>
+                                            <td><?= (int)$d['submitted_count'] ?></td>
+                                            <td><span class="badge <?= $d['completion_pct'] == 100 ? 'b-approved' : 'b-disapproved' ?>"><?= (int)$d['completion_pct'] ?>%</span></td>
+                                            <td><?= htmlspecialchars($d['missing_documents']) ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="space-y-2.5 md:hidden">
+                            <?php if (!$docCompliance): ?>
+                                <p class="empty-note">No applications found for the selected filters.</p>
+                            <?php endif; ?>
+                            <?php foreach ($docCompliance as $d): ?>
+                                <article class="m-card">
+                                    <div class="mb-2 flex items-start justify-between gap-2">
+                                        <div class="min-w-0">
+                                            <p class="break-words text-sm font-bold"><?= htmlspecialchars(fullName($d)) ?></p>
+                                            <p class="text-[11px] text-slate-500 dark:text-slate-400"><?= htmlspecialchars($d['rsf_number']) ?></p>
+                                        </div>
+                                        <span class="badge <?= $d['completion_pct'] == 100 ? 'b-approved' : 'b-disapproved' ?>"><?= (int)$d['completion_pct'] ?>%</span>
+                                    </div>
+                                    <div class="mb-2 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700" role="progressbar" aria-label="Document completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?= (int)$d['completion_pct'] ?>">
+                                        <div class="h-full rounded-full <?= $d['completion_pct'] == 100 ? 'bg-emerald-500' : 'bg-red-500' ?>" style="width:<?= (int)$d['completion_pct'] ?>%"></div>
+                                    </div>
+                                    <div class="m-row"><span class="m-key">Employer</span><span class="m-val"><?= htmlspecialchars($d['employer_name']) ?></span></div>
+                                    <div class="m-row"><span class="m-key">Submitted</span><span class="m-val"><?= (int)$d['submitted_count'] ?> of <?= (int)$d['required_count'] ?> required</span></div>
+                                    <div class="m-row"><span class="m-key">Missing</span><span class="m-val"><?= htmlspecialchars($d['missing_documents']) ?></span></div>
+                                </article>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
                 </section>
 
-                <p class="footer-note">Department of Migrant Workers — Application Management System &nbsp;|&nbsp; Regional Office IV-A (CALABARZON) &nbsp;|&nbsp; For official use only</p>
+                <p class="mt-6 border-t border-slate-200 pt-2.5 text-center text-[10px] leading-relaxed text-slate-400 dark:border-slate-700">Department of Migrant Workers — Application Management System &nbsp;|&nbsp; Regional Office IV-A (CALABARZON) &nbsp;|&nbsp; For official use only</p>
 
             </div>
         </div>
 
+        <!-- ===================== PRINT / PDF LAYOUT (unchanged) ===================== -->
         <div id="printReport">
             <div class="pr-page-header">
                 <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">

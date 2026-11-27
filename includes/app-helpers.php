@@ -27,6 +27,38 @@ function sql_deadline_priority(string $deadlineCol, ?string $onlyWhen = null): s
     return "CASE WHEN {$window} THEN 0 ELSE 1 END ASC, CASE WHEN {$window} THEN {$deadlineCol} END ASC";
 }
 
+
+/**
+ * Urgency badge for a job order's deadline (HTML). Shared by the admin and
+ * evaluator pages. Hidden for finished cases (approved / disapproved / draft).
+ */
+function deadline_badge(?string $deadline, string $status): string
+{
+    if (!$deadline || in_array($status, ['approved', 'disapproved', 'draft'], true)) return '';
+    $days = (int) floor((strtotime($deadline) - strtotime(date('Y-m-d'))) / 86400);
+
+    if ($days < 0) {
+        $ago = abs($days);
+        $txt = $ago === 1 ? 'Deadline passed 1 day ago' : "Deadline passed {$ago} days ago";
+        $cls = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
+        $ico = 'fa-circle-exclamation';
+    } elseif ($days <= 3) {
+        $txt = $days === 0 ? 'Due today' : "Due in {$days} day" . ($days > 1 ? 's' : '');
+        $cls = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
+        $ico = 'fa-fire';
+    } elseif ($days <= 7) {
+        $txt = "Due in {$days} days";
+        $cls = 'bg-amber-100 text-amber-800 [[data-theme=dark]_&]:bg-amber-500/15 [[data-theme=dark]_&]:text-amber-300';
+        $ico = 'fa-clock';
+    } else {
+        $txt = "{$days} days left";
+        $cls = 'bg-slate-100 text-slate-600 [[data-theme=dark]_&]:bg-slate-500/15 [[data-theme=dark]_&]:text-slate-300';
+        $ico = 'fa-calendar-day';
+    }
+    $title = htmlspecialchars('Job order deadline: ' . date('M d, Y', strtotime($deadline)), ENT_QUOTES);
+    return "<span title=\"{$title}\" class=\"mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold {$cls}\"><i class=\"fas {$ico} text-[9px]\"></i>" . htmlspecialchars($txt) . "</span>";
+}
+
 /**
  * Whether the client may change answers, documents, or use resubmit (server-side gate).
  * Editable: unassign (submitted, not yet assigned), for_compliance, resubmitted, and in-progress pending.
@@ -71,34 +103,54 @@ function application_status_change(mysqli $db, int $application_id, string $new_
     $from_status = $row['status'];
     if ($from_status === $new_status) return true; // No change
 
+    $takesSlot = ($new_status === 'approved' && $from_status !== 'approved');
+    $rsf_id = 0;
+
+    // Reserve a slot first. The WHERE clause makes this atomic: two simultaneous
+    // approvals cannot both take the last slot. NULL slots_available = no limit.
+    if ($takesSlot) {
+        $stmt = $db->prepare('
+            SELECT r.id, r.slots_available
+            FROM applications a
+            JOIN rsf_job_orders r ON r.id = a.rsf_id
+            WHERE a.id = ? LIMIT 1
+        ');
+        $stmt->bind_param('i', $application_id);
+        $stmt->execute();
+        $job = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if ($job) {
+            $rsf_id = (int) $job['id'];
+            if ($job['slots_available'] !== null) {
+                $stmt = $db->prepare('UPDATE rsf_job_orders SET slots_available = slots_available - 1 WHERE id = ? AND slots_available > 0');
+                $stmt->bind_param('i', $rsf_id);
+                $stmt->execute();
+                $reserved = $stmt->affected_rows === 1;
+                $stmt->close();
+                if (!$reserved) return false; // no slots left
+            }
+        }
+    }
+
     // Update applications
     $stmt = $db->prepare("UPDATE applications SET status = ?, updated_at = NOW() WHERE id = ?");
     $stmt->bind_param("si", $new_status, $application_id);
     if (!$stmt->execute()) {
         $stmt->close();
+        // Give the reserved slot back
+        if ($takesSlot && $rsf_id) {
+            $stmt = $db->prepare('UPDATE rsf_job_orders SET slots_available = slots_available + 1 WHERE id = ? AND slots_available IS NOT NULL');
+            $stmt->bind_param('i', $rsf_id);
+            $stmt->execute();
+            $stmt->close();
+        }
         return false;
     }
     $stmt->close();
 
-    if (
-        $new_status === 'approved'
-        && $from_status !== 'approved'
-    ) {
-        $stmt = $db->prepare('SELECT rsf_id FROM applications WHERE id = ? LIMIT 1');
-        $stmt->bind_param('i', $application_id);
-        $stmt->execute();
-        $row = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-        if (!empty($row['rsf_id'])) {
-            $rsf_id = (int) $row['rsf_id'];
-            $stmt = $db->prepare('UPDATE rsf_job_orders SET slots_available = slots_available - 1 WHERE id = ?');
-            if ($stmt) {
-                $stmt->bind_param('i', $rsf_id);
-                $stmt->execute();
-                $stmt->close();
-                notify_unaccommodated_when_slots_full($db, $rsf_id);
-            }
-        }
+    if ($takesSlot && $rsf_id) {
+        notify_unaccommodated_when_slots_full($db, $rsf_id);
     }
 
     // Insert status_history
@@ -632,9 +684,9 @@ function notify_unaccommodated_when_slots_full(mysqli $db, int $rsf_id): void
 
             $fullName = trim(
                 ($app['first_name'] ?? '') . ' ' .
-                (!empty($app['middle_name']) ? $app['middle_name'] . ' ' : '') .
-                ($app['last_name'] ?? '') .
-                (!empty($app['suffix']) ? ' ' . $app['suffix'] : '')
+                    (!empty($app['middle_name']) ? $app['middle_name'] . ' ' : '') .
+                    ($app['last_name'] ?? '') .
+                    (!empty($app['suffix']) ? ' ' . $app['suffix'] : '')
             );
             $submittedAt = $app['submitted_at'] ?: date('Y-m-d H:i:s');
             $refNo = 'APP-' . date('Y', strtotime($submittedAt)) . '-' . str_pad((string) $appId, 6, '0', STR_PAD_LEFT);
@@ -1291,4 +1343,310 @@ function endActiveLeave(mysqli $db, int $evaluator_id, string $by_email): bool
     $ok = $stmt->affected_rows > 0;
     $stmt->close();
     return $ok;
+}
+
+/** Days in for_compliance before the applicant is reminded. */
+const COMPLIANCE_REMINDER_DAY = 2;
+
+/** Days in for_compliance before the final reminder and staff escalation. */
+const COMPLIANCE_ESCALATE_DAY = 3;
+
+/** Days in for_compliance before admins are asked to decide. */
+const COMPLIANCE_DECISION_DAY = 7;
+
+/**
+ * for_compliance applications that have had no document upload since the
+ * status started. days_waiting is whole days since that start.
+ *
+ * @return array<int, array{id:int, current_evaluator_id:?int, started_at:string, days_waiting:int}>
+ */
+function getStaleComplianceApplications(mysqli $db): array
+{
+    $sql = "
+        SELECT a.id,
+               a.current_evaluator_id,
+               h.started_at,
+               DATEDIFF(CURDATE(), DATE(h.started_at)) AS days_waiting
+        FROM applications a
+        JOIN (
+            SELECT application_id, MAX(changed_at) AS started_at
+            FROM status_history
+            WHERE to_status = 'for_compliance'
+            GROUP BY application_id
+        ) h ON h.application_id = a.id
+        WHERE a.status = 'for_compliance'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM application_documents d
+              WHERE d.application_id = a.id
+                AND d.uploaded_at > h.started_at
+          )
+    ";
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        error_log('getStaleComplianceApplications failed: ' . $db->error);
+        return [];
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    $rows = [];
+    while ($row = $result->fetch_assoc()) {
+        $rows[] = [
+            'id'                   => (int) $row['id'],
+            'current_evaluator_id' => $row['current_evaluator_id'] !== null ? (int) $row['current_evaluator_id'] : null,
+            'started_at'           => (string) $row['started_at'],
+            'days_waiting'         => (int) $row['days_waiting'],
+        ];
+    }
+    $stmt->close();
+    return $rows;
+}
+
+/** True when this notice was already stored for the current compliance spell. */
+function complianceNoticeSent(mysqli $db, int $app_id, string $type, string $started_at): bool
+{
+    $app_id = (int) $app_id;
+    $type = trim($type);
+    if (!$app_id || $type === '' || $started_at === '') {
+        return false;
+    }
+
+    $stmt = $db->prepare("
+        SELECT 1
+        FROM notifications
+        WHERE application_id = ? AND type = ? AND created_at >= ?
+        LIMIT 1
+    ");
+    if (!$stmt) {
+        return false;
+    }
+    $stmt->bind_param('iss', $app_id, $type, $started_at);
+    $stmt->execute();
+    $sent = (bool) $stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $sent;
+}
+
+/** System row in activity_logs. Never throws. */
+function logComplianceAction(mysqli $db, string $action, string $description, ?int $applicationId = null): void
+{
+    try {
+        $email = null;
+        $usertype = 'system';
+        $module = 'application';
+        $ip = null;
+        $ua = null;
+        $desc = mb_substr($description, 0, 2000);
+        $stmt = $db->prepare(
+            "INSERT INTO activity_logs
+             (user_email, usertype, module, action, description, application_id, ip_address, user_agent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+        if (!$stmt) {
+            return;
+        }
+        $stmt->bind_param('sssssiss', $email, $usertype, $module, $action, $desc, $applicationId, $ip, $ua);
+        $stmt->execute();
+        $stmt->close();
+    } catch (Throwable $e) {
+        error_log('logComplianceAction failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Applicant name, email, and job label for a compliance email.
+ *
+ * @return array{email:string, name:string, position:string, rsf_number:string}|null
+ */
+function complianceApplicantMailTarget(mysqli $db, int $app_id): ?array
+{
+    $stmt = $db->prepare("
+        SELECT c.email, c.first_name, c.last_name, r.position_title, r.rsf_number
+        FROM applications a
+        JOIN clients c ON c.cid = a.client_id
+        JOIN rsf_job_orders r ON r.id = a.rsf_id
+        WHERE a.id = ?
+        LIMIT 1
+    ");
+    if (!$stmt) {
+        return null;
+    }
+    $stmt->bind_param('i', $app_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || empty($row['email'])) {
+        return null;
+    }
+
+    $name = trim((string) ($row['first_name'] ?? '') . ' ' . (string) ($row['last_name'] ?? ''));
+    return [
+        'email'      => (string) $row['email'],
+        'name'       => $name !== '' ? $name : 'Applicant',
+        'position'   => trim((string) ($row['position_title'] ?? '')),
+        'rsf_number' => trim((string) ($row['rsf_number'] ?? '')),
+    ];
+}
+
+/** HTML body for a compliance reminder. Sent with send_html_mail(). */
+function complianceReminderEmailHtml(string $name, string $message, string $position, string $rsf): string
+{
+    $safeName = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+    $safeMsg = htmlspecialchars($message, ENT_QUOTES, 'UTF-8');
+    $detail = trim($position . ($rsf !== '' ? ' (' . $rsf . ')' : ''));
+    $safeDetail = htmlspecialchars($detail, ENT_QUOTES, 'UTF-8');
+    $jobLine = $detail !== ''
+        ? "<p style='font-size:13px;color:#374151;'>Position: <strong>{$safeDetail}</strong></p>"
+        : '';
+
+    return "
+    <div style='font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1f2937;'>
+        <div style='background:#0b1f4b;padding:22px 26px;border-radius:12px 12px 0 0;'>
+            <p style='margin:0;color:#e5e7eb;font-size:11px;letter-spacing:.06em;text-transform:uppercase;'>Department of Migrant Workers</p>
+            <h1 style='margin:6px 0 0;color:#ffffff;font-size:18px;'>Compliance follow-up</h1>
+        </div>
+        <div style='background:#ffffff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:22px 26px;'>
+            <p style='font-size:14px;line-height:1.6;'>Dear <strong>{$safeName}</strong>,</p>
+            <p style='font-size:14px;line-height:1.6;'>{$safeMsg}</p>
+            {$jobLine}
+            <p style='font-size:13px;line-height:1.6;color:#374151;'>Please sign in to the applicant portal, open the application, and submit the corrections requested by the evaluator. Your application status has not been changed.</p>
+            <p style='margin-top:22px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:12px;'>This is a system-generated message from the DMW Application Management System.</p>
+        </div>
+    </div>";
+}
+
+/**
+ * Daily follow-up for applications still in for_compliance with no new upload.
+ * Does not change application status and does not disapprove anyone.
+ * A missed day is still sent once days_waiting reaches the threshold; the
+ * notifications row prevents a second copy of the same notice.
+ *
+ * @return array{checked:int, compliance_reminder:int, compliance_final:int, compliance_overdue:int, compliance_decision:int, emails_sent:int, emails_failed:int}
+ */
+function runComplianceFollowUp(mysqli $db): array
+{
+    $counts = [
+        'checked'              => 0,
+        'compliance_reminder'  => 0,
+        'compliance_final'     => 0,
+        'compliance_overdue'   => 0,
+        'compliance_decision'  => 0,
+        'emails_sent'          => 0,
+        'emails_failed'        => 0,
+    ];
+
+    require_once __DIR__ . '/mailer.php';
+
+    foreach (getStaleComplianceApplications($db) as $app) {
+        $counts['checked']++;
+        $appId = (int) $app['id'];
+        $days = (int) $app['days_waiting'];
+        $startedAt = (string) $app['started_at'];
+
+        try {
+            if ($days >= COMPLIANCE_REMINDER_DAY && !complianceNoticeSent($db, $appId, 'compliance_reminder', $startedAt)) {
+                $title = 'Compliance reminder';
+                $message = 'Your application has been in For Compliance for ' . $days . ' day' . ($days === 1 ? '' : 's')
+                    . ' and no updated document has been received. Please sign in, review the evaluator\'s notes, and submit the required corrections.';
+                if (notify_client_for_application($db, $appId, $title, $message, 'compliance_reminder')) {
+                    $counts['compliance_reminder']++;
+                    logComplianceAction($db, 'compliance_reminder', "Day {$days} compliance reminder sent for application #{$appId}.", $appId);
+                    $target = complianceApplicantMailTarget($db, $appId);
+                    if ($target) {
+                        $ok = send_html_mail(
+                            $db,
+                            $target['email'],
+                            $target['name'],
+                            'DMW AMS — Compliance reminder',
+                            complianceReminderEmailHtml($target['name'], $message, $target['position'], $target['rsf_number'])
+                        );
+                        if ($ok) {
+                            $counts['emails_sent']++;
+                        } else {
+                            $counts['emails_failed']++;
+                            error_log("Compliance reminder email failed for application #{$appId}.");
+                            logComplianceAction($db, 'compliance_email_failed', "Day {$days} reminder email failed for application #{$appId}.", $appId);
+                        }
+                    }
+                }
+            }
+
+            if ($days >= COMPLIANCE_ESCALATE_DAY && !complianceNoticeSent($db, $appId, 'compliance_final', $startedAt)) {
+                $title = 'Final compliance reminder';
+                $message = 'This is a final reminder. Your application has been in For Compliance for ' . $days
+                    . ' days without a new document upload. Please submit the required updates as soon as possible. Your application status has not been changed.';
+                if (notify_client_for_application($db, $appId, $title, $message, 'compliance_final')) {
+                    $counts['compliance_final']++;
+                    logComplianceAction($db, 'compliance_final', "Day {$days} final compliance reminder sent for application #{$appId}.", $appId);
+                    $target = complianceApplicantMailTarget($db, $appId);
+                    if ($target) {
+                        $ok = send_html_mail(
+                            $db,
+                            $target['email'],
+                            $target['name'],
+                            'DMW AMS — Final compliance reminder',
+                            complianceReminderEmailHtml($target['name'], $message, $target['position'], $target['rsf_number'])
+                        );
+                        if ($ok) {
+                            $counts['emails_sent']++;
+                        } else {
+                            $counts['emails_failed']++;
+                            error_log("Compliance final email failed for application #{$appId}.");
+                            logComplianceAction($db, 'compliance_email_failed', "Day {$days} final reminder email failed for application #{$appId}.", $appId);
+                        }
+                    }
+                }
+            }
+
+            if ($days >= COMPLIANCE_ESCALATE_DAY && !complianceNoticeSent($db, $appId, 'compliance_overdue', $startedAt)) {
+                $title = 'Compliance overdue';
+                $message = "Application #{$appId} has been in For Compliance for {$days} days without a new document upload. Please follow up with the applicant. The application status was not changed.";
+                $adminsOk = notify_admins($db, $title, $message, 'compliance_overdue', $appId);
+                $evalOk = notify_evaluator_for_application($db, $appId, $title, $message, 'compliance_overdue');
+                if ($adminsOk || $evalOk) {
+                    $counts['compliance_overdue']++;
+                    logComplianceAction($db, 'compliance_overdue', "Day {$days} overdue notice sent for application #{$appId}.", $appId);
+                }
+                if (!$evalOk && !empty($app['current_evaluator_id'])) {
+                    logComplianceAction($db, 'compliance_evaluator_notice_skipped', "No active assignment to notify for application #{$appId}.", $appId);
+                }
+            }
+
+            if ($days >= COMPLIANCE_DECISION_DAY && !complianceNoticeSent($db, $appId, 'compliance_decision', $startedAt)) {
+                $title = 'Compliance decision needed';
+                $message = "Application #{$appId} has remained in For Compliance for {$days} days without a new document upload. Please review it and record a decision. The system did not change the status or disapprove the application.";
+                if (notify_admins($db, $title, $message, 'compliance_decision', $appId)) {
+                    $counts['compliance_decision']++;
+                    logComplianceAction($db, 'compliance_decision', "Day {$days} decision notice sent for application #{$appId}.", $appId);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log("runComplianceFollowUp failed for application #{$appId}: " . $e->getMessage());
+            logComplianceAction($db, 'compliance_followup_error', $e->getMessage(), $appId);
+        }
+    }
+
+    return $counts;
+}
+
+// Remaining slots for the job order an application belongs to.
+// slots_available is already decremented on each approval (see application_status_change),
+// so it IS the remaining count. NULL = no limit.
+function getApplicationSlotInfo(mysqli $db, int $app_id): ?array
+{
+    $stmt = $db->prepare("
+        SELECT r.slots_available
+        FROM applications a
+        JOIN rsf_job_orders r ON a.rsf_id = r.id
+        WHERE a.id = ?
+        LIMIT 1
+    ");
+    $stmt->bind_param("i", $app_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) return null;
+
+    return ['remaining' => $row['slots_available'] === null ? null : (int) $row['slots_available']];
 }

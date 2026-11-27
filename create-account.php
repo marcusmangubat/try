@@ -50,6 +50,29 @@ function verify_recaptcha(?string $token): bool
     return isset($response['success']) && $response['success'] === true;
 }
 
+/**
+ * Returns true only if $dob is a real YYYY-MM-DD date that is at least
+ * 18 years in the past, and not in the future.
+ */
+function is_valid_adult_dob(?string $dob): bool
+{
+    if (empty($dob)) {
+        return false;
+    }
+
+    $date = DateTime::createFromFormat('Y-m-d', $dob);
+    if (!$date || $date->format('Y-m-d') !== $dob) {
+        return false; // malformed or impossible date (e.g. 2005-02-31)
+    }
+
+    $today = new DateTime('today');
+    if ($date > $today) {
+        return false;
+    }
+
+    return $date->diff($today)->y >= 18;
+}
+
 $error   = '';
 $success = '';
 $show_registration_form = true;
@@ -110,6 +133,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Full address is required.";
         } elseif (empty($barangay) || empty($city_municipality) || empty($province)) {
             $error = "Please select Province, City/Municipality, and Barangay.";
+        } elseif (empty($dob)) {
+            $error = "Date of birth is required.";
+        } elseif (!is_valid_adult_dob($dob)) {
+            $error = "You must be at least 18 years old to create an account.";
         } elseif (!isset($_POST['agree_policy'])) {
             $error = "You must agree to the Privacy Policy before creating an account.";
         } else {
@@ -797,9 +824,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <h3 class="text-xs font-semibold tracking-widest text-gray-400 mb-4">ADDITIONAL INFORMATION</h3>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">DATE OF BIRTH</label>
-                                    <input type="date" name="dob"
+                                    <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">DATE OF BIRTH <span class="text-red-500">*</span></label>
+                                    <input type="date" name="dob" id="dob" required
+                                        max="<?= date('Y-m-d', strtotime('-18 years')) ?>"
                                         class="input-field w-full bg-white border border-gray-300 rounded-2xl py-3.5 px-5 text-[var(--navy)] focus:outline-none text-sm">
+                                    <p id="dob-msg" class="mt-1.5 text-xs min-h-[1rem] text-gray-400">You must be at least 18 years old.</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold tracking-widest text-gray-500 mb-2">GENDER</label>
@@ -1069,6 +1098,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             });
 
             validatePhone();
+        });
+    </script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const dobInput = document.getElementById('dob');
+            const dobMsg = document.getElementById('dob-msg');
+            if (!dobInput) return;
+
+            function validateDob() {
+                if (!dobInput.value) {
+                    dobInput.setCustomValidity('');
+                    dobMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-gray-400';
+                    dobMsg.textContent = 'You must be at least 18 years old.';
+                    return;
+                }
+
+                const dob = new Date(dobInput.value + 'T00:00:00');
+                const today = new Date();
+                let age = today.getFullYear() - dob.getFullYear();
+                const m = today.getMonth() - dob.getMonth();
+                if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+
+                if (isNaN(age) || age < 18) {
+                    dobInput.setCustomValidity('You must be at least 18 years old to register.');
+                    dobMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-red-600';
+                    dobMsg.textContent = '✗ You must be at least 18 years old to register.';
+                } else {
+                    dobInput.setCustomValidity('');
+                    dobMsg.className = 'mt-1.5 text-xs min-h-[1rem] text-green-600';
+                    dobMsg.textContent = '✓ Age requirement met (' + age + ' years old).';
+                }
+            }
+
+            dobInput.addEventListener('input', validateDob);
+            dobInput.addEventListener('change', validateDob);
         });
     </script>
 </body>

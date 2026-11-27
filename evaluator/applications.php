@@ -67,6 +67,9 @@ $search_filter = trim($_GET['q'] ?? '');
 // Month filters applications by their submission date (YYYY-MM).
 $month_filter = trim($_GET['month'] ?? '');
 $month_filter = preg_match('/^\d{4}-\d{2}$/', $month_filter) ? $month_filter : '';
+// Period: 'today' or 'week' (Mon–Sun), based on submission date.
+$period_filter = $_GET['period'] ?? '';
+$period_filter = in_array($period_filter, ['today', 'week'], true) ? $period_filter : '';
 
 // Country filters by the RSF job order's worksite country.
 $country_filter = trim($_GET['country'] ?? '');
@@ -76,7 +79,7 @@ $country_filter = trim($_GET['country'] ?? '');
  * for the Month / Country subbar filters. Assumes applications is aliased
  * `a` and rsf_job_orders is aliased/joined as `r` in the calling query.
  */
-function buildEvalFilters(string $month, string $country): array
+function buildEvalFilters(string $month, string $country, string $period = ''): array
 {
     $where  = '';
     $types  = '';
@@ -95,22 +98,28 @@ function buildEvalFilters(string $month, string $country): array
         $types   .= 's';
         $params[] = $country;
     }
+    if ($period === 'today') {
+        $where .= " AND DATE(a.submitted_at) = CURDATE()";
+    } elseif ($period === 'week') {
+        $where .= " AND YEARWEEK(a.submitted_at, 1) = YEARWEEK(CURDATE(), 1)";
+    }
 
     return [$where, $types, $params];
 }
 
 /** Builds the "base" URL (status + month + country, no search term) used
  *  for the stat/filter tile links — search term is appended client-side. */
-function build_tile_base(?string $status, string $month, string $country): string
+function build_tile_base(?string $status, string $month, string $country, string $period = ''): string
 {
     $params = [];
     if ($status)         $params['status']  = $status;
     if ($month !== '')   $params['month']   = $month;
     if ($country !== '') $params['country'] = $country;
+    if ($period !== '')  $params['period']  = $period;
     return 'applications.php' . ($params ? '?' . http_build_query($params) : '');
 }
 
-[$filterWhere, $filterTypes, $filterParams] = buildEvalFilters($month_filter, $country_filter);
+[$filterWhere, $filterTypes, $filterParams] = buildEvalFilters($month_filter, $country_filter, $period_filter);
 
 // Distinct countries (from job orders that actually have applications) for
 // the Country subbar dropdown.
@@ -410,33 +419,6 @@ function status_badge_cls(array $sc): string
     return "bg-[{$sc['bg']}] text-[{$sc['fg']}] [[data-theme=dark]_&]:bg-transparent [[data-theme=dark]_&]:px-0 [[data-theme=dark]_&]:text-[{$sc['dark']}]";
 }
 
-/** Urgency badge for a job order's deadline. Only for cases still awaiting a decision. */
-function deadline_badge(?string $deadline, string $status): string
-{
-    if (!$deadline || in_array($status, ['approved', 'disapproved', 'draft'], true)) return '';
-    $days = (int) floor((strtotime($deadline) - strtotime(date('Y-m-d'))) / 86400);
-
-    if ($days < 0) {
-        $txt = 'Deadline passed';
-        $cls = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
-        $ico = 'fa-circle-exclamation';
-    } elseif ($days <= 3) {
-        $txt = $days === 0 ? 'Due today' : "Due in {$days} day" . ($days > 1 ? 's' : '');
-        $cls = 'bg-red-100 text-red-700 [[data-theme=dark]_&]:bg-red-500/15 [[data-theme=dark]_&]:text-red-300';
-        $ico = 'fa-fire';
-    } elseif ($days <= 7) {
-        $txt = "Due in {$days} days";
-        $cls = 'bg-amber-100 text-amber-800 [[data-theme=dark]_&]:bg-amber-500/15 [[data-theme=dark]_&]:text-amber-300';
-        $ico = 'fa-clock';
-    } else {
-        $txt = "{$days} days left";
-        $cls = 'bg-slate-100 text-slate-600 [[data-theme=dark]_&]:bg-slate-500/15 [[data-theme=dark]_&]:text-slate-300';
-        $ico = 'fa-calendar-day';
-    }
-    $title = htmlspecialchars('Job order deadline: ' . date('M d, Y', strtotime($deadline)), ENT_QUOTES);
-    return "<span title=\"{$title}\" class=\"mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold {$cls}\"><i class=\"fas {$ico} text-[9px]\"></i>" . htmlspecialchars($txt) . "</span>";
-}
-
 // Order + keys for the tab row (mirrors the original 7 filters)
 $filter_keys = ['available', 'assign', 'under_evaluation', 'for_compliance', 'approved', 'disapproved', 'resubmitted'];
 $total_count = array_sum($stats) - $stats['available'];
@@ -613,6 +595,14 @@ $card_heading = $status_filter
                             </select>
                         </label>
                         <label class="filter-pill">
+                            <i class="fas fa-calendar-day" style="color:var(--blue-lt)"></i>
+                            <select id="filter-period">
+                                <option value="">Any Day</option>
+                                <option value="today" <?= $period_filter === 'today' ? 'selected' : '' ?>>Today</option>
+                                <option value="week" <?= $period_filter === 'week' ? 'selected' : '' ?>>This Week</option>
+                            </select>
+                        </label>
+                        <label class="filter-pill">
                             <i class="fas fa-globe" style="color:var(--indigo)"></i>
                             <select id="filter-country">
                                 <option value="">All Destinations</option>
@@ -636,7 +626,7 @@ $card_heading = $status_filter
                 $countBase = 'min-w-[22px] rounded-full bg-[var(--surface)] px-2 py-px text-center text-[11px] font-bold text-[var(--text2)] '
                     . 'group-data-[active=true]:bg-[var(--navy)] group-data-[active=true]:text-white '
                     . '[[data-theme=dark]_&]:group-data-[active=true]:bg-blue-500';
-                $allBase = build_tile_base(null, $month_filter, $country_filter);
+                $allBase = build_tile_base(null, $month_filter, $country_filter, $period_filter);
                 $allHref = $allBase . ($search_filter !== '' ? (str_contains($allBase, '?') ? '&' : '?') . 'q=' . urlencode($search_filter) : '');
                 ?>
                 <a href="applications.php<?= $search_filter !== '' ? '?q=' . urlencode($search_filter) : '' ?>"
@@ -653,7 +643,7 @@ $card_heading = $status_filter
                     $isActive = ($key === 'assign')
                         ? ($status_filter === 'assign' || $status_filter === 'assigned')
                         : ($status_filter === $key);
-                    $tileBase = build_tile_base($key, $month_filter, $country_filter);
+                    $tileBase = build_tile_base($key, $month_filter, $country_filter, $period_filter);
                     $tileHref = $tileBase . ($search_filter !== '' ? (str_contains($tileBase, '?') ? '&' : '?') . 'q=' . urlencode($search_filter) : '');
                 ?>
                     <a href="applications.php?status=<?= $key ?><?= $search_filter !== '' ? '&q=' . urlencode($search_filter) : '' ?>"
@@ -1065,7 +1055,8 @@ $card_heading = $status_filter
             const amber = 'bg-amber-100 text-amber-800 [[data-theme=dark]_&]:bg-amber-500/15 [[data-theme=dark]_&]:text-amber-300';
             let txt, cls, ico;
             if (days < 0) {
-                txt = 'Deadline passed';
+                const ago = Math.abs(days);
+                txt = ago === 1 ? 'Deadline passed 1 day ago' : `Deadline passed ${ago} days ago`;
                 cls = red;
                 ico = 'fa-circle-exclamation';
             } else if (days <= 3) {
@@ -1173,6 +1164,7 @@ ${deadlineBadge(app.deadline, status)}
         }
         const CURRENT_MONTH = <?= json_encode($month_filter) ?>;
         const CURRENT_COUNTRY = <?= json_encode($country_filter) ?>;
+        const CURRENT_PERIOD = <?= json_encode($period_filter) ?>;
         const searchInput = document.getElementById('app-search-input');
         const clearBtn = document.getElementById('app-search-clear');
         const countLine = document.getElementById('app-count-line');
@@ -1283,6 +1275,7 @@ ${deadlineBadge(app.deadline, status)}
             if (term) params.set('q', term);
             if (CURRENT_MONTH) params.set('month', CURRENT_MONTH);
             if (CURRENT_COUNTRY) params.set('country', CURRENT_COUNTRY);
+            if (CURRENT_PERIOD) params.set('period', CURRENT_PERIOD);
             if (SHOW_ALL) params.set('all', '1');
             params.set('page', CURRENT_PAGE);
 
@@ -1364,6 +1357,7 @@ ${deadlineBadge(app.deadline, status)}
             if (term) params.set('q', term);
             if (CURRENT_MONTH) params.set('month', CURRENT_MONTH);
             if (CURRENT_COUNTRY) params.set('country', CURRENT_COUNTRY);
+            if (CURRENT_PERIOD) params.set('period', CURRENT_PERIOD);
             const newUrl = 'applications.php' + (params.toString() ? '?' + params.toString() : '');
             window.history.pushState({}, '', newUrl);
 
@@ -1380,14 +1374,17 @@ ${deadlineBadge(app.deadline, status)}
 
             const month = document.getElementById('filter-month').value;
             const country = document.getElementById('filter-country').value;
+            const period = document.getElementById('filter-period').value;
             if (month) params.set('month', month);
             if (country) params.set('country', country);
+            if (period) params.set('period', period);
             if (SHOW_ALL) params.set('all', '1');
 
             window.location.href = 'applications.php' + (params.toString() ? '?' + params.toString() : '');
         }
         document.getElementById('filter-month')?.addEventListener('change', navigateWithSubbarFilters);
         document.getElementById('filter-country')?.addEventListener('change', navigateWithSubbarFilters);
+        document.getElementById('filter-period')?.addEventListener('change', navigateWithSubbarFilters);
 
         /* PILL-STYLE DROPDOWNS for the subbar's Month
            & Country filters — same pattern as the one

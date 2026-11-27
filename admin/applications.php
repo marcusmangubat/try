@@ -206,12 +206,17 @@ $month_filter = preg_match('/^\d{4}-\d{2}$/', $month_filter) ? $month_filter : '
 // Country filters by the RSF job order's worksite country.
 $country_filter = trim($_GET['country'] ?? '');
 
+// Evaluator filters by the evaluator currently handling the application.
+// Accepts an evaluator id (digits) or "none" for unassigned applications.
+$evaluator_filter = trim($_GET['evaluator'] ?? '');
+$evaluator_filter = ($evaluator_filter === 'none' || ctype_digit($evaluator_filter)) ? $evaluator_filter : '';
+
 /**
  * Builds a reusable " AND ..." WHERE fragment (+ matching bind types/params)
  * for the Month / Country subbar filters. Assumes applications is aliased
  * `a` and rsf_job_orders is aliased/joined as `r` in the calling query.
  */
-function buildAdminAppFilters(string $month, string $country): array
+function buildAdminAppFilters(string $month, string $country, string $evaluator = ''): array
 {
     $where  = '';
     $types  = '';
@@ -230,18 +235,26 @@ function buildAdminAppFilters(string $month, string $country): array
         $types   .= 's';
         $params[] = $country;
     }
+    if ($evaluator === 'none') {
+        $where .= " AND a.current_evaluator_id IS NULL";
+    } elseif ($evaluator !== '') {
+        $where   .= " AND a.current_evaluator_id = ?";
+        $types   .= 'i';
+        $params[] = (int) $evaluator;
+    }
 
     return [$where, $types, $params];
 }
 
 /** Query string for KPI / pagination links, preserving status + month + country + search. */
-function build_admin_apps_qs(?string $status, string $month, string $country, string $search = ''): string
+function build_admin_apps_qs(?string $status, string $month, string $country, string $search = '', string $evaluator = ''): string
 {
     $params = [];
-    if ($status)         $params['status']  = $status;
-    if ($month !== '')   $params['month']   = $month;
-    if ($country !== '') $params['country'] = $country;
-    if ($search !== '')  $params['q']       = $search;
+    if ($status)          $params['status']    = $status;
+    if ($month !== '')    $params['month']     = $month;
+    if ($country !== '')  $params['country']   = $country;
+    if ($evaluator !== '') $params['evaluator'] = $evaluator;
+    if ($search !== '')   $params['q']         = $search;
     return $params ? '?' . http_build_query($params) : '';
 }
 
@@ -276,7 +289,15 @@ function reassignOpenCase(mysqli $database, int $app_id, int $new_evaluator_id, 
 }
 
 $excludeDraft = " AND COALESCE(a.status, '') <> 'draft'";
-[$filterWhere, $filterTypes, $filterParams] = buildAdminAppFilters($month_filter, $country_filter);
+[$filterWhere, $filterTypes, $filterParams] = buildAdminAppFilters($month_filter, $country_filter, $evaluator_filter);
+
+// Every evaluator (active or not) for the Evaluator filter dropdown, since
+// older applications may still belong to deactivated evaluators.
+$filter_evaluators = [];
+$fev_res = $database->query("SELECT eid, full_name FROM evaluators ORDER BY full_name ASC");
+if ($fev_res) {
+    $filter_evaluators = $fev_res->fetch_all(MYSQLI_ASSOC);
+}
 
 // Distinct countries (from job orders that actually have applications) for
 // the Country subbar dropdown.
@@ -464,7 +485,7 @@ $applications = [];
 $sql = "
     SELECT a.id, a.status, a.submitted_at, a.updated_at,
            a.current_evaluator_id, a.handling_party, a.locked_at, a.notes,
-           r.rsf_number, r.position_title, r.employer_name, r.worksite_country,
+                      r.rsf_number, r.position_title, r.employer_name, r.worksite_country, r.deadline,
            CONCAT(c.first_name, ' ', c.last_name) as applicant_name, c.email as applicant_email,
            c.profile_picture as applicant_picture,
             ev.full_name as current_evaluator_name,
@@ -709,6 +730,7 @@ $kpi_defs = [
                 <div class="app-sub truncate">
                     <?= htmlspecialchars($app['employer_name']) ?><?= !empty($app['worksite_country']) ? ' · ' . htmlspecialchars($app['worksite_country']) : '' ?>
                 </div>
+                <?= deadline_badge($app['deadline'] ?? null, $app['status']) ?>
             </td>
 
             <!-- Status -->
@@ -854,6 +876,7 @@ $kpi_defs = [
     $qs = ($status_filter ? '&status=' . urlencode($status_filter) : '')
         . ($month_filter !== '' ? '&month=' . urlencode($month_filter) : '')
         . ($country_filter !== '' ? '&country=' . urlencode($country_filter) : '')
+        . ($evaluator_filter !== '' ? '&evaluator=' . urlencode($evaluator_filter) : '')
         . ($search_filter !== '' ? '&q=' . urlencode($search_filter) : '');
 
     $show_from = $total_filtered > 0 ? ($view_all ? 1 : $offset + 1) : 0;
@@ -1911,6 +1934,18 @@ $sum_disapproved_pct = $total_all > 0 ? (int) round($stats['disapproved'] / $tot
                                 <?php endforeach; ?>
                             </select>
                         </label>
+                        <label class="filter-pill">
+                            <i class="fas fa-user-check" style="color:#10b981"></i>
+                            <select id="filter-evaluator">
+                                <option value="">All Evaluators</option>
+                                <option value="none" <?= $evaluator_filter === 'none' ? 'selected' : '' ?>>Unassigned</option>
+                                <?php foreach ($filter_evaluators as $fe): ?>
+                                    <option value="<?= (int) $fe['eid'] ?>" <?= (string) $fe['eid'] === $evaluator_filter ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($fe['full_name']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -1925,7 +1960,8 @@ $sum_disapproved_pct = $total_all > 0 ? (int) round($stats['disapproved'] / $tot
                         $kpi['key'] !== '' ? $kpi['key'] : null,
                         $month_filter,
                         $country_filter,
-                        $search_filter
+                        $search_filter,
+                        $evaluator_filter
                     );
                 ?>
                     <a href="applications.php<?= $kpi_qs ?>" class="app-tab <?= $is_active ? 'active' : '' ?>" <?= $is_active ? 'aria-current="page"' : '' ?>>
@@ -2314,6 +2350,11 @@ $sum_disapproved_pct = $total_all > 0 ? (int) round($stats['disapproved'] / $tot
                     new URL(window.location.href).searchParams.get('country') || '';
             }
 
+            function currentEvaluatorFilter() {
+                return document.getElementById('filter-evaluator')?.value ||
+                    new URL(window.location.href).searchParams.get('evaluator') || '';
+            }
+
             function runAppsSearch() {
                 const term = searchInput.value.trim();
                 searchClearBtn.style.display = term ? '' : 'none';
@@ -2322,10 +2363,12 @@ $sum_disapproved_pct = $total_all > 0 ? (int) round($stats['disapproved'] / $tot
                 const status = currentStatusFilter();
                 const month = currentMonthFilter();
                 const country = currentCountryFilter();
+                const evaluator = currentEvaluatorFilter();
                 if (status) params.set('status', status);
                 if (term) params.set('q', term);
                 if (month) params.set('month', month);
                 if (country) params.set('country', country);
+                if (evaluator) params.set('evaluator', evaluator);
                 params.set('page', '1');
 
                 loadAppsPage('applications.php?' + params.toString());
@@ -2357,14 +2400,17 @@ $sum_disapproved_pct = $total_all > 0 ? (int) round($stats['disapproved'] / $tot
 
                 const month = document.getElementById('filter-month')?.value;
                 const country = document.getElementById('filter-country')?.value;
+                const evaluator = document.getElementById('filter-evaluator')?.value;
                 if (month) params.set('month', month);
                 if (country) params.set('country', country);
+                if (evaluator) params.set('evaluator', evaluator);
 
                 window.location.href = 'applications.php' + (params.toString() ? '?' + params.toString() : '');
             }
 
             document.getElementById('filter-month')?.addEventListener('change', navigateWithSubbarFilters);
             document.getElementById('filter-country')?.addEventListener('change', navigateWithSubbarFilters);
+            document.getElementById('filter-evaluator')?.addEventListener('change', navigateWithSubbarFilters);
 
             /* Pill-style dropdowns for Month & Country — same pattern as
                evaluator/applications.php. Native <select> stays hidden so

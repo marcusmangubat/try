@@ -149,29 +149,12 @@ if ($evaluator_id) {
         $evaluator_countries[] = $row['worksite_country'];
     }
     $stmt_ct->close();
-
-    $stmt_pv = $database->prepare("
-        SELECT DISTINCT c.province
-        FROM applications a
-        INNER JOIN clients c ON a.client_id = c.cid
-        WHERE a.current_evaluator_id = ?
-          AND c.province IS NOT NULL AND c.province <> ''
-        ORDER BY c.province ASC
-    ");
-    $stmt_pv->bind_param("i", $evaluator_id);
-    $stmt_pv->execute();
-    $res_pv = $stmt_pv->get_result();
-    while ($row = $res_pv->fetch_assoc()) {
-        $evaluator_provinces[] = $row['province'];
-    }
-    $stmt_pv->close();
+    // Province filter is restricted to CALABARZON (Region IV-A) only.
+    // The fixed list below is the sole source, so no outside province can leak in.
 }
 
-// CALABARZON's 5 fixed provinces — always offered (Regional Office IV-A),
-// merged with provinces from this evaluator's assigned applications.
-$calabarzon_provinces = ['Batangas', 'Cavite', 'Laguna', 'Quezon', 'Rizal'];
-$evaluator_provinces  = array_values(array_unique(array_merge($calabarzon_provinces, $evaluator_provinces)));
-sort($evaluator_provinces);
+// CALABARZON's 5 fixed provinces only (Regional Office IV-A).
+$evaluator_provinces = ['Batangas', 'Cavite', 'Laguna', 'Quezon', 'Rizal'];
 
 // Active assignment count — used by the floating dock's "Tasks" badge.
 $my_assigned_count = 0;

@@ -153,6 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'evaluate' && $evaluator_id) {
     $decision = trim($_POST['decision'] ?? '');
     $comments = trim($_POST['comments'] ?? '');
+    $slotInfo = ($decision === 'approved') ? getApplicationSlotInfo($database, $app_id) : null;
 
     if ($onLeave) {
         $eval_error = 'You are on leave and cannot submit evaluations.';
@@ -168,6 +169,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         );
         // Ownership was lost (e.g. admin reassigned it) between page load and submit.
         $eval_error = 'You no longer have this application checked out — it may have been reassigned.';
+    } elseif ($decision === 'approved' && $slotInfo && $slotInfo['remaining'] !== null && $slotInfo['remaining'] <= 0) {
+        $eval_error = 'Cannot approve: no slots remain for this job order.';
     } elseif (in_array($decision, ['approved', 'disapproved', 'for_compliance'], true)) {
         $eval_type = $decision === 'for_compliance' ? 'compliance' : 'initial';
         $stmt = $database->prepare("INSERT INTO evaluations (application_id, evaluator_id, evaluation_type, decision, comments) VALUES (?, ?, ?, ?, ?)");
@@ -244,7 +247,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 // Get application details
 $stmt = $database->prepare("
     SELECT a.id, a.status, a.updated_at, a.submitted_at, a.notes,
-           r.rsf_number, r.position_title, r.worksite_country, r.employer_name, r.qualifications, r.slots_available,
+                      r.rsf_number, r.position_title, r.worksite_country, r.employer_name, r.qualifications, r.slots_available, r.deadline,
            CONCAT(c.first_name, ' ', c.last_name) AS applicant_name,
            c.email AS applicant_email, c.phone, c.address, c.profile_picture
     FROM applications a
@@ -638,6 +641,10 @@ $app_pic_url = $app_has_pic ? '../' . $app['profile_picture'] : null;
 // still be opened and read.
 $ownsCase = evaluatorOwnsApplication($database, $app_id, (int) $evaluator_id);
 $isActionable = $ownsCase && !$onLeave && in_array($app['status'], ['assign', 'assigned', 'under_evaluation', 'resubmitted'], true);
+
+// No slots left on this job order: hide all decision buttons and explain why.
+$slotCheck = $isActionable ? getApplicationSlotInfo($database, $app_id) : null;
+$noSlots   = $slotCheck && $slotCheck['remaining'] !== null && $slotCheck['remaining'] <= 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1110,10 +1117,19 @@ $isActionable = $ownsCase && !$onLeave && in_array($app['status'], ['assign', 'a
                                 <dt>Country</dt>
                                 <dd><?= htmlspecialchars($app['worksite_country'] ?? '—') ?></dd>
                             </div>
-                            <?php if (!empty($app['slots_available'])): ?>
+                            <?php if (!empty($app['deadline'])): ?>
                                 <div class="dl-item">
-                                    <dt>Slots Available</dt>
-                                    <dd><?= (int)$app['slots_available'] ?></dd>
+                                    <dt>Deadline</dt>
+                                    <dd>
+                                        <?= date('M d, Y', strtotime($app['deadline'])) ?>
+                                        <div><?= deadline_badge($app['deadline'], $status) ?></div>
+                                    </dd>
+                                </div>
+                            <?php endif; ?>
+                            <?php if ($app['slots_available'] !== null): ?>
+                                <div class="dl-item">
+                                    <dt>Slots Remaining</dt>
+                                    <dd><?= (int) $app['slots_available'] ?></dd>
                                 </div>
                             <?php endif; ?>
                             <?php if (!empty($app['qualifications'])): ?>
@@ -1464,8 +1480,26 @@ $isActionable = $ownsCase && !$onLeave && in_array($app['status'], ['assign', 'a
             <!--  RIGHT: action + history rail  -->
             <div class="col-right">
 
-                <!-- ── EVALUATION FORM ── -->
-                <?php if ($isActionable): ?>
+                <!-- ── NO SLOTS NOTICE (replaces the evaluation form) ── -->
+                <?php if ($noSlots): ?>
+                    <div class="eval-panel fade-in d5">
+                        <div class="eval-panel-head">
+                            <div class="eval-panel-head-icon"><i class="fas fa-users-slash"></i></div>
+                            <span class="eval-panel-title">Submit Evaluation</span>
+                        </div>
+                        <div class="eval-panel-body" style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:24px 16px;text-align:center;">
+                            <i class="fas fa-lock" style="font-size:22px;color:var(--text3);opacity:.6;"></i>
+                            <div style="font-size:13px;font-weight:700;color:var(--text1);">No slots available</div>
+                            <p style="margin:0;font-size:12.5px;color:var(--text3);line-height:1.6;">
+                                All slots for this job order are already filled, so evaluation actions
+                                (Approve, For Compliance, Disapprove) are disabled for this application.
+                                Please contact the Admin if this application needs to be handled.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- ── EVALUATION FORM ── -->
+                <?php elseif ($isActionable): ?>
                     <div class="eval-panel fade-in d5">
                         <div class="eval-panel-head">
                             <div class="eval-panel-head-icon"><i class="fas fa-gavel"></i></div>

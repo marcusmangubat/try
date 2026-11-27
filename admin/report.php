@@ -45,6 +45,40 @@ $qCountry  = trim($_GET['country'] ?? '');
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Application Report – DMW RO IV-A</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Dark mode follows the app's existing data-theme="dark" switch.
+        // Design tokens map to the CSS variables defined in the <style> block below,
+        // so light/dark colors stay in one place.
+        tailwind.config = {
+            darkMode: ['selector', '[data-theme="dark"]'],
+            theme: {
+                extend: {
+                    colors: {
+                        navy: {
+                            DEFAULT: 'var(--navy)',
+                            soft: 'var(--navy-soft)'
+                        },
+                        ink: {
+                            1: 'var(--text1)',
+                            2: 'var(--text2)',
+                            3: 'var(--text3)'
+                        },
+                        line: 'var(--bdr)',
+                        lbl: 'var(--lbl-bg)',
+                        surf: {
+                            DEFAULT: 'var(--surface)',
+                            2: 'var(--surface2)'
+                        },
+                        danger: 'var(--red)'
+                    },
+                    fontFamily: {
+                        dm: ["'DM Sans'", 'system-ui', 'sans-serif'],
+                        report: ["'DM Sans'", 'Arial', 'Helvetica', 'sans-serif']
+                    }
+                }
+            }
+        };
+    </script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../css/darkmode.css">
@@ -54,19 +88,8 @@ $qCountry  = trim($_GET['country'] ?? '');
     <link rel="icon" type="image/png" href="../pictures/dmw_logo.png">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 
+    <!-- Only what Tailwind utilities cannot express: theme tokens and the @page rule. -->
     <style>
-        .topbar-brand img {
-            width: 42px;
-            height: auto;
-            display: block;
-            background: transparent;
-            filter: none;
-        }
-    </style>
-    <style>
-        /*DESIGN SYSTEM — shared with application-detail.php so every
-           official DMW document (certificates, case reports, listings)
-           looks like it came from the same system. */
         :root {
             --navy: #0b1f4b;
             --navy-soft: #13295e;
@@ -80,588 +103,6 @@ $qCountry  = trim($_GET['country'] ?? '');
             --lbl-bg: #f8fafc;
             --surface: #ffffff;
             --surface2: #f8fafc;
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            margin: 0;
-            font-family: 'DM Sans', system-ui, sans-serif;
-            background: #eef1f6;
-            color: var(--text1);
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            border-radius: 6px;
-            border: 1px solid var(--bdr);
-            background: var(--surface);
-            color: var(--text1);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        .btn:hover {
-            background: var(--surface2);
-        }
-
-        .btn-primary {
-            background: var(--navy);
-            border-color: var(--navy);
-            color: #fff;
-        }
-
-        .btn[disabled] {
-            opacity: .55;
-            cursor: not-allowed;
-        }
-
-        .sheet {
-            max-width: 1000px;
-            margin: 20px auto;
-            padding: 0 16px 60px;
-        }
-
-        .toolbar-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 16px;
-        }
-
-        /* ── Document sheet ── */
-        .doc-sheet {
-            background: var(--surface);
-            border: 1px solid var(--bdr);
-            border-radius: 10px;
-            padding: 30px 34px 36px;
-        }
-
-        .doc-header-table {
-            width: 100%;
-            border-bottom: 3px solid var(--navy);
-            padding-bottom: 10px;
-            margin-bottom: 4px;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        .doc-header-table img {
-            width: 48px;
-            height: auto;
-            flex-shrink: 0;
-        }
-
-        .republic-line {
-            font-size: 10.5px;
-            color: var(--text2);
-            margin: 0;
-        }
-
-        .agency-name {
-            font-size: 16px;
-            font-weight: 800;
-            color: var(--navy);
-            margin: 1px 0 2px;
-        }
-
-        .agency-sub {
-            font-size: 10.5px;
-            color: var(--text2);
-            line-height: 1.5;
-            margin: 0;
-        }
-
-        .doc-title {
-            text-align: center;
-            margin: 18px 0 3px;
-            font-size: 17px;
-            font-weight: 800;
-            color: var(--navy);
-            text-transform: uppercase;
-            letter-spacing: .02em;
-        }
-
-        .doc-subtitle {
-            text-align: center;
-            font-size: 12px;
-            color: var(--text2);
-            margin-bottom: 16px;
-        }
-
-        table.ref-table {
-            width: 100%;
-            margin-bottom: 16px;
-            font-size: 12px;
-            border-collapse: collapse;
-        }
-
-        table.ref-table td {
-            padding: 3px 0;
-            vertical-align: middle;
-        }
-
-        table.ref-table td.ref-label {
-            font-weight: 700;
-            width: 160px;
-            color: var(--text1);
-        }
-
-        .intro-note {
-            font-size: 12.5px;
-            line-height: 1.65;
-            color: var(--text2);
-            text-align: justify;
-            margin: 0 0 18px;
-        }
-
-        .pill {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 600;
-            background: var(--surface2);
-            border: 1px solid var(--bdr);
-            margin: 2px 4px 2px 0;
-        }
-
-        /* ── Summary panel (matches detail page's Case Summary) ── */
-        .summary-panel {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 0;
-            border: 1px solid var(--bdr);
-            border-radius: 6px;
-            overflow: hidden;
-            margin-bottom: 18px;
-        }
-
-        .summary-cell {
-            padding: 12px 14px;
-            border-right: 1px solid var(--bdr);
-            border-bottom: 1px solid var(--bdr);
-            background: var(--surface2);
-        }
-
-        .summary-cell:last-child {
-            border-right: none;
-        }
-
-        .summary-cell .sc-num {
-            font-size: 20px;
-            font-weight: 800;
-            color: var(--navy);
-            line-height: 1.1;
-        }
-
-        .summary-cell .sc-lbl {
-            font-size: 10px;
-            font-weight: 600;
-            color: var(--text2);
-            text-transform: uppercase;
-            letter-spacing: .03em;
-            margin-top: 3px;
-        }
-
-        .summary-cell.sc-warn .sc-num {
-            color: var(--red);
-        }
-
-        .section {
-            margin-bottom: 22px;
-        }
-
-        .section-title {
-            background: var(--navy);
-            color: #fff;
-            font-size: 12px;
-            font-weight: 700;
-            padding: 7px 12px;
-            margin: 0 0 10px;
-            text-transform: uppercase;
-            letter-spacing: .04em;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-radius: 3px;
-        }
-
-        .section-hint {
-            font-size: 11.5px;
-            color: var(--text3);
-            font-style: italic;
-            margin: -4px 0 10px;
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-
-        .b-approved {
-            background: #d1fae5;
-            color: #047857;
-        }
-
-        .b-disapproved {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
-
-        .b-pending {
-            background: #fef3c7;
-            color: #b45309;
-        }
-
-        .b-other {
-            background: #e9edf7;
-            color: var(--navy);
-        }
-
-        table.detail-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-            border: 1px solid var(--bdr);
-        }
-
-        table.detail-table th {
-            background: var(--lbl-bg);
-            text-align: left;
-            padding: 8px 10px;
-            font-weight: 700;
-            font-size: 10.5px;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            color: var(--text2);
-            border: 1px solid var(--bdr);
-            white-space: nowrap;
-        }
-
-        table.detail-table td {
-            padding: 8px 10px;
-            border: 1px solid var(--bdr);
-            vertical-align: top;
-        }
-
-        table.detail-table tbody tr:nth-child(even) {
-            background: #fbfcfe;
-        }
-
-        [data-theme="dark"] .section-title {
-            background: var(--navy-soft);
-            color: #f8fafc;
-        }
-
-        .empty-note,
-        .loading-state {
-            font-size: 12px;
-            color: var(--text3);
-            font-style: italic;
-            padding: 30px 0;
-            text-align: center;
-        }
-
-        .footer-note {
-            font-size: 10px;
-            color: var(--text3);
-            text-align: center;
-            border-top: 1px solid var(--bdr);
-            padding-top: 10px;
-            margin-top: 24px;
-        }
-
-        /* ============================================================
-           PRINT / PDF REPORT — separate, print-optimized layout.
-           Hidden on screen; shown only for window.print() (@media print
-           below) and for html2pdf export (toggled by JS in
-           exportToPdf(), since html2canvas ignores @media print).
-           ============================================================ */
-        #printReport {
-            display: none;
-            background: #fff;
-            color: #1f2937;
-            font-family: 'DM Sans', Arial, Helvetica, sans-serif;
-            width: 100%;
-            max-width: 190mm;
-            margin: 0 auto;
-            padding: 0;
-        }
-
-        #printReport .pr-page-header {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            border-bottom: 3px solid #0b1f4b;
-            padding-bottom: 10px;
-            margin-bottom: 6px;
-        }
-
-        #printReport .pr-page-header img {
-            height: 42px;
-            width: auto;
-        }
-
-        #printReport .pr-republic {
-            font-size: 8.5pt;
-            color: #4b5563;
-            margin: 0 0 1px;
-        }
-
-        #printReport .pr-agency {
-            font-size: 12.5pt;
-            font-weight: 800;
-            color: #0b1f4b;
-            letter-spacing: .01em;
-        }
-
-        #printReport .pr-office {
-            font-size: 8.7pt;
-            color: #4b5563;
-            margin-top: 2px;
-            line-height: 1.5;
-        }
-
-        #printReport .pr-report-title {
-            text-align: center;
-            margin: 14px 0 6px;
-        }
-
-        #printReport .pr-report-title h1 {
-            font-family: 'DM Sans', Arial, sans-serif;
-            font-weight: 800;
-            font-size: 14pt;
-            margin: 0;
-            color: #0b1f4b;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-        }
-
-        #printReport .pr-report-title p {
-            font-size: 9.5pt;
-            color: #6b7280;
-            margin: 3px 0 0;
-        }
-
-        #printReport .pr-meta-bar {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            gap: 6px 14px;
-            align-items: center;
-            font-size: 8.5pt;
-            color: #4b5563;
-            border-bottom: 1px solid #e5e7eb;
-            padding-bottom: 8px;
-            margin-bottom: 16px;
-        }
-
-        #printReport .pr-intro {
-            font-size: 9pt;
-            line-height: 1.6;
-            color: #374151;
-            text-align: justify;
-            margin: 0 0 12px;
-        }
-
-        #printReport .pr-summary-panel {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 14px;
-            table-layout: fixed;
-        }
-
-        #printReport .pr-summary-panel td {
-            border: 1px solid #e5e7eb;
-            background: #f8fafc;
-            text-align: center;
-            padding: 8px 4px;
-        }
-
-        #printReport .pr-summary-panel .sc-num {
-            font-size: 13pt;
-            font-weight: 800;
-            color: #0b1f4b;
-            display: block;
-        }
-
-        #printReport .pr-summary-panel .sc-lbl {
-            font-size: 6.7pt;
-            font-weight: 700;
-            color: #4b5563;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            display: block;
-            margin-top: 2px;
-        }
-
-        #printReport .pr-section {
-            margin-bottom: 16px;
-            page-break-inside: avoid;
-        }
-
-        #printReport .pr-section-title {
-            font-size: 10.5pt;
-            font-weight: 700;
-            color: #fff;
-            background: #0b1f4b;
-            padding: 5px 9px;
-            margin: 0 0 8px;
-            text-transform: uppercase;
-            letter-spacing: .03em;
-        }
-
-        #printReport .pr-section-hint {
-            font-size: 7.8pt;
-            color: #9ca3af;
-            font-style: italic;
-            margin: -5px 0 6px;
-        }
-
-        #printReport table.pr-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 8.5pt;
-            margin-top: 4px;
-        }
-
-        #printReport table.pr-table th {
-            background: #f8fafc;
-            border: 1px solid #e5e7eb;
-            text-align: left;
-            padding: 6px 8px;
-            font-size: 8pt;
-            text-transform: uppercase;
-            letter-spacing: .02em;
-            color: #374151;
-            white-space: nowrap;
-        }
-
-        #printReport table.pr-table td {
-            border: 1px solid #e5e7eb;
-            padding: 6px 8px;
-            vertical-align: top;
-        }
-
-        #printReport table.pr-table thead {
-            display: table-header-group;
-        }
-
-        #printReport table.pr-table tr {
-            page-break-inside: avoid;
-        }
-
-        #printReport table.pr-table tbody tr:nth-child(even) {
-            background: #f8fafc;
-        }
-
-        #printReport .pr-empty {
-            font-size: 8.5pt;
-            color: #9ca3af;
-            font-style: italic;
-            padding: 4px 0;
-        }
-
-        #printReport .pr-signoff {
-            margin-top: 40px;
-            display: flex;
-            justify-content: space-between;
-            font-size: 8.5pt;
-            page-break-inside: avoid;
-        }
-
-        #printReport .pr-signoff .pr-sig-line {
-            width: 42%;
-            text-align: center;
-        }
-
-        #printReport .pr-signoff .pr-sig-line .line {
-            border-top: 1px solid #1f2937;
-            margin-top: 34px;
-            padding-top: 4px;
-            color: #374151;
-        }
-
-        #printReport .pr-footer {
-            margin-top: 22px;
-            padding-top: 8px;
-            border-top: 1px solid #9ca3af;
-        }
-
-        #printReport .pr-footer-columns {
-            display: flex;
-            align-items: stretch;
-            gap: 16px;
-        }
-
-        #printReport .pr-footer-left {
-            flex: 1 1 60%;
-            display: flex;
-            align-items: center;
-        }
-
-        #printReport .pr-footer-disclaimer {
-            font-size: 7.3pt;
-            color: #6b7280;
-            line-height: 1.55;
-            text-align: left;
-            margin: 0;
-        }
-
-        #printReport .pr-footer-right {
-            flex: 0 0 34%;
-            border-left: 1px solid #d1d5db;
-            padding-left: 14px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 3px;
-            font-size: 7.3pt;
-            color: #6b7280;
-        }
-
-        #printReport .pr-footer-right span:first-child {
-            color: #374151;
-        }
-
-        @media print {
-
-            .no-print,
-            .webView {
-                display: none !important;
-            }
-
-            #printReport {
-                display: block !important;
-            }
-
-            body {
-                background: #fff;
-            }
-
-            .sheet {
-                max-width: 100%;
-                margin: 0;
-                padding: 0;
-            }
-
-            @page {
-                size: A4;
-                margin: 14mm 12mm;
-            }
         }
 
         [data-theme="dark"] {
@@ -679,102 +120,9 @@ $qCountry  = trim($_GET['country'] ?? '');
             --surface2: #263449;
         }
 
-        [data-theme="dark"] body {
-            background: #0f172a;
-        }
-
-        [data-theme="dark"] .btn {
-            background: var(--surface);
-            color: var(--text1);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .btn:hover {
-            background: var(--surface2);
-        }
-
-        [data-theme="dark"] .doc-sheet {
-            background: var(--surface);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .agency-name,
-        [data-theme="dark"] .doc-title {
-            color: var(--navy);
-        }
-
-        [data-theme="dark"] .republic-line,
-        [data-theme="dark"] .agency-sub,
-        [data-theme="dark"] .doc-subtitle,
-        [data-theme="dark"] .intro-note,
-        [data-theme="dark"] .section-hint,
-        [data-theme="dark"] .empty-note,
-        [data-theme="dark"] .loading-state,
-        [data-theme="dark"] .footer-note {
-            color: var(--text2);
-        }
-
-        [data-theme="dark"] .pill {
-            background: var(--surface2);
-            border-color: var(--bdr);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] .summary-panel {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .summary-cell {
-            background: var(--surface2);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] .summary-cell .sc-num {
-            color: var(--navy);
-        }
-
-        [data-theme="dark"] .summary-cell.sc-warn .sc-num {
-            color: var(--red);
-        }
-
-        [data-theme="dark"] table.detail-table {
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] table.detail-table th {
-            background: var(--lbl-bg);
-            color: var(--text2);
-            border-color: var(--bdr);
-        }
-
-        [data-theme="dark"] table.detail-table td {
-            border-color: var(--bdr);
-            color: var(--text1);
-        }
-
-        [data-theme="dark"] table.detail-table tbody tr:nth-child(even) {
-            background: #202f45;
-        }
-
-        /* Badges — same tint-not-solid approach used elsewhere in the project */
-        [data-theme="dark"] .badge.b-approved {
-            background: rgba(16, 185, 129, .18);
-            color: #34d399;
-        }
-
-        [data-theme="dark"] .badge.b-disapproved {
-            background: rgba(220, 38, 38, .20);
-            color: #f87171;
-        }
-
-        [data-theme="dark"] .badge.b-pending {
-            background: rgba(217, 119, 6, .20);
-            color: #fbbf24;
-        }
-
-        [data-theme="dark"] .badge.b-other {
-            background: rgba(99, 102, 241, .22);
-            color: #a5b4fc;
+        @page {
+            size: A4;
+            margin: 14mm 12mm;
         }
     </style>
     <script>
@@ -785,11 +133,11 @@ $qCountry  = trim($_GET['country'] ?? '');
     </script>
 </head>
 
-<body>
+<body class="m-0 bg-[#eef1f6] font-dm text-ink-1 dark:bg-[#0f172a] print:bg-white">
 
-    <header class="topbar no-print">
+    <header class="topbar no-print print:!hidden">
         <div class="topbar-brand">
-            <img src="../pictures/dmw_logo.png" alt="DMW" class="h-9">
+            <img src="../pictures/dmw_logo.png" alt="DMW" class="!h-auto !w-[42px] block bg-transparent !filter-none">
             <div class="brand-divider"></div>
             <div class="brand-text">
                 <h1>Department of Migrant Workers</h1>
@@ -797,7 +145,7 @@ $qCountry  = trim($_GET['country'] ?? '');
             </div>
         </div>
         <div class="topbar-right">
-            <span class="topbar-date" id="live-date"></span>
+            <span class="topbar-date max-sm:hidden" id="live-date"></span>
 
             <!-- Dark mode toggle -->
             <button type="button" class="theme-toggle" title="Toggle dark mode">
@@ -812,24 +160,24 @@ $qCountry  = trim($_GET['country'] ?? '');
         </div>
     </header>
 
-    <div class="sheet">
+    <div class="mx-auto my-3 max-w-[1000px] px-3 pb-10 sm:my-5 sm:px-4 sm:pb-[60px] print:m-0 print:max-w-full print:p-0">
 
-        <div class="toolbar-actions no-print">
-            <a href="dashboard.php"><button class="btn" onclick="history.back()"><i class="fas fa-arrow-left"></i> Back</button></a>
-            <button class="btn" id="btn-print" onclick="window.print()"><i class="fas fa-print"></i> Print</button>
-            <button class="btn btn-primary" id="btn-pdf" onclick="exportToPdf()"><i class="fas fa-file-pdf"></i> Export to PDF</button>
+        <div class="no-print mb-4 grid grid-cols-3 gap-2 sm:flex sm:flex-wrap print:!hidden">
+            <a href="dashboard.php" class="block"><button class="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border border-line bg-surf px-3.5 py-2 text-xs font-semibold text-ink-1 hover:bg-surf-2 disabled:cursor-not-allowed disabled:opacity-[.55] max-sm:px-2 sm:w-auto" onclick="history.back()"><i class="fas fa-arrow-left"></i> Back</button></a>
+            <button class="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border border-line bg-surf px-3.5 py-2 text-xs font-semibold text-ink-1 hover:bg-surf-2 disabled:cursor-not-allowed disabled:opacity-[.55] max-sm:px-2 sm:w-auto" id="btn-print" onclick="window.print()"><i class="fas fa-print"></i> Print</button>
+            <button class="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border border-navy bg-navy px-3.5 py-2 text-xs font-semibold text-white hover:bg-navy-soft disabled:cursor-not-allowed disabled:opacity-[.55] max-sm:px-2 sm:w-auto" id="btn-pdf" onclick="exportToPdf()"><i class="fas fa-file-pdf"></i> <span class="max-[420px]:hidden">Export to&nbsp;</span>PDF</button>
         </div>
 
         <!-- WEB VIEW — interactive on-screen layout. -->
-        <div class="webView">
-            <div class="doc-sheet">
+        <div class="webView print:!hidden">
+            <div class="rounded-[10px] border border-line bg-surf px-4 pb-7 pt-5 sm:px-6 sm:pt-6 md:px-[34px] md:pb-9 md:pt-[30px]">
 
-                <div class="doc-header-table">
-                    <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
-                    <div>
-                        <p class="republic-line">Republic of the Philippines</p>
-                        <p class="agency-name">DEPARTMENT OF MIGRANT WORKERS</p>
-                        <p class="agency-sub">
+                <div class="mb-1 flex w-full items-center gap-3.5 border-b-[3px] border-navy pb-2.5">
+                    <img id="printLogo" class="h-auto w-12 shrink-0" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
+                    <div class="min-w-0">
+                        <p class="m-0 text-[10.5px] text-ink-2">Republic of the Philippines</p>
+                        <p class="mb-0.5 mt-px text-sm font-extrabold text-navy sm:text-base">DEPARTMENT OF MIGRANT WORKERS</p>
+                        <p class="m-0 text-[10.5px] leading-normal text-ink-2">
                             Regional Office IV-A (CALABARZON)<br>
                             Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027<br>
                             Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph
@@ -837,57 +185,56 @@ $qCountry  = trim($_GET['country'] ?? '');
                     </div>
                 </div>
 
-                <div class="doc-title">Application Report</div>
-                <div class="doc-subtitle">Generated by <?= htmlspecialchars($admin_name) ?></div>
+                <div class="mb-[3px] mt-[18px] text-center text-[15px] font-extrabold uppercase tracking-[.02em] text-navy sm:text-[17px]">Application Report</div>
+                <div class="mb-4 text-center text-xs text-ink-2">Generated by <?= htmlspecialchars($admin_name) ?></div>
 
-                <table class="ref-table">
-                    <tr>
-                        <td class="ref-label">Filters Applied:</td>
-                        <td id="web-filters">—</td>
-                    </tr>
-                    <tr>
-                        <td class="ref-label">Generated At:</td>
-                        <td id="web-generated">—</td>
-                    </tr>
-                </table>
+                <div class="mb-4 grid grid-cols-1 gap-x-2 gap-y-0.5 text-xs sm:grid-cols-[160px_1fr]">
+                    <div class="mt-1 font-bold text-ink-1 sm:mt-0">Filters Applied:</div>
+                    <div id="web-filters" class="break-words">—</div>
+                    <div class="mt-1 font-bold text-ink-1 sm:mt-0">Generated At:</div>
+                    <div id="web-generated">—</div>
+                </div>
 
-                <p class="intro-note">
+                <p class="mb-[18px] text-left text-[12.5px] leading-[1.65] text-ink-2 sm:text-justify">
                     This report presents all applications currently matching the selected filters, generated directly
                     from the Application Management System's live database. It is intended to give the reviewing
                     officer a consolidated, exportable view of applicant status, placement, and processing progress
                     for monitoring, auditing, or reporting purposes.
                 </p>
 
-                <div class="summary-panel" id="web-summary">
-                    <div class="summary-cell">
-                        <div class="sc-num">—</div>
-                        <div class="sc-lbl">Total Applications</div>
+                <div class="mb-[18px] grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-4 [&>:only-child]:col-span-full" id="web-summary">
+                    <div class="bg-surf-2 px-3.5 py-3">
+                        <div class="text-lg font-extrabold leading-[1.1] text-navy sm:text-xl">—</div>
+                        <div class="mt-[3px] text-[10px] font-semibold uppercase tracking-[.03em] text-ink-2">Total Applications</div>
                     </div>
                 </div>
 
-                <div class="section">
-                    <div class="section-title"><i class="fas fa-table-list"></i> Application Records</div>
-                    <p class="section-hint">Every application matching the current filters, most recently submitted first is not guaranteed — order reflects the underlying dataset.</p>
-                    <div id="web-body">
-                        <div class="loading-state"><i class="fas fa-spinner fa-spin"></i> Loading applications&hellip;</div>
+                <div class="mb-[22px]">
+                    <div class="mb-2.5 flex items-center gap-2 rounded-[3px] bg-navy px-3 py-[7px] text-xs font-bold uppercase tracking-[.04em] text-white dark:bg-navy-soft dark:text-slate-50"><i class="fas fa-table-list"></i> Application Records</div>
+                    <p class="-mt-1 mb-2.5 text-[11.5px] italic text-ink-3 dark:text-ink-2">Every application matching the current filters, most recently submitted first is not guaranteed — order reflects the underlying dataset.</p>
+                    <div id="web-body" class="md:overflow-x-auto">
+                        <div class="py-[30px] text-center text-xs italic text-ink-3 dark:text-ink-2"><i class="fas fa-spinner fa-spin"></i> Loading applications&hellip;</div>
                     </div>
                 </div>
 
-                <p class="footer-note" id="web-footer">Department of Migrant Workers — Application Management System</p>
+                <p class="mt-6 border-t border-line pt-2.5 text-center text-[10px] text-ink-3 dark:text-ink-2" id="web-footer">Department of Migrant Workers — Application Management System</p>
 
             </div>
         </div>
 
         <!-- PRINT / PDF REPORT — populated by JS, matches
-             application-detail.php's print layout. -->
-        <div id="printReport">
+             application-detail.php's print layout. Hidden on screen,
+             shown for window.print() and toggled on by exportToPdf().
+             Intentionally has no responsive breakpoints so the printed
+             and PDF output is identical on every device. -->
+        <div id="printReport" class="mx-auto hidden w-full max-w-[190mm] bg-white p-0 font-report text-[#1f2937] print:!block">
 
-            <div class="pr-page-header">
-                <img id="printLogo" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
+            <div class="pr-page-header mb-1.5 flex items-center gap-3.5 border-b-[3px] border-[#0b1f4b] pb-2.5">
+                <img id="printLogo" class="h-[42px] w-auto" src="../pictures/dmw_logo.png" alt="DMW logo" onerror="this.style.visibility='hidden';">
                 <div>
-                    <div class="pr-republic">Republic of the Philippines</div>
-                    <div class="pr-agency">DEPARTMENT OF MIGRANT WORKERS</div>
-                    <div class="pr-office">
+                    <div class="mb-px text-[8.5pt] text-[#4b5563]">Republic of the Philippines</div>
+                    <div class="text-[12.5pt] font-extrabold tracking-[.01em] text-[#0b1f4b]">DEPARTMENT OF MIGRANT WORKERS</div>
+                    <div class="mt-0.5 text-[8.7pt] leading-normal text-[#4b5563]">
                         Regional Office IV-A (CALABARZON)<br>
                         Andenson Bldg 3, Brgy. Parian, Calamba, Philippines, 4027<br>
                         Tel: 0962 671 9976 | Email: calamba@dmw.gov.ph | dmw.gov.ph
@@ -895,60 +242,60 @@ $qCountry  = trim($_GET['country'] ?? '');
                 </div>
             </div>
 
-            <div class="pr-report-title">
-                <h1>Application Report</h1>
-                <p>Generated by <?= htmlspecialchars($admin_name) ?></p>
+            <div class="mb-1.5 mt-3.5 text-center">
+                <h1 class="m-0 font-report text-[14pt] font-extrabold uppercase tracking-[.02em] text-[#0b1f4b]">Application Report</h1>
+                <p class="mb-0 mt-[3px] text-[9.5pt] text-[#6b7280]">Generated by <?= htmlspecialchars($admin_name) ?></p>
             </div>
 
-            <div class="pr-meta-bar">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-x-3.5 gap-y-1.5 border-b border-[#e5e7eb] pb-2 text-[8.5pt] text-[#4b5563]">
                 <span id="pr-filters">Filters: —</span>
                 <span id="pr-generated">Generated: —</span>
                 <span id="pr-count">Total records: —</span>
             </div>
 
-            <p class="pr-intro">
+            <p class="mb-3 text-justify text-[9pt] leading-[1.6] text-[#374151]">
                 This report presents all applications currently matching the selected filters, generated directly
                 from the Application Management System's live database. It is intended to give the reviewing
                 officer a consolidated, exportable view of applicant status, placement, and processing progress
                 for monitoring, auditing, or reporting purposes.
             </p>
 
-            <table class="pr-summary-panel" id="pr-summary">
+            <table class="mb-3.5 w-full table-fixed border-collapse" id="pr-summary">
                 <tr>
-                    <td>
-                        <span class="sc-num">—</span>
-                        <span class="sc-lbl">Total Applications</span>
+                    <td class="border border-[#e5e7eb] bg-[#f8fafc] px-1 py-2 text-center">
+                        <span class="block text-[13pt] font-extrabold text-[#0b1f4b]">—</span>
+                        <span class="mt-0.5 block text-[6.7pt] font-bold uppercase tracking-[.02em] text-[#4b5563]">Total Applications</span>
                     </td>
                 </tr>
             </table>
 
-            <div class="pr-section">
-                <div class="pr-section-title">Application Records</div>
-                <p class="pr-section-hint">Every application matching the current filters, as of the generation timestamp above.</p>
+            <div class="mb-4 [page-break-inside:avoid]">
+                <div class="mb-2 bg-[#0b1f4b] px-[9px] py-[5px] text-[10.5pt] font-bold uppercase tracking-[.03em] text-white">Application Records</div>
+                <p class="-mt-[5px] mb-1.5 text-[7.8pt] italic text-[#9ca3af]">Every application matching the current filters, as of the generation timestamp above.</p>
                 <div id="pr-body">
-                    <p class="pr-empty">Loading…</p>
+                    <p class="py-1 text-[8.5pt] italic text-[#9ca3af]">Loading…</p>
                 </div>
             </div>
 
-            <div class="pr-signoff">
-                <div class="pr-sig-line">
-                    <div class="line">Prepared By</div>
+            <div class="mt-10 flex justify-between text-[8.5pt] [page-break-inside:avoid]">
+                <div class="w-[42%] text-center">
+                    <div class="mt-[34px] border-t border-[#1f2937] pt-1 text-[#374151]">Prepared By</div>
                 </div>
-                <div class="pr-sig-line">
-                    <div class="line">Certified By, DMW RO IV-A</div>
+                <div class="w-[42%] text-center">
+                    <div class="mt-[34px] border-t border-[#1f2937] pt-1 text-[#374151]">Certified By, DMW RO IV-A</div>
                 </div>
             </div>
 
-            <div class="pr-footer">
-                <div class="pr-footer-columns">
-                    <div class="pr-footer-left">
-                        <p class="pr-footer-disclaimer">
+            <div class="mt-[22px] border-t border-[#9ca3af] pt-2">
+                <div class="flex items-stretch gap-4">
+                    <div class="flex flex-[1_1_60%] items-center">
+                        <p class="m-0 text-left text-[7.3pt] leading-[1.55] text-[#6b7280]">
                             This is an official system-generated report from the DMW Application Management System —
                             Regional Office IV-A (CALABARZON). Information is confidential and intended solely for
                             internal monitoring, compliance review, and official reporting.
                         </p>
                     </div>
-                    <div class="pr-footer-right">
+                    <div class="flex flex-[0_0_34%] flex-col justify-center gap-[3px] border-l border-[#d1d5db] pl-3.5 text-[7.3pt] text-[#6b7280] [&>span:first-child]:text-[#374151]">
                         <span>Department of Migrant Workers - RO IV-A (CALABARZON)</span>
                         <span id="pr-footer-filters">Filters: —</span>
                         <span>System-Generated Document • For Official Use Only</span>
@@ -963,6 +310,46 @@ $qCountry  = trim($_GET['country'] ?? '');
 
     <script>
         const API = 'dashboard-api.php';
+
+        /* ── Tailwind class sets used by the JS-rendered markup (presentation only) ── */
+        // Web: table collapses into labelled cards below the md breakpoint.
+        const WEB_TABLE = 'w-full border-collapse border border-line text-xs md:min-w-[640px] max-md:block max-md:border-0';
+        const WEB_TH = 'whitespace-nowrap border border-line bg-lbl px-2.5 py-2 text-left text-[10.5px] font-bold uppercase tracking-[.02em] text-ink-2';
+        const WEB_TR = 'md:even:bg-[#fbfcfe] dark:md:even:bg-[#202f45] max-md:mb-3 max-md:block max-md:rounded-lg max-md:border max-md:border-line max-md:bg-surf max-md:px-3 max-md:py-1';
+        const WEB_TD = 'border border-line px-2.5 py-2 align-top text-ink-1 ' +
+            'max-md:flex max-md:items-start max-md:justify-between max-md:gap-3 max-md:border-0 max-md:border-t max-md:px-0 max-md:py-2 max-md:text-right max-md:first:border-t-0 ' +
+            'max-md:before:shrink-0 max-md:before:text-left max-md:before:text-[10.5px] max-md:before:font-bold max-md:before:uppercase max-md:before:tracking-[.02em] max-md:before:text-ink-2 max-md:before:content-[attr(data-label)]';
+        const WEB_BADGE = 'inline-block whitespace-nowrap rounded-full px-2.5 py-[3px] text-[11px] font-bold';
+        const WEB_EMPTY = 'py-[30px] text-center text-xs italic text-ink-3 dark:text-ink-2';
+
+        const SC_CELL = 'bg-surf-2 px-3.5 py-3';
+        const SC_NUM = 'text-lg font-extrabold leading-[1.1] text-navy sm:text-xl';
+        const SC_NUM_WARN = 'text-lg font-extrabold leading-[1.1] text-danger sm:text-xl';
+        const SC_LBL = 'mt-[3px] text-[10px] font-semibold uppercase tracking-[.03em] text-ink-2';
+
+        // Print / PDF: fixed layout, light colors only (the document is always white paper).
+        const PR_TABLE = 'mt-1 w-full border-collapse text-[8.5pt]';
+        const PR_TH = 'whitespace-nowrap border border-[#e5e7eb] bg-[#f8fafc] px-2 py-1.5 text-left text-[8pt] uppercase tracking-[.02em] text-[#374151]';
+        const PR_TR = 'even:bg-[#f8fafc] [page-break-inside:avoid]';
+        const PR_TD = 'border border-[#e5e7eb] px-2 py-1.5 align-top';
+        const PR_BADGE = 'inline-block whitespace-nowrap rounded-full px-2.5 py-[3px] text-[11px] font-bold';
+        const PR_SUM_TD = 'border border-[#e5e7eb] bg-[#f8fafc] px-1 py-2 text-center';
+        const PR_SUM_NUM = 'block text-[13pt] font-extrabold text-[#0b1f4b]';
+        const PR_SUM_LBL = 'mt-0.5 block text-[6.7pt] font-bold uppercase tracking-[.02em] text-[#4b5563]';
+        const PR_EMPTY = 'py-1 text-[8.5pt] italic text-[#9ca3af]';
+
+        const BADGE_WEB = {
+            approved: 'bg-[#d1fae5] text-[#047857] dark:bg-[rgba(16,185,129,.18)] dark:text-[#34d399]',
+            disapproved: 'bg-[#fee2e2] text-[#b91c1c] dark:bg-[rgba(220,38,38,.2)] dark:text-[#f87171]',
+            pending: 'bg-[#fef3c7] text-[#b45309] dark:bg-[rgba(217,119,6,.2)] dark:text-[#fbbf24]',
+            other: 'bg-[#e9edf7] text-navy dark:bg-[rgba(99,102,241,.22)] dark:text-[#a5b4fc]'
+        };
+        const BADGE_PRINT = {
+            approved: 'bg-[#d1fae5] text-[#047857]',
+            disapproved: 'bg-[#fee2e2] text-[#b91c1c]',
+            pending: 'bg-[#fef3c7] text-[#b45309]',
+            other: 'bg-[#e9edf7] text-[#0b1f4b]'
+        };
 
         const STATUS_LABELS = {
             pending: 'Pending',
@@ -989,16 +376,17 @@ $qCountry  = trim($_GET['country'] ?? '');
             return String(status ?? '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || '—';
         }
 
-        function badgeClass(status) {
+        function badgeClass(status, variant = 'web') {
+            const map = variant === 'print' ? BADGE_PRINT : BADGE_WEB;
             switch (status) {
                 case 'approved':
-                    return 'b-approved';
+                    return map.approved;
                 case 'disapproved':
-                    return 'b-disapproved';
+                    return map.disapproved;
                 case 'pending':
-                    return 'b-pending';
+                    return map.pending;
                 default:
-                    return 'b-other';
+                    return map.other;
             }
         }
 
@@ -1095,16 +483,20 @@ $qCountry  = trim($_GET['country'] ?? '');
             };
         }
 
-        function buildRowsHtml(rows) {
+        function buildRowsHtml(rows, variant = 'web') {
+            const isPrint = variant === 'print';
+            const tr = isPrint ? PR_TR : WEB_TR;
+            const td = isPrint ? PR_TD : WEB_TD;
+            const badge = isPrint ? PR_BADGE : WEB_BADGE;
             return rows.map(r => `
-                <tr>
-                    <td>${escapeHtml(r.applicant)}</td>
-                    <td>${escapeHtml(r.province)}${r.city ? ', ' + escapeHtml(r.city) : ''}</td>
-                    <td>${escapeHtml(r.position_title)}</td>
-                    <td>${escapeHtml(r.employer_name)}</td>
-                    <td>${escapeHtml(r.country)}</td>
-                    <td><span class="badge ${badgeClass(r.status)}">${escapeHtml(statusLabel(r.status))}</span></td>
-                    <td>${fmtDate(r.submitted_at)}</td>
+                <tr class="${tr}">
+                    <td class="${td}" data-label="Applicant">${escapeHtml(r.applicant)}</td>
+                    <td class="${td}" data-label="Province / City">${escapeHtml(r.province)}${r.city ? ', ' + escapeHtml(r.city) : ''}</td>
+                    <td class="${td}" data-label="Position">${escapeHtml(r.position_title)}</td>
+                    <td class="${td}" data-label="Employer">${escapeHtml(r.employer_name)}</td>
+                    <td class="${td}" data-label="Destination">${escapeHtml(r.country)}</td>
+                    <td class="${td}" data-label="Status"><span class="${badge} ${badgeClass(r.status, variant)}">${escapeHtml(statusLabel(r.status))}</span></td>
+                    <td class="${td}" data-label="Submitted">${fmtDate(r.submitted_at)}</td>
                 </tr>`).join('');
         }
 
@@ -1113,41 +505,41 @@ $qCountry  = trim($_GET['country'] ?? '');
             document.getElementById('web-generated').textContent = fmtDateTime(data.generated_at);
 
             document.getElementById('web-summary').innerHTML = `
-                <div class="summary-cell">
-                    <div class="sc-num">${stats.total}</div>
-                    <div class="sc-lbl">Total Applications</div>
+                <div class="${SC_CELL}">
+                    <div class="${SC_NUM}">${stats.total}</div>
+                    <div class="${SC_LBL}">Total Applications</div>
                 </div>
-                <div class="summary-cell">
-                    <div class="sc-num">${stats.approved}</div>
-                    <div class="sc-lbl">Approved</div>
+                <div class="${SC_CELL}">
+                    <div class="${SC_NUM}">${stats.approved}</div>
+                    <div class="${SC_LBL}">Approved</div>
                 </div>
-                <div class="summary-cell ${stats.disapproved > 0 ? 'sc-warn' : ''}">
-                    <div class="sc-num">${stats.disapproved}</div>
-                    <div class="sc-lbl">Disapproved</div>
+                <div class="${SC_CELL}">
+                    <div class="${stats.disapproved > 0 ? SC_NUM_WARN : SC_NUM}">${stats.disapproved}</div>
+                    <div class="${SC_LBL}">Disapproved</div>
                 </div>
-                <div class="summary-cell">
-                    <div class="sc-num">${stats.inProcess}</div>
-                    <div class="sc-lbl">Still In Process</div>
+                <div class="${SC_CELL}">
+                    <div class="${SC_NUM}">${stats.inProcess}</div>
+                    <div class="${SC_LBL}">Still In Process</div>
                 </div>`;
 
             const body = document.getElementById('web-body');
             if (!data.rows || !data.rows.length) {
-                body.innerHTML = '<p class="empty-note"><i class="fas fa-inbox"></i> No applications match these filters.</p>';
+                body.innerHTML = `<p class="${WEB_EMPTY}"><i class="fas fa-inbox"></i> No applications match these filters.</p>`;
             } else {
                 body.innerHTML = `
-                    <table class="detail-table">
-                        <thead>
+                    <table class="${WEB_TABLE}">
+                        <thead class="max-md:hidden">
                             <tr>
-                                <th>Applicant</th>
-                                <th>Province / City</th>
-                                <th>Position</th>
-                                <th>Employer</th>
-                                <th>Destination</th>
-                                <th>Status</th>
-                                <th>Submitted</th>
+                                <th class="${WEB_TH}">Applicant</th>
+                                <th class="${WEB_TH}">Province / City</th>
+                                <th class="${WEB_TH}">Position</th>
+                                <th class="${WEB_TH}">Employer</th>
+                                <th class="${WEB_TH}">Destination</th>
+                                <th class="${WEB_TH}">Status</th>
+                                <th class="${WEB_TH}">Submitted</th>
                             </tr>
                         </thead>
-                        <tbody>${buildRowsHtml(data.rows)}</tbody>
+                        <tbody class="max-md:block">${buildRowsHtml(data.rows, 'web')}</tbody>
                     </table>`;
             }
 
@@ -1164,42 +556,42 @@ $qCountry  = trim($_GET['country'] ?? '');
 
             document.getElementById('pr-summary').innerHTML = `
                 <tr>
-                    <td>
-                        <span class="sc-num">${stats.total}</span>
-                        <span class="sc-lbl">Total Applications</span>
+                    <td class="${PR_SUM_TD}">
+                        <span class="${PR_SUM_NUM}">${stats.total}</span>
+                        <span class="${PR_SUM_LBL}">Total Applications</span>
                     </td>
-                    <td>
-                        <span class="sc-num">${stats.approved}</span>
-                        <span class="sc-lbl">Approved</span>
+                    <td class="${PR_SUM_TD}">
+                        <span class="${PR_SUM_NUM}">${stats.approved}</span>
+                        <span class="${PR_SUM_LBL}">Approved</span>
                     </td>
-                    <td>
-                        <span class="sc-num">${stats.disapproved}</span>
-                        <span class="sc-lbl">Disapproved</span>
+                    <td class="${PR_SUM_TD}">
+                        <span class="${PR_SUM_NUM}">${stats.disapproved}</span>
+                        <span class="${PR_SUM_LBL}">Disapproved</span>
                     </td>
-                    <td>
-                        <span class="sc-num">${stats.inProcess}</span>
-                        <span class="sc-lbl">Still In Process</span>
+                    <td class="${PR_SUM_TD}">
+                        <span class="${PR_SUM_NUM}">${stats.inProcess}</span>
+                        <span class="${PR_SUM_LBL}">Still In Process</span>
                     </td>
                 </tr>`;
 
             const body = document.getElementById('pr-body');
             if (!data.rows || !data.rows.length) {
-                body.innerHTML = '<p class="pr-empty">No applications match these filters.</p>';
+                body.innerHTML = `<p class="${PR_EMPTY}">No applications match these filters.</p>`;
             } else {
                 body.innerHTML = `
-                    <table class="pr-table">
-                        <thead>
+                    <table class="${PR_TABLE}">
+                        <thead class="table-header-group">
                             <tr>
-                                <th style="width:20%;">Applicant</th>
-                                <th style="width:15%;">Province / City</th>
-                                <th style="width:17%;">Position</th>
-                                <th style="width:17%;">Employer</th>
-                                <th style="width:11%;">Destination</th>
-                                <th style="width:11%;">Status</th>
-                                <th style="width:9%;">Submitted</th>
+                                <th class="${PR_TH} w-[20%]">Applicant</th>
+                                <th class="${PR_TH} w-[15%]">Province / City</th>
+                                <th class="${PR_TH} w-[17%]">Position</th>
+                                <th class="${PR_TH} w-[17%]">Employer</th>
+                                <th class="${PR_TH} w-[11%]">Destination</th>
+                                <th class="${PR_TH} w-[11%]">Status</th>
+                                <th class="${PR_TH} w-[9%]">Submitted</th>
                             </tr>
                         </thead>
-                        <tbody>${buildRowsHtml(data.rows)}</tbody>
+                        <tbody>${buildRowsHtml(data.rows, 'print')}</tbody>
                     </table>`;
             }
         }
@@ -1213,9 +605,9 @@ $qCountry  = trim($_GET['country'] ?? '');
                 data = await api('report', filters);
             } catch (err) {
                 document.getElementById('web-body').innerHTML =
-                    `<p class="empty-note"><i class="fas fa-triangle-exclamation"></i> Couldn't load the report (${escapeHtml(err.message)}).</p>`;
+                    `<p class="${WEB_EMPTY}"><i class="fas fa-triangle-exclamation"></i> Couldn't load the report (${escapeHtml(err.message)}).</p>`;
                 document.getElementById('pr-body').innerHTML =
-                    `<p class="pr-empty">Couldn't load the report (${escapeHtml(err.message)}).</p>`;
+                    `<p class="${PR_EMPTY}">Couldn't load the report (${escapeHtml(err.message)}).</p>`;
                 document.getElementById('btn-pdf').disabled = true;
                 return;
             }
